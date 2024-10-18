@@ -146,7 +146,7 @@ class MAttr(object):
         """Check if two attributes or an attribute and a value are not equal. (unnecessary in Python 3)"""
         return not self.__eq__(other)
 
-    def set(self, *args, **kwargs):
+    def setAttr(self, *args, **kwargs):
         """
         This is the cmds.setAttr but with string type supported with no flags requirement
         Args:
@@ -157,7 +157,7 @@ class MAttr(object):
             if not isinstance(args[0], str) and len(args) == 1:
                 cmds.setAttr('{}.{}'.format(self._node, self.attr), args[0], **kwargs)
             elif isinstance(args[0], str) and len(args) == 1:
-                cmds.setAttr('{}.{}'.format(self._node, self.attr), args[0], type = 'string', **kwargs)
+                cmds.setAttr('{}.{}'.format(self._node, self.attr), args[0], type='string', **kwargs)
         elif kwargs:
             cmds.setAttr('{}.{}'.format(self._node, self.attr), *args, **kwargs)
 
@@ -423,7 +423,7 @@ class MayaNode(ObjPointer):
         Note:
             it support maya kwargs/flags, the method is support string type
         """
-        if key in self.listAttr(key) or key:
+        if key in self.listAttr(key):
             try:
                 if not isinstance(value, str):
                     MAttr(self.node, key).setAttr(value)
