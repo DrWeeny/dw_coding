@@ -254,6 +254,8 @@ class ClothTreeItem(BaseSimulationItem):
         super().__init__(name)
         self.setText(self.short_name)
 
+        self.setData(self.state, QtCore.Qt.UserRole + 3)  # Toggle state data
+
     @property
     def short_name(self):
         """Display-friendly name."""
@@ -303,319 +305,198 @@ class ClothTreeItem(BaseSimulationItem):
         """Retrieve vertex map modes for each map."""
         return [ncloth_cmds.get_vtx_map_type(self.node, f"{map_name}MapType") for map_name in self.get_maps()]
 
-class HairTreeItem(ClothItem):
+class HairTreeItem(BaseSimulationItem):
+    """Item class for hair simulation nodes."""
 
-    def __init__(self, name, parent):
-        super(HairTreeItem, self).__init__(name, parent)
-        # ClothTreeItem.__init__(self, name, parent)
+    def __init__(self, name):
+        super().__init__(name)
+        self.setText(self.short_name)
+        self.setIcon(QtGui.QIcon("path/to/hair_icon.png"))
 
-        self.solver_name = self.get_solver(name)
-        self.namespace = self.get_ns(name)
+        # Set initial state for the button, specific to hair (simulationMethod attribute)
+        self.setData(self.state, QtCore.Qt.UserRole + 3)  # Toggle state data
+
 
     @property
     def mesh_transform(self):
-        o = cmds.listRelaltives(self.node, p=True, f=True)
-        if o:
-            o = o[0]
-        return o
+        """Returns the transform of the hair node's mesh."""
+        parent = cmds.listRelatives(self.node, p=True, f=True)
+        return parent[0] if parent else None
 
     @property
     def short_name(self):
-        '''
-        a nice string to not make pollution in the ui
-        :return: str
-        '''
-        name = self.node.split('|')[-1].split(':')[-1]
-        return name
+        """A simplified name for the node, avoiding namespace clutter."""
+        return self.node.split('|')[-1].split(':')[-1]
 
     @property
     def state_attr(self):
-        '''
-        because nucleus and cloth have different attribute
-        :return: str
-        '''
+        """Returns the attribute used to toggle hair simulation."""
         return 'simulationMethod'
 
+    @property
+    def state(self):
+        """Current state of the simulation (0 = Off, 1 = Static, 2+ = Dynamic)."""
+        return cmds.getAttr(f"{self.node}.{self.state_attr}")
+
     def set_state(self, state):
-        cmds.setAttr('{}.{}'.format(self.node, self.state_attr), state)
-        if state == 3:
-            self.btn_state.setIcon(self.onIcon)
-        elif state == 1:
-            self.btn_state.setIcon(self.onIcon) # todo : create an orange icon for the static state
-        else:
-            self.btn_state.setIcon(self.offIcon)
-        self.btn_state.setIconSize(QtCore.QSize(20, 20))
+        """Set the simulation state for hair."""
+        cmds.setAttr(f"{self.node}.{self.state_attr}", state)
+        self.setData(state, QtCore.Qt.UserRole + 3)  # Update model data for delegate use
 
-    def button_pressed(self):
-        '''
-        Triggered when Item's button pressed.
-        an example of using the Item's own values.
-        '''
-        if self.state == 2:
-            self.set_state(0)
-        elif self.state == 0:
-            # should be 1 but I've spotted some crash on dneg TODO : Bug
-            self.set_state(2)
-        elif self.state == 1:
-            self.set_state(2)
-        # hum have to see the use of this todo : investigate usage
-        elif self.state == 3:
-            self.set_state(0)
 
-class NRigidTreeItem(NucleusTreeItem):
+class NRigidTreeItem(BaseSimulationItem):
+    """Item class for nRigid simulation nodes."""
 
-    def __init__(self, name, parent):
-        super(NRigidTreeItem, self).__init__(name, parent)
-        # NucleusTreeItem.__init__(self, name, parent)
-        # NucleusTreeItem.__init__(self, name, parent)
-        # or
-        # super().__init__(self, name, parent) in python3
-        # super(NucleusTreeItem, self).__init__(self, name, parent) in python3 and 2
-        # if multiple class inheritance, make multiple lines
+    def __init__(self, name):
+        super().__init__(name)
+        self.setText(self.short_name)
+        self.setIcon(QtGui.QIcon("path/to/rigid_icon.png"))
 
-        #TODO : get the fuction from clothCmds or make it static
-        self.solver_name = self.get_solver(name)
-        self.namespace = self.get_ns(name)
-
-    def get_ns(self, node_name):
-
-        if ':' in node_name:
-            return node_name.split(':')[0].split('|')[-1]
-        else:
-            return ''
-
-    def get_solver(self, node_name):
-        c = cmds.listConnections(node_name, c=1, type='nucleus')
-        o = [i for i in c if len(i.split('.')) < 2]
-        n = list(set(o))[0]
-        n = n.split(':')[-1]
-        return n
+        # Set initial data for model
+        self.setData(self.short_name, QtCore.Qt.DisplayRole)
+        self.setData(self.state, QtCore.Qt.UserRole + 3)
 
     @property
     def short_name(self):
-        '''
-        a nice string to not make pollution in the ui
-        :return: str
-        '''
-
+        """Returns a clean short name without suffixes for better readability."""
         shortname = self.node.split('|')[-1].split(':')[-1].split('_collider')[0]
-
-        pattern02 = re.compile('_nRigid(Shape)?\d+$')
-        shortname = pattern02.sub('', shortname)
-
+        shortname = re.sub(r'_nRigid(Shape)?\d+$', '', shortname)
         return shortname
 
     @property
     def mesh_transform(self):
-        o = [i for i in
-             cmds.listConnections(self.node + '.inputMesh',
-                                  sh=True) if cmds.nodeType(i) == 'mesh']
-        o = [i for i in o if len(i.split('.')) == 1]
-        o = dwu.lsTr(o[0], l=True)[0]
-        return o
+        """Gets the associated mesh transform for the nRigid node."""
+        connected_meshes = [
+            i for i in cmds.listConnections(f"{self.node}.inputMesh", sh=True)
+            if cmds.nodeType(i) == 'mesh' and len(i.split('.')) == 1
+        ]
+        return dwu.lsTr(connected_meshes[0], long=True)[0] if connected_meshes else None
 
     @property
     def state_attr(self):
+        """Returns the attribute used to toggle nRigid state."""
         return 'isDynamic'
 
+    @property
+    def state(self):
+        """Current state of the rigid body."""
+        return cmds.getAttr(f"{self.node}.{self.state_attr}")
+
     def cache_dir(self, mode=1):
-        '''
-        :return: str '../cache/ncache/nucleus/cloth/'
-        '''
-
-        self.set_filerule()
-
-        directory = cmds.workspace(fileRuleEntry='fileCache')
-        directory = cmds.workspace(en=directory)
-        if mode == 0:
-            return directory+'/dynTmp/'
-
-        directory += "/{}/{}/{}/".format(self.namespace,
-                                         self.solver_name,
-                                         self.short_name)
-        return directory.replace('//', '/')
+        """Returns the directory path for cache files."""
+        base_dir = cmds.workspace(fileRuleEntry='fileCache')
+        cache_subdir = f"/{self.namespace}/{self.solver_name}/{self.short_name}/"
+        return os.path.join(base_dir, 'dynTmp' if mode == 0 else cache_subdir).replace('//', '/')
 
     def cache_file(self, mode=1, suffix=''):
-        '''
-
-        :param mode: <<int>> 0=replace, 1=create
-        :param suffix: <<str>>
-        :return:
-        '''
+        """Generates the file path for the cache file based on the iteration."""
         path = self.cache_dir()
-        iter = self.get_iter() + mode
-
-        if not suffix:
-            path += self.short_name + '_' + suffix + '_v{:03d}.xml'.format(iter)
-        else:
-            path += self.short_name + '_' + '_v{:03d}.xml'.format(iter)
-
-        if not os.path.isfile(path) and not mode:
-            # si le fichier n'existe et qu'on est en replace,
-            # passer automatiquement en create
-            if not suffix:
-                path += '{}_{}_v{:03d}.xml'.format(self.short_name,
-                                                   suffix,
-                                                   iter + 1)
-            else:
-                path += self.short_name + '_' + '_v{:03d}.xml'.format(iter + 1)
-
-        return path.replace('__', '_')
+        iteration = self.get_iter() + mode
+        suffix_text = f'_{suffix}' if suffix else ''
+        cache_file = f"{self.short_name}{suffix_text}_v{iteration:03d}.xml"
+        return os.path.join(path, cache_file).replace('__', '_')
 
     def get_cache_list(self):
-        '''
-        list all the caches already done
-        :return: <<list>> of file
-        '''
+        """Lists all existing cache files."""
         path = self.cache_dir()
-        if os.path.exists(path):
-            files = os.listdir(path)
-            cache = [x.replace('.xml', '') for x in files if x.endswith('.xml')]
-            return sorted(cache, reverse=True)
-        else:
-            return None
+        return sorted(
+            [file.replace('.xml', '') for file in os.listdir(path) if file.endswith('.xml')],
+            reverse=True
+        ) if os.path.exists(path) else []
 
     def get_iter(self):
-        '''
-        get current version number
-        :return: <<int>>
-        '''
-        if os.path.exists(self.cache_dir()):
-            output = os.listdir(self.cache_dir())
-            if not output:
-                return 0
-            xml = [i for i in output if i.endswith('.xml')]
-            pattern = 'v([0-9]{3})'
-            iter = sorted([int(re.findall(pattern, i)[0]) for i in xml])[-1]
-            return iter
-        else:
-            return 0
+        """Retrieves the latest iteration version number."""
+        path = self.cache_dir()
+        if os.path.exists(path):
+            versions = [
+                int(re.search(r'v(\d{3})', file).group(1))
+                for file in os.listdir(path) if file.endswith('.xml')
+            ]
+            return max(versions, default=0)
+        return 0
 
     def get_maps(self):
-        '''
-        :return: <<list>> of string
-        '''
+        """Retrieves the vertex maps associated with this node."""
         return ncloth_cmds.get_vtx_maps(self.node)
 
     def get_maps_mode(self):
-        '''
-        :return: <<list>> of integer
-        '''
-        values = []
-        for i in self.get_maps():
-            value = ncloth_cmds.get_vtx_map_type(self.node,
-                                                 '{}MapType'.format(i))
-            values.append(value)
-        return values
+        """Retrieves the vertex map modes (types) for the maps associated with this node."""
+        return [
+            ncloth_cmds.get_vtx_map_type(self.node, f"{map_name}MapType")
+            for map_name in self.get_maps()
+        ]
 
-class MapItem(QtWidgets.QTreeWidgetItem):
-    '''
-    Custom QTreeWidgetItem with Widgets
-    '''
-
-    def __init__(self, node_name, map_attr, parent):
-        '''
-        parent (QTreeWidget) : Item's QTreeWidget parent.
-        name   (str)         : Item's name. just an example.
-        '''
-
-        ## Init super class ( QtGui.QTreeWidgetItem )
-        QtWidgets.QTreeWidgetItem.__init__(self, parent)
-
-        self.map_to_paint = None
-        self.cloth_mesh = ''
-
-        ## Column 1 - picker pixmap:
-        self.map_widget = MapSetter(node_name, map_attr)
-        self.treeWidget().setItemWidget(self, 0, self.map_widget)
-
-        self.map_to_paint = self.get_attr_full()
-
-    def get_attr_full(self):
-        return self.map_widget.get_attr_full()
-
-
-class MapSetter(QtWidgets.QWidget):
+class MapItemModel(QtGui.QStandardItem):
+    """Model item representing a paintable map in the tree view."""
 
     def __init__(self, node_name, map_attr):
-        '''
-        The Widget is QLABEL + QComboBox
-        It sets the nucleus node map to PerVertex or Texture or None
-            (defined by maya as : 1,2,0)
-        It return to the parent QTreeWidgetITem the fullname attr :
-            |nClothShape.(MapName)(TypeOfMap)
-
-        :param node_name: <<str>> nClothShape
-        :param map_attr: <<list>> (map_name::str, map_typeIndex::int)
-        :param parent: QTreeWidgetItem with a special input attr 'map_to_paint'
-        '''
-        QtWidgets.QWidget.__init__(self)
-
-        # our basics input stored into self.var
+        super().__init__()
         self.node_name = node_name
         self.map_name = map_attr[0]
-        init_index = map_attr[1]
+        self.map_index = map_attr[1]
 
-        self.hl_main = QtWidgets.QHBoxLayout()
-        self.lb_map_name = QtWidgets.QLabel(self.map_name)
+        # Set text display
+        self.setText(self.map_name)
+        self.setEditable(False)
 
-        self.map_type = QtWidgets.QComboBox()
-        self.map_type.setObjectName("map_type")
-        self.map_type.addItem("None")
-        self.map_type.addItem("Vertex")
-        self.map_type.addItem("Texture")
-        self.map_type.setCurrentIndex(init_index)
-
-        self.label_color()
-
-        # add widget
-        self.hl_main.addWidget(self.lb_map_name)
-        self.hl_main.addWidget(self.map_type)
-        self.setLayout(self.hl_main)
-
-        # add signal
-        self.map_type.currentIndexChanged.connect(self.onChange)
-
-    def onChange(self):
-        '''
-        function triggered by QComboBox signal currentIndexChanged
-        :return: <<str>>
-        '''
-        # change the node map type
-        ncloth_cmds.set_vtx_map_type(self.node_name,
-                                  '{}MapType'.format(self.map_name),
-                                  self.index)
-        # visual color of the label
-        self.label_color()
-        # return our new value to the parent
-        self.get_attr_full()
-
-    def label_color(self):
-        """ Refresh map_type label color """
-        if self.index == 0:
-            self.lb_map_name.setStyleSheet("color: rgb(175, 175, 175)") #Grey
-        elif self.index == 1:
-            self.lb_map_name.setStyleSheet("color: rgb(0, 255, 0)") #Green
-        elif self.index == 2:
-            self.lb_map_name.setStyleSheet("color: rgb(0, 125, 255)") #Blue
-
-    @property
-    def index(self):
-        '''
-        :return: <<int>>
-        '''
-        return int(self.map_type.currentIndex())
+        # Storing full attribute for painting
+        self.setData(self.get_attr_full(), QtCore.Qt.UserRole)
+        # Store the map index for display in the combobox
+        self.setData(self.map_index, QtCore.Qt.UserRole + 1)
 
     def get_attr_full(self):
-        '''
-        function that create the value with the widget values
-        :return: <<str>>
-        '''
-        if self.index == 0:
-            mytype = None
-        elif self.index == 1:
-            mytype = 'PerVertex'
-        elif self.index == 2:
-            mytype = 'Map'
-        name = '{}.{}{}'.format(self.node_name, self.map_name, mytype)
-        return name
+        """Constructs the full attribute path."""
+        map_type = {0: '', 1: 'PerVertex', 2: 'Map'}.get(self.map_index, '')
+        return f"{self.node_name}.{self.map_name}{map_type}"
+
+
+
+class MapTypeDelegate(QtWidgets.QStyledItemDelegate):
+    """Delegate for managing the combobox, label color, and painting functionality."""
+
+    COLOR_MAP = {0: "color: rgb(175, 175, 175);", 1: "color: rgb(0, 255, 0);", 2: "color: rgb(0, 125, 255);"}
+
+    def createEditor(self, parent, option, index):
+        """Creates a combobox editor for map type selection."""
+        editor = QtWidgets.QComboBox(parent)
+        editor.addItems(["None", "Vertex", "Texture"])
+        current_index = index.data(QtCore.Qt.UserRole + 1)
+        editor.setCurrentIndex(current_index if current_index is not None else 0)
+        editor.currentIndexChanged.connect(lambda idx, i=index: self.on_map_type_changed(i, idx))
+        return editor
+
+    def setEditorData(self, editor, index):
+        """Sets the editor data, updating colors and initial value."""
+        current_index = index.data(QtCore.Qt.UserRole + 1)
+        editor.setCurrentIndex(current_index if current_index is not None else 0)
+
+    def setModelData(self, editor, model, index):
+        """Stores selected map type in model, applies coloring and sets updated values."""
+        new_index = editor.currentIndex()
+        model.setData(index, new_index, QtCore.Qt.UserRole + 1)  # Update the stored map type
+        model.setData(index, self.COLOR_MAP[new_index], QtCore.Qt.ForegroundRole)
+
+    def paint(self, painter, option, index):
+        """Custom painting to handle color updates on text and double-click behavior."""
+        painter.save()
+        map_type_index = index.data(QtCore.Qt.UserRole + 1) or 0
+        color = self.COLOR_MAP.get(map_type_index, "color: rgb(175, 175, 175);")
+        option.font.setItalic(True)  # Optional for styling
+        painter.setPen(QtGui.QColor(color))
+        super().paint(painter, option, index)
+        painter.restore()
+
+    def on_map_type_changed(self, index, map_type_idx):
+        """Updates the map type on change."""
+        node_name = map_type_idx.data(QtCore.Qt.DisplayRole)
+        map_name = map_type_idx.data(QtCore.Qt.UserRole)
+        ncloth_cmds.set_vtx_map_type(node_name, f"{map_name}MapType", index)
+
+    def editorEvent(self, event, model, option, index):
+        """Handles double-click events to initiate map painting."""
+        if event.type() == QtCore.QEvent.MouseButtonDblClick:
+            attr_full = index.data(QtCore.Qt.UserRole)
+            cloth_mesh = index.data(QtCore.Qt.UserRole + 2)  # Stored if needed for painting
+            if attr_full:
+                ncloth_cmds.paint_vtx_map(attr_full, cloth_mesh)
+        return super().editorEvent(event, model, option, index)
