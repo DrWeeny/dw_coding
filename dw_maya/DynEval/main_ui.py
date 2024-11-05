@@ -157,6 +157,9 @@ class DynEvalUI(QtWidgets.QMainWindow):
         self.dyn_eval_tree.setColumnWidth(0, 250)
         self.dyn_eval_tree.setColumnWidth(1, 25)
 
+        # self.dyn_eval_tree.setItemDelegateForColumn(1, ToggleButtonDelegate(self.dyn_eval_tree))
+        # self.dyn_eval_tree.itemDelegateForColumn(1).toggled.connect(self.on_toggle)
+
         # Create a contextual menu
         self.dyn_eval_tree.installEventFilter(self)
         self.dyn_eval_tree.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
@@ -235,6 +238,15 @@ class DynEvalUI(QtWidgets.QMainWindow):
 
         self.cache_tree.cache_tree.itemSelectionChanged.connect(self.set_comment)
         self.tab1_comment.save.connect(self.save_comment)
+
+
+    def on_toggle(self, index, state):
+        """Slot to handle toggling of dynamic state from delegate."""
+        item = self.model.itemFromIndex(index)
+        item.setData(state, QtCore.Qt.UserRole + 3)  # Update model data if needed
+        # Apply state change to the node in Maya
+        cmds.setAttr(f"{item.node}.{item.state_attr}", int(state))
+
 
     def context_main(self, position):
 
@@ -375,6 +387,7 @@ class DynEvalUI(QtWidgets.QMainWindow):
         # ===============================================================
         if self.edit_mode == 'cache':
             cmds.evalDeferred('dwsimui.cache_tree.build_cache_list()')
+
 
     def createCache(self):
         # cacheDir cacheFile()
