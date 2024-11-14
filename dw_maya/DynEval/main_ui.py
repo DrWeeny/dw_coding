@@ -91,7 +91,7 @@ def copy_files_safely(file_paths, destination_dir):
     Ensures Maya commands are only called from the main thread.
     """
     for src in file_paths:
-        dest = os.path.join(destination_dir, os.path.basename(src))
+        dest = Path(destination_dir) / Path(src).name
 
         # Use Maya's main thread handling if any Maya-dependent file preparation or checks are needed.
         mu.executeInMainThreadWithResult(safe_copy_file, src, dest)
@@ -589,9 +589,10 @@ class DynEvalUI(QtWidgets.QMainWindow):
             recap_dic['preset'][solver_name] = {current_iter: preset}
 
         json_file = item.metadata()
+        json_file_path = Path(json_file)
 
         # Use deferred JSON save or merge based on file existence
-        if os.path.isfile(json_file):
+        if json_file_path.exists():
             dw_json.merge_json(json_file, recap_dic, indent=4, defer=True)
         else:
             dw_json.save_json(json_file, recap_dic, indent=4, defer=True)
@@ -606,21 +607,37 @@ class DynEvalUI(QtWidgets.QMainWindow):
             ncloth (list): List of nCloth nodes.
             tmpdir (str): Temporary directory for caches.
         """
-        file_list = os.listdir(tmpdir)
+        file_list = [p.name for p in Path(tmpdir).iterdir()]
 
         for cache_name, target_dir, ncloth_node in zip(caches, futurdir, ncloth):
-            # Move and rename cache files based on cache name
+            # Collect cache files to be moved
             cache_files = [f for f in file_list if f.startswith(cache_name)]
             for file_name in cache_files:
-                src = os.path.join(tmpdir, file_name)
-                extension = src.split('.')[-1]
-                dst = target_dir.replace('.xml', '.' + extension)
-                shutil.move(src, dst)
-            try:
-                # Deferred execution for attaching nCache
-                mu.executeDeferred(ncloth_cmds.attach_ncache, target_dir, ncloth_node)
-            except Exception as e:
-                cmds.warning(f"Failed attaching {target_dir} to {ncloth_node}. Error: {e}")
+                src = Path(tmpdir) / file_name
+                extension = src.suffix.lstrip('.')
+                dst = Path(target_dir).with_suffix(f'.{extension}')
+
+                # Defer both moving and attaching in a single operation
+                mu.executeDeferred(self._move_and_attach_cache, str(src), str(dst), target_dir, ncloth_node)
+
+    def _move_and_attach_cache(self, src, dst, target_dir, ncloth_node):
+        """
+        Moves the cache file to the target directory and attaches it to the nCloth node.
+
+        Args:
+            src (str): Path to the source file to move.
+            dst (str): Destination path for the moved file.
+            target_dir (str): Target directory for cache attachment.
+            ncloth_node (str): The nCloth node to which the cache will be attached.
+        """
+        try:
+            # Move the file
+            shutil.move(src, dst)
+            # Attach the cache to the nCloth node
+            ncloth_cmds.attach_ncache(target_dir, ncloth_node)
+            print(f"Successfully moved {src} to {dst} and attached to {ncloth_node}")
+        except Exception as e:
+            cmds.warning(f"Failed to move {src} to {dst} or attach to {ncloth_node}. Error: {e}")
 
     # ====================================================================
     # COMMENTS
@@ -641,8 +658,9 @@ class DynEvalUI(QtWidgets.QMainWindow):
         cache_item = self.cache_tree.selected()
         if cache_item:
             metadata = dyn_item.metadata()
+            metadata_path = Path(metadata)
             self.tab1_comment.setTitle(dyn_item.short_name)
-            if os.path.isfile(metadata):
+            if metadata_path.exists():
                 # Load and set the comment if metadata exists
                 data = dw_json.load_json(metadata)
                 comment = data.get('comment', {}).get(dyn_item.solver_name, {}).get(cache_item.version, "")
@@ -664,6 +682,7 @@ class DynEvalUI(QtWidgets.QMainWindow):
             return
 
         json_metadata = item.metadata()
+        json_metadata_path = Path(json_metadata)
         solver = item.solver_name
         sel_caches = self.cache_tree.cache_tree.selectedItems()
 
@@ -671,7 +690,7 @@ class DynEvalUI(QtWidgets.QMainWindow):
         if comment:
             for cache in sel_caches:
                 json_recap_dic['comment'][solver] = {cache.version: comment}
-                if os.path.isfile(json_metadata):
+                if json_metadata_path.exists():
                     dw_json.merge_json(json_metadata, json_recap_dic, defer=True)
                 else:
                     dw_json.save_json(json_metadata, json_recap_dic, defer=True)

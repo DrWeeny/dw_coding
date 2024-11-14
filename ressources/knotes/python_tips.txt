@@ -1,0 +1,2 @@
+>>> import itertools
+>>> chain = itertools.chain(*list_of_menuitems)

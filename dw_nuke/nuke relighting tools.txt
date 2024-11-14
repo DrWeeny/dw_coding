@@ -1,0 +1,368 @@
+set cut_paste_input [stack 0]
+version 6.3 v5
+BackdropNode {
+ inputs 0
+ name BackdropNode3
+ tile_color 0x8e8e3800
+ label "\"3D\""
+ note_font_size 42
+ selected true
+ xpos 526
+ ypos -254
+ bdheight 219
+}
+BackdropNode {
+ inputs 0
+ name BackdropNode1
+ tile_color 0x8e8e3800
+ label LIGHT_SETUP_2
+ note_font_size 42
+ selected true
+ xpos 809
+ ypos 35
+ bdwidth 665
+ bdheight 507
+}
+BackdropNode {
+ inputs 0
+ name BackdropNode2
+ tile_color 0x8e8e3800
+ label Light_Setup_1
+ note_font_size 42
+ selected true
+ xpos 444
+ ypos 200
+ bdwidth 251
+ bdheight 196
+}
+push $cut_paste_input
+Shuffle {
+ alpha white
+ name Shuffle3
+ selected true
+ xpos 536
+ ypos -174
+}
+push 0
+PositionToPoints {
+ inputs 2
+ selectable false
+ detail 1
+ pointSize 4.45
+ name PositionToPoints1
+ selected true
+ xpos 536
+ ypos -63
+}
+push 0
+Dot {
+ name Dot3
+ selected true
+ xpos 639
+ ypos 283
+}
+set N1fbf0820 [stack 0]
+Phong {
+ inputs 0
+ diffuse 0.045
+ specular 0.6
+ min_shininess 44
+ max_shininess 64
+ name Phong1
+ selected true
+ xpos 1132
+ ypos 423
+}
+push 0
+Light2 {
+ inputs 0
+ light_type spot
+ color {0.3650000393 0.3450000286 0.1450000405}
+ intensity 8
+ cone_angle 34
+ cone_penumbra_angle 60
+ translate {114.3396759 60.39227295 -166.668457}
+ rotate {{curve i x1 -65.18403671 x50 -75.18403671} -183.2689402 4.378741216}
+ name Light1
+ selected true
+ xpos 1221
+ ypos 115
+}
+Light2 {
+ inputs 0
+ light_type spot
+ color {0.2866666615 0.1966666728 0.1466666609}
+ intensity 8.2
+ translate {10.00008106 50.00000763 1894.999756}
+ rotate {-21.56654932 -42.7054735 -6.886315396}
+ name Light5
+ selected true
+ xpos 1324
+ ypos 134
+}
+Light2 {
+ inputs 0
+ light_type spot
+ color {1.320066571 0.9998666644 0.6800665855}
+ intensity 1.05
+ cone_angle 118
+ cone_penumbra_angle 2
+ translate {90.7736969 381.3460083 4793.113281}
+ rotate {-42.38058701 -14.41845762 0.02219696087}
+ name Light6
+ selected true
+ xpos 1404
+ ypos 197
+}
+Scene {
+ inputs 3
+ name Scene1
+ selected true
+ xpos 1221
+ ypos 235
+}
+Dot {
+ name Dot1
+ selected true
+ xpos 1245
+ ypos 517
+}
+push 0
+Dot {
+ name Dot4
+ selected true
+ xpos 1106
+ ypos 177
+}
+add_layer {w_normals w_normals.red w_normals.green w_normals.blue}
+add_layer {p_world p_world.x p_world.y p_world.z}
+ReLight {
+ inputs 4
+ normal w_normals
+ position p_world
+ name ReLight1
+ selected true
+ xpos 1072
+ ypos 514
+}
+add_layer {AO AO.red AO.green AO.blue}
+Merge2 {
+ inputs 2
+ operation multiply
+ Achannels AO
+ name Merge4
+ selected true
+ xpos 819
+ ypos 513
+}
+push $N1fbf0820
+push $N1fbf0820
+push $N1fbf0820
+push $N1fbf0820
+Group {
+ inputs 3
+ name rim_Light2
+ help "Connect an attenuation map (i.e. map showing Viewing vector,or  normalized -I, like a light shining down the cam +Z axis) and a normal map. The order of the two inputs  is irrelevant. The result is similar to a rim lighting shader, with controls for the width and intensity of the effect."
+ tile_color 0xffff0000
+ selected true
+ xpos 454
+ ypos 280
+ addUserKnob {20 "" l User}
+ addUserKnob {26 channel l "" +STARTLINE}
+ addUserKnob {41 in l normals t Normals T ShuffleCopy1.in}
+ addUserKnob {41 in_1 l Position t "Point position" T Shuffle1.in}
+ addUserKnob {26 adj_bar l "" +STARTLINE}
+ addUserKnob {7 RimLighting_UserEdgeWidth l "Edge Width"}
+ RimLighting_UserEdgeWidth 0.3
+ addUserKnob {7 RimLighting_UserEdgeAmount l "Edge Amount"}
+ RimLighting_UserEdgeAmount 0.23
+ addUserKnob {12 rim_light_pos l "Rim Light Position"}
+ rim_light_pos {121 77}
+ addUserKnob {7 rim_depth l "Distance from Camera" R 0 5000}
+ rim_depth 360
+ addUserKnob {26 cc_bar l "" +STARTLINE}
+ addUserKnob {18 gamma_cc l "Gamma CC" R 0 5}
+ gamma_cc {1.250666618 0.9986665845 0.7506666183}
+ addUserKnob {18 gain_cc l "Gain CC" R 0 5}
+ gain_cc 1.55
+ addUserKnob {7 cc_mix l "CC Mix"}
+ cc_mix 1
+}
+ Input {
+  inputs 0
+  name P
+  xpos -381
+  ypos -206
+  number 2
+ }
+ Shuffle {
+  in p_world
+  out rgb
+  name Shuffle1
+  xpos -381
+  ypos -123
+ }
+ Unpremult {
+  name Unpremult2
+  xpos -239
+  ypos -123
+ }
+set N1fbf2e60 [stack 0]
+ Input {
+  inputs 0
+  name N
+  xpos -180
+  ypos -389
+  number 1
+ }
+ Input {
+  inputs 0
+  name ALPHA
+  xpos -56
+  ypos -382
+ }
+ ShuffleCopy {
+  inputs 2
+  in w_normals
+  red red
+  green green
+  blue blue
+  alpha alpha2
+  name ShuffleCopy1
+  tile_color 0x9e3c6300
+  xpos -130
+  ypos -324
+ }
+ Unpremult {
+  name Unpremult1
+  xpos -130
+  ypos -297
+ }
+ Matrix {
+  channels rgb
+  matrix {
+      {1 2 1}
+      {2 4 2}
+      {1 2 1}
+    }
+  normalize true
+  name AA
+  xpos -130
+  ypos -163
+ }
+set N1fbf3e50 [stack 0]
+ MergeExpression {
+  inputs 2
+  temp_name0 Lr
+  temp_expr0 "(parent.rim_light_pos.x - input.width/2)  - Ar"
+  temp_name1 Lg
+  temp_expr1 "(parent.rim_light_pos.y - input.height/2) - Ag"
+  temp_name2 Lb
+  temp_expr2 "parent.rim_depth  - Ab"
+  temp_name3 Llength
+  temp_expr3 sqrt(pow2(Lr)+pow2(Lg)+pow2(Lb))+0.00001
+  expr0 (Lr/Llength)*Br+(Lg/Llength)*Bg+(Lb/Llength)*Bb
+  expr1 (Lr/Llength)*Br+(Lg/Llength)*Bg+(Lb/Llength)*Bb
+  expr2 (Lr/Llength)*Br+(Lg/Llength)*Bg+(Lb/Llength)*Bb
+  expr3 Ba
+  name LdotN
+  xpos -239
+  ypos -28
+  addUserKnob {20 "" l User}
+ }
+push $N1fbf2e60
+ Expression {
+  temp_name0 Plength
+  temp_expr0 sqrt(pow2(Br)+pow2(Bg)+pow2(Bb))+0.00001
+  expr0 Br/Plength
+  expr1 Bg/Plength
+  expr2 Bb/Plength
+  name I_normalized
+  xpos -13
+  ypos -123
+ }
+ Multiply {
+  channels rgb
+  value -1
+  name V
+  xpos -13
+  ypos -76
+ }
+set N205f2be0 [stack 0]
+push $N1fbf3e50
+ MergeExpression {
+  inputs 2
+  temp_name0 VdotNf
+  temp_expr0 "(Ar*Br) + (Ag*Bg) + (Ab*Bb)"
+  temp_name1 edgeWidth
+  temp_expr1 parent.RimLighting_UserEdgeWidth
+  temp_name2 edgeScale
+  temp_expr2 edgeWidth>0?pow(1-VdotNf,log(edgeWidth)/log(0.5)):0
+  temp_name3 edgeAmt
+  temp_expr3 parent.RimLighting_UserEdgeAmount
+  expr0 smoothstep(0,1,edgeAmt*edgeScale)
+  expr1 smoothstep(0,1,edgeAmt*edgeScale)
+  expr2 smoothstep(0,1,edgeAmt*edgeScale)
+  name RimLighting
+  xpos -13
+  ypos -33
+  addUserKnob {20 "" l User}
+ }
+ Merge2 {
+  inputs 2
+  operation multiply
+  name Multiply
+  xpos -127
+  ypos 16
+ }
+ CCorrect {
+  gamma {{gamma_cc.r i} {gamma_cc.g i} {gamma_cc.b i} 1}
+  gain {{gain_cc.r i} {gain_cc.g i} {gain_cc.b i} 1}
+  mix {{cc_mix i}}
+  name CCorrect1
+  tile_color 0x7aa9ff00
+  xpos -127
+  ypos 72
+ }
+ Premult {
+  name Premult1
+  selected true
+  xpos -127
+  ypos 140
+  disable true
+ }
+set N205f38a0 [stack 0]
+ Output {
+  name Output1
+  xpos -127
+  ypos 243
+ }
+push $N205f2be0
+push $N205f38a0
+ Viewer {
+  inputs 2
+  input_process false
+  name Viewer1
+  xpos 28
+  ypos 63
+ }
+end_group
+Merge2 {
+ inputs 2
+ operation multiply
+ Achannels AO
+ name Merge2
+ selected true
+ xpos 454
+ ypos 368
+}
+push $N1fbf0820
+Merge2 {
+ inputs 2
+ operation screen
+ mix 0.475
+ name Merge3
+ selected true
+ xpos 605
+ ypos 368
+}

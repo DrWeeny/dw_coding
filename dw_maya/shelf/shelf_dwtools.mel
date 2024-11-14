@@ -1,0 +1,1378 @@
+global proc shelf_dwtools () {
+    global string $gBuffStr;
+    global string $gBuffStr0;
+    global string $gBuffStr1;
+
+
+    shelfButton
+        -enableCommandRepeat 1
+        -flexibleWidthType 3
+        -flexibleWidthValue 32
+        -enable 1
+        -width 35
+        -height 34
+        -manage 1
+        -visible 1
+        -preventOverride 0
+        -annotation "Make a set containing the selected object(s)" 
+        -enableBackground 0
+        -backgroundColor 0 0 0 
+        -highlightColor 0.321569 0.521569 0.65098 
+        -align "center" 
+        -label "Set" 
+        -labelOffset 0
+        -rotation 0
+        -flipX 0
+        -flipY 0
+        -useAlpha 1
+        -font "plainLabelFont" 
+        -imageOverlayLabel "Set" 
+        -overlayLabelColor 0.8 0.8 0.8 
+        -overlayLabelBackColor 0 0 0 0.5 
+        -image "setEdit.png" 
+        -image1 "setEdit.png" 
+        -style "iconOnly" 
+        -marginWidth 1
+        -marginHeight 1
+        -command "CreateSet" 
+        -sourceType "mel" 
+        -doubleClickCommand "CreateSetOptions" 
+        -commandRepeatable 1
+        -flat 1
+        -mi "add_to" ( "import maya.cmds as cmds\nsel = cmds.ls(sl=True)\nobj = sel[:-1]\n_set = sel[-1]\ncmds.sets(*obj, add=_set)" )
+        -mip 0
+        -mi "rm_from" ( "import maya.cmds as cmds\nsel = cmds.ls(sl=True)\nobj = sel[:-1]\n_set = sel[-1]\ncmds.sets(*obj, rm=_set)\n" )
+        -mip 1
+        -mi "clear" ( "import maya.cmds as cmds\nsel = cmds.ls(sl=True)\n_set = sel[-1]\ncmds.sets(clear=_set)" )
+        -mip 2
+    ;
+    shelfButton
+        -enableCommandRepeat 1
+        -flexibleWidthType 3
+        -flexibleWidthValue 32
+        -enable 1
+        -width 35
+        -height 34
+        -manage 1
+        -visible 1
+        -preventOverride 0
+        -annotation "Sculpt geometry tool options" 
+        -enableBackground 0
+        -backgroundColor 0 0 0 
+        -highlightColor 0.321569 0.521569 0.65098 
+        -align "center" 
+        -label "menuItem909" 
+        -labelOffset 0
+        -rotation 0
+        -flipX 0
+        -flipY 0
+        -useAlpha 1
+        -font "plainLabelFont" 
+        -overlayLabelColor 0.8 0.8 0.8 
+        -overlayLabelBackColor 0 0 0 0.5 
+        -image "putty.png" 
+        -image1 "putty.png" 
+        -style "iconOnly" 
+        -marginWidth 1
+        -marginHeight 1
+        -command "SculptGeometryToolOptions" 
+        -sourceType "mel" 
+        -commandRepeatable 1
+        -flat 1
+    ;
+    shelfButton
+        -enableCommandRepeat 1
+        -flexibleWidthType 1
+        -flexibleWidthValue 32
+        -enable 1
+        -width 34
+        -height 34
+        -manage 1
+        -visible 1
+        -preventOverride 0
+        -annotation "import dw_duplication as dwdup\nsel = cmds.ls(sl=True)\nitems = dwdup.freshDuplicate(sel)\n" 
+        -enableBackground 0
+        -backgroundColor 0 0 0 
+        -highlightColor 0.321569 0.521569 0.65098 
+        -align "center" 
+        -label "duplicate" 
+        -labelOffset 0
+        -rotation 0
+        -flipX 0
+        -flipY 0
+        -useAlpha 1
+        -font "plainLabelFont" 
+        -imageOverlayLabel "duplicate" 
+        -overlayLabelColor 0.8 0.8 0.8 
+        -overlayLabelBackColor 0 0 0 0.5 
+        -image "/home/abtidona/private/PycharmProjects/RND/dw_tools/ressources/pic_files/duplication-512.png" 
+        -image1 "/home/abtidona/private/PycharmProjects/RND/dw_tools/ressources/pic_files/duplication-512.png" 
+        -style "iconOnly" 
+        -marginWidth 1
+        -marginHeight 1
+        -command "import dw_duplication as dwdup\nsel = cmds.ls(sl=True)\nitems = dwdup.dupMesh(sel)\n" 
+        -sourceType "python" 
+        -commandRepeatable 1
+        -flat 1
+    ;
+    shelfButton
+        -enableCommandRepeat 1
+        -flexibleWidthType 1
+        -flexibleWidthValue 32
+        -enable 1
+        -width 34
+        -height 34
+        -manage 1
+        -visible 1
+        -preventOverride 0
+        -annotation "import dw_duplication as dwdup\nsel = cmds.ls(sl=True)\nitems = dwdup.outmesh(sel)\n" 
+        -enableBackground 0
+        -backgroundColor 0 0 0 
+        -highlightColor 0.321569 0.521569 0.65098 
+        -align "center" 
+        -label "outmesh" 
+        -labelOffset 0
+        -rotation 0
+        -flipX 0
+        -flipY 0
+        -useAlpha 1
+        -font "plainLabelFont" 
+        -imageOverlayLabel "outmesh" 
+        -overlayLabelColor 0.8 0.8 0.8 
+        -overlayLabelBackColor 0 0 0 0.5 
+        -image "/home/abtidona/private/PycharmProjects/RND/dw_tools/ressources/pic_files/outmesh-512.png" 
+        -image1 "/home/abtidona/private/PycharmProjects/RND/dw_tools/ressources/pic_files/outmesh-512.png" 
+        -style "iconOnly" 
+        -marginWidth 1
+        -marginHeight 1
+        -command "import dw_duplication as dwdup\nsel = cmds.ls(sl=True)\nitems = dwdup.outmesh(sel)\n" 
+        -sourceType "python" 
+        -commandRepeatable 1
+        -flat 1
+    ;
+    shelfButton
+        -enableCommandRepeat 1
+        -flexibleWidthType 1
+        -flexibleWidthValue 32
+        -enable 1
+        -width 34
+        -height 34
+        -manage 1
+        -visible 1
+        -preventOverride 0
+        -annotation "duplicate with a geo cache" 
+        -enableBackground 0
+        -backgroundColor 0 0 0 
+        -highlightColor 0.321569 0.521569 0.65098 
+        -align "center" 
+        -label "dupBake" 
+        -labelOffset 0
+        -rotation 0
+        -flipX 0
+        -flipY 0
+        -useAlpha 1
+        -font "plainLabelFont" 
+        -imageOverlayLabel "dupBake" 
+        -overlayLabelColor 0.8 0.8 0.8 
+        -overlayLabelBackColor 0 0 0 0.5 
+        -image "/home/abtidona/private/PycharmProjects/RND/dw_tools/ressources/pic_files/dupAnim-512.png" 
+        -image1 "/home/abtidona/private/PycharmProjects/RND/dw_tools/ressources/pic_files/dupAnim-512.png" 
+        -style "iconOnly" 
+        -marginWidth 1
+        -marginHeight 1
+        -command "import dw_duplication as dwdup # reload(dwdup)\nsel = cmds.ls(sl=True)\nobjs = dwdup.dupAnim(sel)" 
+        -sourceType "python" 
+        -commandRepeatable 1
+        -flat 1
+    ;
+    shelfButton
+        -enableCommandRepeat 1
+        -flexibleWidthType 1
+        -flexibleWidthValue 32
+        -enable 1
+        -width 34
+        -height 34
+        -manage 1
+        -visible 1
+        -preventOverride 0
+        -annotation "import maya.cmds as cmds\n# import pymel.core as pm\nimport maya.mel as mel\n\nimport sys\n#----- Edit sysPath -----#\nrdPath = '/home/alexis/Documents/dw_tools/maya/MARZA'\nif not rdPath in sys.path:\n    print \"Add %r to sysPath\" % rdPath\n    sys.path.insert(0, rdPath)\n\nimport dw_duplication as dwdup\n\nsel = cmds.ls(sl=True)\ndwdup.dupWCache(sel)\n\n" 
+        -enableBackground 0
+        -backgroundColor 0 0 0 
+        -highlightColor 0.321569 0.521569 0.65098 
+        -align "center" 
+        -label "dupWCache" 
+        -labelOffset 0
+        -rotation 0
+        -flipX 0
+        -flipY 0
+        -useAlpha 1
+        -font "plainLabelFont" 
+        -imageOverlayLabel "dupWCache" 
+        -overlayLabelColor 0.8 0.8 0.8 
+        -overlayLabelBackColor 0 0 0 0.5 
+        -image "/home/abtidona/private/PycharmProjects/RND/dw_tools/ressources/pic_files/dupWCache-512.png" 
+        -image1 "/home/abtidona/private/PycharmProjects/RND/dw_tools/ressources/pic_files/dupWCache-512.png" 
+        -style "iconOnly" 
+        -marginWidth 1
+        -marginHeight 1
+        -command "import maya.cmds as cmds\n# import pymel.core as pm\nimport maya.mel as mel\n\nimport sys\n#----- Edit sysPath -----#\nrdPath = '/home/alexis/Documents/dw_tools/maya/MARZA'\nif not rdPath in sys.path:\n    print \"Add %r to sysPath\" % rdPath\n    sys.path.insert(0, rdPath)\n\nimport dw_duplication as dwdup\n\nsel = cmds.ls(sl=True)\ndwdup.dupWCache(sel)\n\n" 
+        -sourceType "python" 
+        -commandRepeatable 1
+        -flat 1
+    ;
+    shelfButton
+        -enableCommandRepeat 1
+        -flexibleWidthType 1
+        -flexibleWidthValue 32
+        -enable 1
+        -width 34
+        -height 34
+        -manage 1
+        -visible 1
+        -preventOverride 0
+        -annotation "Delete construction history on the selected object(s)" 
+        -enableBackground 0
+        -backgroundColor 0 0 0 
+        -highlightColor 0.321569 0.521569 0.65098 
+        -align "center" 
+        -label "History" 
+        -labelOffset 0
+        -rotation 0
+        -flipX 0
+        -flipY 0
+        -useAlpha 1
+        -font "plainLabelFont" 
+        -imageOverlayLabel "Hist" 
+        -overlayLabelColor 0.8 0.8 0.8 
+        -overlayLabelBackColor 0 0 0 0.5 
+        -image "menuIconEdit.png" 
+        -image1 "menuIconEdit.png" 
+        -style "iconOnly" 
+        -marginWidth 1
+        -marginHeight 1
+        -command "DeleteHistory" 
+        -sourceType "mel" 
+        -commandRepeatable 1
+        -flat 1
+    ;
+    shelfButton
+        -enableCommandRepeat 1
+        -flexibleWidthType 1
+        -flexibleWidthValue 32
+        -enable 1
+        -width 34
+        -height 34
+        -manage 1
+        -visible 1
+        -preventOverride 0
+        -annotation "Select an object(s)" 
+        -enableBackground 0
+        -backgroundColor 0 0 0 
+        -highlightColor 0.321569 0.521569 0.65098 
+        -align "center" 
+        -label "Freeze Transformations" 
+        -labelOffset 0
+        -rotation 0
+        -flipX 0
+        -flipY 0
+        -useAlpha 1
+        -font "plainLabelFont" 
+        -imageOverlayLabel "FT" 
+        -overlayLabelColor 0.8 0.8 0.8 
+        -overlayLabelBackColor 0 0 0 0.5 
+        -image "menuIconModify.png" 
+        -image1 "menuIconModify.png" 
+        -style "iconOnly" 
+        -marginWidth 1
+        -marginHeight 1
+        -command "FreezeTransformations" 
+        -sourceType "mel" 
+        -commandRepeatable 1
+        -flat 1
+    ;
+    shelfButton
+        -enableCommandRepeat 1
+        -flexibleWidthType 1
+        -flexibleWidthValue 32
+        -enable 1
+        -width 34
+        -height 34
+        -manage 1
+        -visible 1
+        -preventOverride 0
+        -annotation "Select an object(s)" 
+        -enableBackground 0
+        -backgroundColor 0 0 0 
+        -highlightColor 0.321569 0.521569 0.65098 
+        -align "center" 
+        -label "Center Pivot" 
+        -labelOffset 0
+        -rotation 0
+        -flipX 0
+        -flipY 0
+        -useAlpha 1
+        -font "plainLabelFont" 
+        -imageOverlayLabel "CP" 
+        -overlayLabelColor 0.8 0.8 0.8 
+        -overlayLabelBackColor 0 0 0 0.5 
+        -image "menuIconModify.png" 
+        -image1 "menuIconModify.png" 
+        -style "iconOnly" 
+        -marginWidth 1
+        -marginHeight 1
+        -command "CenterPivot" 
+        -sourceType "mel" 
+        -commandRepeatable 1
+        -flat 1
+    ;
+    shelfButton
+        -enableCommandRepeat 1
+        -flexibleWidthType 3
+        -flexibleWidthValue 32
+        -enable 1
+        -width 35
+        -height 34
+        -manage 1
+        -visible 1
+        -preventOverride 0
+        -annotation "Deform objects by modifying a mesh that surrounds them." 
+        -enableBackground 0
+        -backgroundColor 0 0 0 
+        -highlightColor 0.321569 0.521569 0.65098 
+        -align "center" 
+        -label "Wrap" 
+        -labelOffset 0
+        -rotation 0
+        -flipX 0
+        -flipY 0
+        -useAlpha 1
+        -font "plainLabelFont" 
+        -overlayLabelColor 0.8 0.8 0.8 
+        -overlayLabelBackColor 0 0 0 0.5 
+        -image "wrap.png" 
+        -image1 "wrap.png" 
+        -style "iconOnly" 
+        -marginWidth 1
+        -marginHeight 1
+        -command "CreateWrap" 
+        -sourceType "mel" 
+        -commandRepeatable 1
+        -flat 1
+    ;
+    shelfButton
+        -enableCommandRepeat 1
+        -flexibleWidthType 1
+        -flexibleWidthValue 32
+        -enable 1
+        -width 34
+        -height 34
+        -manage 1
+        -visible 1
+        -preventOverride 0
+        -annotation "Create a cluster for the selected object(s)" 
+        -enableBackground 0
+        -backgroundColor 0 0 0 
+        -highlightColor 0.321569 0.521569 0.65098 
+        -align "center" 
+        -label "Cluster" 
+        -labelOffset 0
+        -rotation 0
+        -flipX 0
+        -flipY 0
+        -useAlpha 1
+        -font "plainLabelFont" 
+        -overlayLabelColor 0.8 0.8 0.8 
+        -overlayLabelBackColor 0 0 0 0.5 
+        -image "cluster.png" 
+        -image1 "cluster.png" 
+        -style "iconOnly" 
+        -marginWidth 1
+        -marginHeight 1
+        -command "import maya.mel as mel\nimport maya.cmds as cmds\n\nimport sys\n#----- Edit sysPath -----#\nrdPath = '/home/abtidona/private/PycharmProjects/dw_tools/maya/RFX/'\n\nif not rdPath in sys.path:\n    print \"Add %r to sysPath\" % rdPath\n    sys.path.insert(0, rdPath)\n\nimport dw_maya_utils as dwu\nimport dw_decorators as dwdeco\n\nmySel = dwu.lsTr(sl=True, dag=True, o=True)\n\n@dwdeco.vtxAnimDetection(mySel)\ndef createCluster():\n    mel.eval('CreateCluster')\n\ncreateCluster()" 
+        -sourceType "python" 
+        -commandRepeatable 1
+        -flat 1
+    ;
+    shelfButton
+        -enableCommandRepeat 1
+        -flexibleWidthType 3
+        -flexibleWidthValue 32
+        -enable 1
+        -width 35
+        -height 34
+        -manage 1
+        -visible 1
+        -preventOverride 0
+        -annotation "Create a locator object on the grid" 
+        -enableBackground 0
+        -backgroundColor 0 0 0 
+        -highlightColor 0.321569 0.521569 0.65098 
+        -align "center" 
+        -label "Locator" 
+        -labelOffset 0
+        -rotation 0
+        -flipX 0
+        -flipY 0
+        -useAlpha 1
+        -font "plainLabelFont" 
+        -overlayLabelColor 0.8 0.8 0.8 
+        -overlayLabelBackColor 0 0 0 0.5 
+        -image "locator.png" 
+        -image1 "locator.png" 
+        -style "iconOnly" 
+        -marginWidth 1
+        -marginHeight 1
+        -command "CreateLocator" 
+        -sourceType "mel" 
+        -commandRepeatable 1
+        -flat 1
+    ;
+    shelfButton
+        -enableCommandRepeat 1
+        -flexibleWidthType 1
+        -flexibleWidthValue 32
+        -enable 1
+        -width 34
+        -height 34
+        -manage 1
+        -visible 1
+        -preventOverride 0
+        -annotation "import dw_mRivet\n\nsel = cmds.ls(sl=True)\nmrivet = dw_mRivet.cMuscleSurfAttachSetup(sel)" 
+        -enableBackground 0
+        -backgroundColor 0 0 0 
+        -highlightColor 0.321569 0.521569 0.65098 
+        -align "center" 
+        -label "mRivet" 
+        -labelOffset 0
+        -rotation 0
+        -flipX 0
+        -flipY 0
+        -useAlpha 1
+        -font "plainLabelFont" 
+        -imageOverlayLabel "mRivet" 
+        -overlayLabelColor 0.8 0.8 0.8 
+        -overlayLabelBackColor 0 0 0 0.5 
+        -image "channelBoxUseManips.png" 
+        -image1 "channelBoxUseManips.png" 
+        -style "iconOnly" 
+        -marginWidth 1
+        -marginHeight 1
+        -command "import dw_mRivet\n\nsel = cmds.ls(sl=True)\nmrivet = dw_mRivet.cMuscleSurfAttachSetup(sel)" 
+        -sourceType "python" 
+        -commandRepeatable 1
+        -flat 1
+    ;
+    shelfButton
+        -enableCommandRepeat 1
+        -flexibleWidthType 1
+        -flexibleWidthValue 32
+        -enable 1
+        -width 34
+        -height 34
+        -manage 1
+        -visible 1
+        -preventOverride 0
+        -annotation "mesh then rivet" 
+        -enableBackground 0
+        -backgroundColor 0 0 0 
+        -highlightColor 0.321569 0.521569 0.65098 
+        -align "center" 
+        -label "attachToRivet" 
+        -labelOffset 0
+        -rotation 0
+        -flipX 0
+        -flipY 0
+        -useAlpha 1
+        -font "plainLabelFont" 
+        -imageOverlayLabel "attachToRivet" 
+        -overlayLabelColor 0.8 0.8 0.8 
+        -overlayLabelBackColor 0 0 0 0.5 
+        -image "condition.svg" 
+        -image1 "condition.svg" 
+        -style "iconOnly" 
+        -marginWidth 1
+        -marginHeight 1
+        -command "__author__ = 'abaudoin'\n\nimport maya.cmds as cmds\n\nsel = cmds.ls(sl=True)\nrivet = sel[-1]\nmesh = sel[0]\n\ncoord01 = cmds.xform(rivet, query=True, t=True)\ncmds.xform(mesh, rotatePivot=coord01)\ncmds.xform(mesh, scalePivot=coord01)\n\ncmds.parentConstraint(rivet, mesh, mo=True, skipRotate=('x', 'y', 'z'), weight=1)\n" 
+        -sourceType "python" 
+        -commandRepeatable 1
+        -flat 1
+        -mi "withRotate" ( "__author__ = 'abaudoin'\n\nimport maya.cmds as cmds\n\nsel = cmds.ls(sl=True)\nrivet = sel[-1]\nmesh = sel[0]\n\ncoord01 = cmds.xform(rivet, query=True, t=True)\ncmds.xform(mesh, rotatePivot=coord01)\ncmds.xform(mesh, scalePivot=coord01)\n\ncmds.parentConstraint(rivet, mesh, mo=True, weight=1)\n" )
+        -mip 0
+    ;
+    shelfButton
+        -enableCommandRepeat 1
+        -flexibleWidthType 1
+        -flexibleWidthValue 32
+        -enable 1
+        -width 34
+        -height 34
+        -manage 1
+        -visible 1
+        -preventOverride 0
+        -annotation "import cloth_artist_tools.rmaya.cloth_tweak as makeaTweak\nmakeaTweak.CfxTweak()" 
+        -enableBackground 0
+        -backgroundColor 0 0 0 
+        -highlightColor 0.321569 0.521569 0.65098 
+        -align "center" 
+        -label "sticky" 
+        -labelOffset 0
+        -rotation 0
+        -flipX 0
+        -flipY 0
+        -useAlpha 1
+        -font "plainLabelFont" 
+        -imageOverlayLabel "sticky" 
+        -overlayLabelColor 0.8 0.8 0.8 
+        -overlayLabelBackColor 0 0 0 0.5 
+        -image "/code/publish/cloth_artist_tools/master/0.46.1/rmaya/cfx_shelf/icons/tweakTool.png" 
+        -image1 "/code/publish/cloth_artist_tools/master/0.46.1/rmaya/cfx_shelf/icons/tweakTool.png" 
+        -style "iconOnly" 
+        -marginWidth 1
+        -marginHeight 1
+        -command "import maya.mel as mel\nimport maya.cmds as cmds\n\nimport sys\n#----- Edit sysPath -----#\nrdPath = '/home/abtidona/private/PycharmProjects/dw_tools/maya/RFX/'\n\nif not rdPath in sys.path:\n    print \"Add %r to sysPath\" % rdPath\n    sys.path.insert(0, rdPath)\n\nimport dw_decorators as dwdeco\nimport dw_maya_utils as dwu\nimport cloth_artist_tools.rmaya.cloth_tweak as makeaTweak\n\nmySel = dwu.lsTr(sl=True, o=True)\n\n@dwdeco.vtxAnimDetection(mySel)\ndef createSticky():\n    sticky = makeaTweak.CfxTweak()\n\n    attr = dwu.add_attr(sticky.handle, \"falloffMode\", attr_type=\"enum\", en=\"Volume:Surface:\")\n    cmds.connectAttr(attr, sticky.name + '.falloffMode', f=True)\n\ncreateSticky()\n\n\n\n" 
+        -sourceType "python" 
+        -commandRepeatable 1
+        -flat 1
+    ;
+    shelfButton
+        -enableCommandRepeat 1
+        -flexibleWidthType 1
+        -flexibleWidthValue 32
+        -enable 1
+        -width 34
+        -height 34
+        -manage 1
+        -visible 1
+        -preventOverride 0
+        -annotation "bs empty" 
+        -enableBackground 0
+        -backgroundColor 0 0 0 
+        -highlightColor 0.321569 0.521569 0.65098 
+        -align "center" 
+        -label "bs00" 
+        -labelOffset 0
+        -rotation 0
+        -flipX 0
+        -flipY 0
+        -useAlpha 1
+        -font "plainLabelFont" 
+        -imageOverlayLabel "bs00" 
+        -overlayLabelColor 0.8 0.8 0.8 
+        -overlayLabelBackColor 0.9999 0 0 0.5 
+        -image "blendShape.png" 
+        -image1 "blendShape.png" 
+        -style "iconOnly" 
+        -marginWidth 1
+        -marginHeight 1
+        -command "import maya.cmds as cmds\nimport maya.OpenMaya as om\n\nimport sys\n# ----- Edit sysPath -----#\nrdPath = '/home/abtidona/private/PycharmProjects/dw_tools/maya/RFX/'\nif not rdPath in sys.path:\n    print \"Add %r to sysPath\" % rdPath\n    sys.path.insert(0, rdPath)\n\n#base weight to base weight only ---> BS_transfer_baseWeight(BS02, baseWeight_values)\ndef BS_transfer_baseWeight(bs_node, baseWeight_list, *args):\n    nb = len(baseWeight_list)\n    cmds.setAttr(bs_node + '.inputTarget[0].baseWeights[0:' + str(nb-1) + ']', *baseWeight_list, size=nb)\n\nimport dw_decorators as dwdeco\n\nmySel = cmds.ls(sl=True)\n\n@dwdeco.vtxAnimDetection(mySel[-1])\ndef doIt(bnode, targ):\n\n    bs_Name = cmds.blendShape(bnode,targ, en=1, tc=1, o='world', w=(0,1))\n    return bs_Name\n\nmySel = cmds.ls(sl=True)\nbs_Name = doIt(mySel[0:-1], mySel[-1])\n    \nnbVtx = cmds.polyEvaluate(mySel[-1], v=True)\nweight0 = [0] * nbVtx\n    \nBS_transfer_baseWeight(bs_Name[0], weight0)\n    \nmsg = bs_Name[0] + ' has been created\\nTargets :\\n' + str(',\\n'.join(mySel[0:-1])) + '\\nto :\\n' + mySel[-1]\nom.MGlobal.displayInfo(msg)\n\n" 
+        -sourceType "python" 
+        -commandRepeatable 1
+        -flat 1
+    ;
+    shelfButton
+        -enableCommandRepeat 1
+        -flexibleWidthType 1
+        -flexibleWidthValue 32
+        -enable 1
+        -width 34
+        -height 34
+        -manage 1
+        -visible 1
+        -preventOverride 0
+        -annotation "bs with weight full" 
+        -enableBackground 0
+        -backgroundColor 0 0 0 
+        -highlightColor 0.321569 0.521569 0.65098 
+        -align "center" 
+        -label "bs01" 
+        -labelOffset 0
+        -rotation 0
+        -flipX 0
+        -flipY 0
+        -useAlpha 1
+        -font "plainLabelFont" 
+        -imageOverlayLabel "bs01" 
+        -overlayLabelColor 0 0 0 
+        -overlayLabelBackColor 0 1 0 0.5 
+        -image "blendShape.png" 
+        -image1 "blendShape.png" 
+        -style "iconOnly" 
+        -marginWidth 1
+        -marginHeight 1
+        -command "import maya.cmds as cmds\nimport maya.OpenMaya as om\n\nimport sys\n#----- Edit sysPath -----#\nrdPath = '/home/abtidona/private/PycharmProjects/dw_tools/maya/RFX/'\n\nif not rdPath in sys.path:\n    print \"Add %r to sysPath\" % rdPath\n    sys.path.insert(0, rdPath)\n\nimport dw_decorators as dwdeco\n\nmySel = cmds.ls(sl=True)\n\n@dwdeco.vtxAnimDetection(mySel[-1])\ndef doIt(bnode, targ):\n\n    bs_Name = cmds.blendShape(bnode,targ, en=1, tc=1, o='world', w=(0,1))\n    return bs_Name\n\nbs_Name = doIt(mySel[0:-1], mySel[-1])\nmsg = bs_Name[0] + ' has been created\\nTargets :\\n' + str(',\\n'.join(mySel[0:-1])) + '\\nto :\\n' + mySel[-1]\nom.MGlobal.displayInfo(msg)\n#api.MGlobal.displayWarning / displayError\n#OpenMaya.MGlobal.displayInfo(msg) / OpenMaya.MGlobal.displayWarning(msg) / OpenMaya.MGlobal.displayError(msg)\n\n" 
+        -sourceType "python" 
+        -commandRepeatable 1
+        -flat 1
+    ;
+    shelfButton
+        -enableCommandRepeat 1
+        -flexibleWidthType 1
+        -flexibleWidthValue 32
+        -enable 1
+        -width 34
+        -height 34
+        -manage 1
+        -visible 1
+        -preventOverride 0
+        -annotation "import sys\n# ----- Edit sysPath -----#\nrdPath = '/home/abtidona/private/PycharmProjects/dw_tools/maya/RFX/'\nif not rdPath in sys.path:\n    print \"Add %r to sysPath\" % rdPath\n    sys.path.insert(0, rdPath)\n    \nimport maya.cmds as cmds\nimport dw_channelBox_utils as dwchbox\n\ndef conformPreroll(frameSpacing=int(1), *args):\n    mySel = dwchbox.getChannels()\n\n    myMinTime = int(cmds.playbackOptions(min=1))  # currentFrame\n    prerollEnd = myMinTime + 30\n    value = cmds.getAttr(mySel)\n\n    for i in mySel:\n        cmds.setKeyframe(i.split('.')[0], attribute=i.split('.')[-1], t=[myMinTime, myMinTime + 10], v=0)\n        cmds.setKeyframe(i.split('.')[0], attribute=i.split('.')[-1], t=prerollEnd, v=value)\n\nconformPreroll()" 
+        -enableBackground 0
+        -backgroundColor 0 0 0 
+        -highlightColor 0.321569 0.521569 0.65098 
+        -align "center" 
+        -label "prerollConform" 
+        -labelOffset 0
+        -rotation 0
+        -flipX 0
+        -flipY 0
+        -useAlpha 1
+        -font "plainLabelFont" 
+        -imageOverlayLabel "prerollConform" 
+        -overlayLabelColor 0.8 0.8 0.8 
+        -overlayLabelBackColor 0 0 0 0.5 
+        -image "pythonFamily.png" 
+        -image1 "pythonFamily.png" 
+        -style "iconOnly" 
+        -marginWidth 1
+        -marginHeight 1
+        -command "import sys\n# ----- Edit sysPath -----#\nrdPath = '/home/abtidona/private/PycharmProjects/dw_tools/maya/RFX/'\nif not rdPath in sys.path:\n    print \"Add %r to sysPath\" % rdPath\n    sys.path.insert(0, rdPath)\n    \nimport maya.cmds as cmds\nimport dw_channelBox_utils as dwchbox\n\ndef conformPreroll(frameSpacing=int(1), *args):\n    mySel = dwchbox.getChannels()\n\n    myMinTime = int(cmds.playbackOptions(min=1))  # currentFrame\n    prerollEnd = myMinTime + 30\n    value = cmds.getAttr(mySel)\n\n    for i in mySel:\n        cmds.setKeyframe(i.split('.')[0], attribute=i.split('.')[-1], t=[myMinTime, myMinTime + 10], v=0)\n        cmds.setKeyframe(i.split('.')[0], attribute=i.split('.')[-1], t=prerollEnd, v=value)\n\nconformPreroll()" 
+        -sourceType "python" 
+        -commandRepeatable 1
+        -flat 1
+    ;
+    shelfButton
+        -enableCommandRepeat 1
+        -flexibleWidthType 3
+        -flexibleWidthValue 32
+        -enable 1
+        -width 35
+        -height 34
+        -manage 1
+        -visible 1
+        -preventOverride 0
+        -annotation "\nfrom maya import cmds\nfor item in cmds.ls( \"*_REN\" ):\n    try:\n        cmds.setAttr( \"%s.aiSubdivType\" % item, 1 )\n        cmds.setAttr( \"%s.aiSubdivIterations\" % item, 2 )\n        cmds.setAttr( \"%s.aiOpaque\" % item, 1 )\n        cmds.setAttr( \"%s.aiSelfShadows\" % item, 1 )\n    except: pass" 
+        -enableBackground 0
+        -backgroundColor 0 0 0 
+        -highlightColor 0.321569 0.521569 0.65098 
+        -align "center" 
+        -label "aiSmooth" 
+        -labelOffset 0
+        -rotation 0
+        -flipX 0
+        -flipY 0
+        -useAlpha 1
+        -font "plainLabelFont" 
+        -imageOverlayLabel "aiSmooth" 
+        -overlayLabelColor 0.8 0.8 0.8 
+        -overlayLabelBackColor 0 0 0 0.5 
+        -image "pythonFamily.png" 
+        -image1 "pythonFamily.png" 
+        -style "iconOnly" 
+        -marginWidth 1
+        -marginHeight 1
+        -command "\nfrom maya import cmds\nfor item in cmds.ls( \"*_REN\" ):\n    try:\n        cmds.setAttr( \"%s.aiSubdivType\" % item, 1 )\n        cmds.setAttr( \"%s.aiSubdivIterations\" % item, 2 )\n        cmds.setAttr( \"%s.aiOpaque\" % item, 1 )\n        cmds.setAttr( \"%s.aiSelfShadows\" % item, 1 )\n    except: pass" 
+        -sourceType "python" 
+        -commandRepeatable 1
+        -flat 1
+    ;
+    shelfButton
+        -enableCommandRepeat 1
+        -flexibleWidthType 3
+        -flexibleWidthValue 32
+        -enable 1
+        -width 35
+        -height 34
+        -manage 1
+        -visible 1
+        -preventOverride 0
+        -annotation "grass ui" 
+        -enableBackground 0
+        -backgroundColor 0 0 0 
+        -highlightColor 0.321569 0.521569 0.65098 
+        -align "center" 
+        -label "import sys\n# ----- Edit sysPath -----#\nrdPath = '/people/ptorrev..." 
+        -labelOffset 0
+        -rotation 0
+        -flipX 0
+        -flipY 0
+        -useAlpha 1
+        -font "plainLabelFont" 
+        -imageOverlayLabel "grassUI" 
+        -overlayLabelColor 0.8 0.8 0.8 
+        -overlayLabelBackColor 0 0 0 0.5 
+        -image "pythonFamily.png" 
+        -image1 "pythonFamily.png" 
+        -style "iconOnly" 
+        -marginWidth 1
+        -marginHeight 1
+        -command "import sys\n# ----- Edit sysPath -----#\nrdPath = '/people/ptorrevillas/public/py_scripts/xg_shot_render/'\nif not rdPath in sys.path:\n    print \"Add %r to sysPath\" % rdPath\n    sys.path.insert(0, rdPath)\n    # /mounts/elmo/net_home/ptorrevillas/public/py_scripts/xg_shot_render/grass_ui.py\nimport grass_ui\nreload(grass_ui)\ngrasswin = grass_ui.open()\n" 
+        -sourceType "python" 
+        -commandRepeatable 1
+        -flat 1
+    ;
+    shelfButton
+        -enableCommandRepeat 1
+        -flexibleWidthType 3
+        -flexibleWidthValue 32
+        -enable 1
+        -width 35
+        -height 34
+        -manage 1
+        -visible 1
+        -preventOverride 0
+        -annotation "import sys\n# ----- Edit sysPath -----#\nrdPath = '/people/acportillo/public/py_scripts/local_render'\nif not rdPath in sys.path:\n    print \"Add %r to sysPath\" % rdPath\n    sys.path.insert(0, rdPath)\nimport renderlocal\n\n\nrenderlocal.start()\n" 
+        -enableBackground 0
+        -backgroundColor 0 0 0 
+        -highlightColor 0.321569 0.521569 0.65098 
+        -align "center" 
+        -label "render_local" 
+        -labelOffset 0
+        -rotation 0
+        -flipX 0
+        -flipY 0
+        -useAlpha 1
+        -font "plainLabelFont" 
+        -imageOverlayLabel "render_local" 
+        -overlayLabelColor 0.8 0.8 0.8 
+        -overlayLabelBackColor 0 0 0 0.5 
+        -image "pythonFamily.png" 
+        -image1 "pythonFamily.png" 
+        -style "iconOnly" 
+        -marginWidth 1
+        -marginHeight 1
+        -command "import sys\n# ----- Edit sysPath -----#\nrdPath = '/people/acportillo/public/py_scripts/local_render'\nif not rdPath in sys.path:\n    print \"Add %r to sysPath\" % rdPath\n    sys.path.insert(0, rdPath)\nimport renderlocal\n\n\nrenderlocal.start()\n" 
+        -sourceType "python" 
+        -commandRepeatable 1
+        -flat 1
+    ;
+    shelfButton
+        -enableCommandRepeat 1
+        -flexibleWidthType 3
+        -flexibleWidthValue 32
+        -enable 1
+        -width 35
+        -height 34
+        -manage 1
+        -visible 1
+        -preventOverride 0
+        -annotation "show input current correctly" 
+        -enableBackground 0
+        -backgroundColor 0 0 0 
+        -highlightColor 0.321569 0.521569 0.65098 
+        -align "center" 
+        -label "import maya.cmds as cmds\n\ndef show_inp_curr():\n\n    # Show Curre..." 
+        -labelOffset 0
+        -rotation 0
+        -flipX 0
+        -flipY 0
+        -useAlpha 1
+        -font "plainLabelFont" 
+        -imageOverlayLabel "showInpCurrent" 
+        -overlayLabelColor 0.8 0.8 0.8 
+        -overlayLabelBackColor 0 0 0 0.5 
+        -image "Pinch.png" 
+        -image1 "Pinch.png" 
+        -style "iconOnly" 
+        -marginWidth 1
+        -marginHeight 1
+        -command "import maya.cmds as cmds\n\ndef show_inp_curr():\n\n    # Show Current MEsh\n    selection = cmds.ls(sl=True, dag=True, ni = True, type='mesh')\n    for sel in selection:\n        nCloths = cmds.listConnections(sel, sh=1, type='nCloth')\n        if not nCloths:\n            cmds.error()\n        iMesh = cmds.listConnections('{}.{}'.format(nCloths[0], 'inputMesh'), sh=1, type='mesh') or []\n        oMesh = cmds.listConnections('{}.{}'.format(nCloths[0], 'outputMesh'), sh=1, type='mesh') or []\n\n        if not iMesh and not oMesh:\n            cmds.error()\n        elif iMesh[0] != sel:\n            cmds.setAttr('{}.{}'.format(sel, 'intermediateObject'), 1)\n            cmds.setAttr('{}.{}'.format(iMesh[0], 'intermediateObject'), 0)\n        elif iMesh[0] == sel:\n            oMesh = cmds.listConnections('{}.{}'.format(nCloths[0], 'outputMesh'), sh=1, type='mesh')\n            cmds.setAttr('{}.{}'.format(oMesh[0], 'intermediateObject'), 0)\n            cmds.setAttr('{}.{}'.format(iMesh[0], 'intermediateObject'), 1)\n\nshow_inp_curr()" 
+        -sourceType "python" 
+        -commandRepeatable 1
+        -flat 1
+    ;
+    shelfButton
+        -enableCommandRepeat 1
+        -flexibleWidthType 3
+        -flexibleWidthValue 32
+        -enable 1
+        -width 35
+        -height 34
+        -manage 1
+        -visible 1
+        -preventOverride 0
+        -annotation "import dw_pkf as pkf\npkf.showUI()" 
+        -enableBackground 0
+        -backgroundColor 0 0 0 
+        -highlightColor 0.321569 0.521569 0.65098 
+        -align "center" 
+        -label "pkf" 
+        -labelOffset 0
+        -rotation 0
+        -flipX 0
+        -flipY 0
+        -useAlpha 1
+        -font "plainLabelFont" 
+        -imageOverlayLabel "pkf" 
+        -overlayLabelColor 0.8 0.8 0.8 
+        -overlayLabelBackColor 0 0 0 0.5 
+        -image "pythonFamily.png" 
+        -image1 "pythonFamily.png" 
+        -style "iconOnly" 
+        -marginWidth 1
+        -marginHeight 1
+        -command "import dw_pkf as pkf\npkf.showUI()" 
+        -sourceType "python" 
+        -commandRepeatable 1
+        -flat 1
+    ;
+    shelfButton
+        -enableCommandRepeat 1
+        -flexibleWidthType 3
+        -flexibleWidthValue 32
+        -enable 1
+        -width 35
+        -height 34
+        -manage 1
+        -visible 1
+        -preventOverride 0
+        -annotation "Convert polygon edges to nurbs curves." 
+        -enableBackground 0
+        -backgroundColor 0 0 0 
+        -highlightColor 0.321569 0.521569 0.65098 
+        -align "center" 
+        -label "Polygon Edges to Curve" 
+        -labelOffset 0
+        -rotation 0
+        -flipX 0
+        -flipY 0
+        -useAlpha 1
+        -font "plainLabelFont" 
+        -overlayLabelColor 0.8 0.8 0.8 
+        -overlayLabelBackColor 0 0 0 0.5 
+        -image "polyEdgeToCurves.png" 
+        -image1 "polyEdgeToCurves.png" 
+        -style "iconOnly" 
+        -marginWidth 1
+        -marginHeight 1
+        -command "CreateCurveFromPoly" 
+        -sourceType "mel" 
+        -commandRepeatable 1
+        -flat 1
+    ;
+    shelfButton
+        -enableCommandRepeat 1
+        -flexibleWidthType 3
+        -flexibleWidthValue 32
+        -enable 1
+        -width 35
+        -height 34
+        -manage 1
+        -visible 1
+        -preventOverride 0
+        -annotation "Rebuild curve options" 
+        -enableBackground 0
+        -backgroundColor 0 0 0 
+        -highlightColor 0.321569 0.521569 0.65098 
+        -align "center" 
+        -label "Rebuild Curve Option Box" 
+        -labelOffset 0
+        -rotation 0
+        -flipX 0
+        -flipY 0
+        -useAlpha 1
+        -font "plainLabelFont" 
+        -overlayLabelColor 0.8 0.8 0.8 
+        -overlayLabelBackColor 0 0 0 0.5 
+        -image "rebuildCurve.png" 
+        -image1 "rebuildCurve.png" 
+        -style "iconOnly" 
+        -marginWidth 1
+        -marginHeight 1
+        -command "RebuildCurveOptions" 
+        -sourceType "mel" 
+        -commandRepeatable 1
+        -flat 1
+    ;
+    shelfButton
+        -enableCommandRepeat 1
+        -flexibleWidthType 3
+        -flexibleWidthValue 32
+        -enable 1
+        -width 35
+        -height 34
+        -manage 1
+        -visible 1
+        -preventOverride 0
+        -annotation "import maya.cmds as cmds\n\nnucx = cmds.ls(type='nucleus')\nfor n in nucx:\n    vis = n + '.visibility'\n    cmds.setAttr(vis, 0)\n    cmds.connectAttr(vis, n + '.enable')\n" 
+        -enableBackground 0
+        -backgroundColor 0 0 0 
+        -highlightColor 0.321569 0.521569 0.65098 
+        -align "center" 
+        -label "nucCtrl" 
+        -labelOffset 0
+        -rotation 0
+        -flipX 0
+        -flipY 0
+        -useAlpha 1
+        -font "plainLabelFont" 
+        -imageOverlayLabel "nucCtrl" 
+        -overlayLabelColor 0.8 0.8 0.8 
+        -overlayLabelBackColor 0 0 0 0.5 
+        -image "nucleus.svg" 
+        -image1 "nucleus.svg" 
+        -style "iconOnly" 
+        -marginWidth 1
+        -marginHeight 1
+        -command "import maya.cmds as cmds\n\nnucx = cmds.ls(type='nucleus')\nfor n in nucx:\n    vis = n + '.visibility'\n    ena = n + '.enable'\n    cmds.setAttr(vis, 0)\n    con = cmds.listConnections(ena, type='nucleus')\n    if not con:\n        cmds.connectAttr(vis, ena)\n" 
+        -sourceType "python" 
+        -commandRepeatable 1
+        -flat 1
+    ;
+    shelfButton
+        -enableCommandRepeat 1
+        -flexibleWidthType 3
+        -flexibleWidthValue 32
+        -enable 1
+        -width 35
+        -height 34
+        -manage 1
+        -visible 1
+        -preventOverride 0
+        -annotation "Filter deformation artifacts and smooth the result." 
+        -enableBackground 0
+        -backgroundColor 0 0 0 
+        -highlightColor 0.321569 0.521569 0.65098 
+        -align "center" 
+        -label "Delta Mush" 
+        -labelOffset 0
+        -rotation 0
+        -flipX 0
+        -flipY 0
+        -useAlpha 1
+        -font "plainLabelFont" 
+        -imageOverlayLabel "DM" 
+        -overlayLabelColor 0.8 0.8 0.8 
+        -overlayLabelBackColor 0 0 0 0.5 
+        -image "menuIconDeformations.png" 
+        -image1 "menuIconDeformations.png" 
+        -style "iconOnly" 
+        -marginWidth 1
+        -marginHeight 1
+        -command "#!/usr/bin/env python\n#----------------------------------------------------------------------------#\n#------------------------------------------------------------------ HEADER --#\n\n\"\"\"\n@author:\n    abtidona\n\n@description:\n    this is a description\n\n@applications:\n    - groom\n    - cfx\n    - fur\n\"\"\"\n\n#----------------------------------------------------------------------------#\n#----------------------------------------------------------------- IMPORTS --#\n\n# built-in\nimport sys\n#----- Edit sysPath -----#\nrdPath = '/home/abtidona/private/PycharmProjects/dw_tools/maya/RFX/'\nif not rdPath in sys.path:\n    print \"Add %r to sysPath\" % rdPath\n    sys.path.insert(0, rdPath)\n\n# internal\n\nimport maya.mel as mel\nimport maya.cmds as cmds\n\n# external\nimport dw_decorators as dwdeco\n\n#----------------------------------------------------------------------------#\n#----------------------------------------------------------------- GLOBALS --#\n\nmySel = cmds.ls(sl=True)\n\n#----------------------------------------------------------------------------#\n#---------------------------------------------------------------   CLASSES --#\n\n\n#----------------------------------------------------------------------------#\n#--------------------------------------------------------------- FUNCTIONS --#\n\n@dwdeco.vtxAnimDetection(mySel)\ndef createMush():\n    mel.eval('DeltaMush')\n\ncreateMush()" 
+        -sourceType "python" 
+        -commandRepeatable 1
+        -flat 1
+    ;
+    shelfButton
+        -enableCommandRepeat 1
+        -flexibleWidthType 3
+        -flexibleWidthValue 32
+        -enable 1
+        -width 35
+        -height 34
+        -manage 1
+        -visible 1
+        -preventOverride 0
+        -annotation "Preset Manager" 
+        -enableBackground 0
+        -backgroundColor 0 0 0 
+        -highlightColor 0.321569 0.521569 0.65098 
+        -align "center" 
+        -label "PresetManager" 
+        -labelOffset 0
+        -rotation 0
+        -flipX 0
+        -flipY 0
+        -useAlpha 1
+        -font "plainLabelFont" 
+        -imageOverlayLabel "Preset Manager" 
+        -overlayLabelColor 0.8 0.8 0.8 
+        -overlayLabelBackColor 0 0 0 0.5 
+        -image "commandButton.png" 
+        -image1 "commandButton.png" 
+        -style "iconOnly" 
+        -marginWidth 1
+        -marginHeight 1
+        -command "import PresetTool.main_ui as pmuiMain\ntry:\n    pmui.deleteLater()\nexcept:\n    pass\npresetMan = pmuiMain.PresetManager()\npresetMan.show()\n" 
+        -sourceType "python" 
+        -commandRepeatable 1
+        -flat 1
+    ;
+    shelfButton
+        -enableCommandRepeat 1
+        -flexibleWidthType 3
+        -flexibleWidthValue 32
+        -enable 1
+        -width 35
+        -height 34
+        -manage 1
+        -visible 1
+        -preventOverride 0
+        -annotation "import tempfile, os, getpass, commands\ntmpdir = tempfile.gettempdir()\ncache_dir = os.path.join( tmpdir, getpass.getuser(), \"rfx_fur\" )\nif os.path.exists( cache_dir ):\n    commands.getoutput( \"rm %s/*\" % cache_dir )\n    print \"Cleaned %s\" % cache_dir" 
+        -enableBackground 0
+        -backgroundColor 0 0 0 
+        -highlightColor 0.321569 0.521569 0.65098 
+        -align "center" 
+        -label "xgenCleanLocal" 
+        -labelOffset 0
+        -rotation 0
+        -flipX 0
+        -flipY 0
+        -useAlpha 1
+        -font "plainLabelFont" 
+        -imageOverlayLabel "xgenCleanLocal" 
+        -overlayLabelColor 0.8 0.8 0.8 
+        -overlayLabelBackColor 0 0 0 0.5 
+        -image "pythonFamily.png" 
+        -image1 "pythonFamily.png" 
+        -style "iconOnly" 
+        -marginWidth 1
+        -marginHeight 1
+        -command "import tempfile, os, getpass, commands\ntmpdir = tempfile.gettempdir()\ncache_dir = os.path.join( tmpdir, getpass.getuser(), \"rfx_fur\" )\nif os.path.exists( cache_dir ):\n    commands.getoutput( \"rm %s/*\" % cache_dir )\n    print \"Cleaned %s\" % cache_dir" 
+        -sourceType "python" 
+        -commandRepeatable 1
+        -flat 1
+    ;
+    shelfButton
+        -enableCommandRepeat 1
+        -flexibleWidthType 3
+        -flexibleWidthValue 32
+        -enable 1
+        -width 35
+        -height 34
+        -manage 1
+        -visible 1
+        -preventOverride 0
+        -annotation "import maya.cmds as cmds\nfrom collections import defaultdict\nimport dw_maya_utils as dwu\nimport dw_duplication as dwdup\n\nsel = cmds.ls('*:sim_MESH', dag=True, type='mesh')\n\ncloth_out = [i for i in sel if i.endswith('OUTPUTShape')]\nto_process = defaultdict(list)\nfor c in cloth_out:\n    hist = cmds.listHistory(c, f=True)\n    msh = [h for h in hist if cmds.nodeType(h) == 'mesh' and '_POSTSIM' in h]\n    asset = c.split(':')[0]\n    if not msh:\n        to_process[asset].append(c)\n    \nfor a7 in to_process:\n    grp_name = '{}:postsim_MESH'.format(a7)\n    sim_grp = '{}:meshes'.format(a7)\n    if not cmds.objExists(grp_name):\n        cmds.group(em=True, name=grp_name)\n        \n    tr = dwu.lsTr(to_process[a7])\n    items = dwdup.outmesh(tr) # i = items[0]\n    new_names = ['{}:{}_POSTSIM'.format(a7, i.rsplit('_', 3)[0]) for i in items]\n    postsim = [cmds.rename(j[0], j[1]) for j in zip(items, new_names)]\n    \n    for ps in postsim:\n        cmds.parent(ps, grp_name)\n    for t, p in zip(tr, postsim):\n        # t = tr[0]\n        cvWraps = cmds.listConnections(cmds.listRelatives(t), type='cvWrap')\n        msh_out = dwu.get_type_io(p)\n        if cvWraps:\n            for cvw in cvWraps:\n                # cvw = cvWraps[0]\n                cvw_in = dwu.get_type_io(cvw, io=0)[0]\n                cmds.connectAttr(msh_out, cvw_in, force=True)\n\n\n\n" 
+        -enableBackground 0
+        -backgroundColor 0 0 0 
+        -highlightColor 0.321569 0.521569 0.65098 
+        -align "center" 
+        -label "postsim_layer" 
+        -labelOffset 0
+        -rotation 0
+        -flipX 0
+        -flipY 0
+        -useAlpha 1
+        -font "plainLabelFont" 
+        -imageOverlayLabel "postsim_layer" 
+        -overlayLabelColor 0.8 0.8 0.8 
+        -overlayLabelBackColor 0 0 0 0.5 
+        -image "pythonFamily.png" 
+        -image1 "pythonFamily.png" 
+        -style "iconOnly" 
+        -marginWidth 1
+        -marginHeight 1
+        -command "import maya.cmds as cmds\nfrom collections import defaultdict\nimport dw_maya_utils as dwu\nimport dw_duplication as dwdup\n\nsel = cmds.ls('*:sim_MESH', dag=True, type='mesh')\n\ncloth_out = [i for i in sel if i.endswith('OUTPUTShape')]\nto_process = defaultdict(list)\nfor c in cloth_out:\n    hist = cmds.listHistory(c, f=True)\n    msh = [h for h in hist if cmds.nodeType(h) == 'mesh' and '_POSTSIM' in h]\n    asset = c.split(':')[0]\n    if not msh:\n        to_process[asset].append(c)\n    \nfor a7 in to_process:\n    grp_name = '{}:postsim_MESH'.format(a7)\n    sim_grp = '{}:meshes'.format(a7)\n    if not cmds.objExists(grp_name):\n        cmds.group(em=True, name=grp_name)\n        \n    tr = dwu.lsTr(to_process[a7])\n    items = dwdup.outmesh(tr) # i = items[0]\n    new_names = ['{}:{}_POSTSIM'.format(a7, i.rsplit('_', 3)[0]) for i in items]\n    postsim = [cmds.rename(j[0], j[1]) for j in zip(items, new_names)]\n    \n    for ps in postsim:\n        cmds.parent(ps, grp_name)\n    for t, p in zip(tr, postsim):\n        # t = tr[0]\n        cvWraps = cmds.listConnections(cmds.listRelatives(t), type='cvWrap')\n        msh_out = dwu.get_type_io(p)\n        if cvWraps:\n            for cvw in cvWraps:\n                # cvw = cvWraps[0]\n                cvw_in = dwu.get_type_io(cvw, io=0)[0]\n                cmds.connectAttr(msh_out, cvw_in, force=True)\n\n\n\n" 
+        -sourceType "python" 
+        -commandRepeatable 1
+        -flat 1
+    ;
+    shelfButton
+        -enableCommandRepeat 1
+        -flexibleWidthType 3
+        -flexibleWidthValue 32
+        -enable 1
+        -width 35
+        -height 34
+        -manage 1
+        -visible 1
+        -preventOverride 0
+        -annotation "import sys\n# ----- Edit sysPath -----#\nrdPath = '/home/abtidona/private/PycharmProjects/dw_tools/maya/RFX/'\nif not rdPath in sys.path:\n    print \"Add %r to sysPath\" % rdPath\n    sys.path.insert(0, rdPath)\n\nimport maya.cmds as cmds\nimport dw_presets_io as dwpresets\n\nsel = cmds.ls(sl=True, fl=True)\ndeformer = [i for i in sel if dwpresets.isDeformer(i)][0]\ncomponents = [i for i in sel if '.' in sel]\nif not components:\n    objs = [i for i in sel if cmds.ls(i, dag=True, type=['mesh', 'nurbsCurve'])]\nif components:\n    dwpresets.editDeformer(deformer, components, add=True)\nelse:\n    dwpresets.editDeformer(deformer, objs, add=True)\n" 
+        -enableBackground 0
+        -backgroundColor 0 0 0 
+        -highlightColor 0.321569 0.521569 0.65098 
+        -align "center" 
+        -label "add_to_deformer" 
+        -labelOffset 0
+        -rotation 0
+        -flipX 0
+        -flipY 0
+        -useAlpha 1
+        -font "plainLabelFont" 
+        -imageOverlayLabel "add_to_deformer" 
+        -overlayLabelColor 0.8 0.8 0.8 
+        -overlayLabelBackColor 0 0 0 0.5 
+        -image "pythonFamily.png" 
+        -image1 "pythonFamily.png" 
+        -style "iconOnly" 
+        -marginWidth 1
+        -marginHeight 1
+        -command "import sys\n# ----- Edit sysPath -----#\nrdPath = '/home/abtidona/private/PycharmProjects/dw_tools/maya/RFX/'\nif not rdPath in sys.path:\n    print \"Add %r to sysPath\" % rdPath\n    sys.path.insert(0, rdPath)\n\nimport maya.cmds as cmds\nimport dw_presets_io as dwpresets\n\nsel = cmds.ls(sl=True, fl=True)\ndeformer = [i for i in sel if dwpresets.isDeformer(i)][0]\ncomponents = [i for i in sel if '.' in sel]\nif not components:\n    objs = [i for i in sel if cmds.ls(i, dag=True, type=['mesh', 'nurbsCurve'])]\nif components:\n    dwpresets.editDeformer(deformer, components, add=True)\nelse:\n    dwpresets.editDeformer(deformer, objs, add=True)\n" 
+        -sourceType "python" 
+        -commandRepeatable 1
+        -flat 1
+        -mi "rm_from_deformer" ( "import sys\n# ----- Edit sysPath -----#\nrdPath = '/home/abtidona/private/PycharmProjects/dw_tools/maya/RFX/'\nif not rdPath in sys.path:\n    print \"Add %r to sysPath\" % rdPath\n    sys.path.insert(0, rdPath)\n\nimport maya.cmds as cmds\nimport dw_presets_io as dwpresets\n\nsel = cmds.ls(sl=True, fl=True)\ndeformer = [i for i in sel if dwpresets.isDeformer(i)][0]\ncomponents = [i for i in sel if '.' in sel]\nif not components:\n    objs = [i for i in sel if cmds.ls(i, dag=True, type=['mesh', 'nurbsCurve'])]\nif components:\n    dwpresets.editDeformer(deformer, components, rm=True)\nelse:\n    dwpresets.editDeformer(deformer, objs, rm=True)\n" )
+        -mip 0
+    ;
+    shelfButton
+        -enableCommandRepeat 1
+        -flexibleWidthType 3
+        -flexibleWidthValue 32
+        -enable 1
+        -width 35
+        -height 34
+        -manage 1
+        -visible 1
+        -preventOverride 0
+        -annotation "import sys\npath = \"/resource/CFX/scripts\"\nif path not in sys.path: sys.path.append(path)\nimport rajB.renBgCol as renBgCol\nrenBgCol.bckColor() " 
+        -enableBackground 0
+        -backgroundColor 0 0 0 
+        -highlightColor 0.321569 0.521569 0.65098 
+        -align "center" 
+        -label "bg_render_rajh" 
+        -labelOffset 0
+        -rotation 0
+        -flipX 0
+        -flipY 0
+        -useAlpha 1
+        -font "plainLabelFont" 
+        -imageOverlayLabel "bg_render_rajh" 
+        -overlayLabelColor 0.8 0.8 0.8 
+        -overlayLabelBackColor 0 0 0 0.5 
+        -image "pythonFamily.png" 
+        -image1 "pythonFamily.png" 
+        -style "iconOnly" 
+        -marginWidth 1
+        -marginHeight 1
+        -command "import sys\npath = \"/resource/CFX/scripts\"\nif path not in sys.path: sys.path.append(path)\nimport rajB.renBgCol as renBgCol\nrenBgCol.bckColor() " 
+        -sourceType "python" 
+        -commandRepeatable 1
+        -flat 1
+    ;
+    shelfButton
+        -enableCommandRepeat 1
+        -flexibleWidthType 3
+        -flexibleWidthValue 32
+        -enable 1
+        -width 35
+        -height 34
+        -manage 1
+        -visible 1
+        -preventOverride 0
+        -annotation "import maya.cmds as cmds\n\nimport sys\n# ----- Edit sysPath -----#\nrdPath = '/home/abtidona/private/PycharmProjects/dw_tools/maya/RFX/'\nif not rdPath in sys.path:\n    print \"Add %r to sysPath\" % rdPath\n    sys.path.insert(0, rdPath)\nimport dw_clean_simSetup as dw_cleansim\ndw_cleansim.cleanup(dsp_layers=False)\n\n" 
+        -enableBackground 0
+        -backgroundColor 0 0 0 
+        -highlightColor 0.321569 0.521569 0.65098 
+        -align "center" 
+        -label "clean_up_scene" 
+        -labelOffset 0
+        -rotation 0
+        -flipX 0
+        -flipY 0
+        -useAlpha 1
+        -font "plainLabelFont" 
+        -imageOverlayLabel "clean_up_scene" 
+        -overlayLabelColor 0.8 0.8 0.8 
+        -overlayLabelBackColor 0 0 0 0.5 
+        -image "pythonFamily.png" 
+        -image1 "pythonFamily.png" 
+        -style "iconOnly" 
+        -marginWidth 1
+        -marginHeight 1
+        -command "import maya.cmds as cmds\n\nimport sys\n# ----- Edit sysPath -----#\nrdPath = '/people/abtidona/public/dw_tools/maya/'\nif not rdPath in sys.path:\n    print \"Add %r to sysPath\" % rdPath\n    sys.path.insert(0, rdPath)\nimport dw_clean_simSetup as dw_cleansim\ndw_cleansim.cleanup(dsp_layers=False)\n\n" 
+        -sourceType "python" 
+        -commandRepeatable 1
+        -flat 1
+    ;
+    shelfButton
+        -enableCommandRepeat 1
+        -flexibleWidthType 3
+        -flexibleWidthValue 32
+        -enable 1
+        -width 35
+        -height 34
+        -manage 1
+        -visible 1
+        -preventOverride 0
+        -annotation "#!/usr/bin/env python\n#----------------------------------------------------------------------------#\n#------------------------------------------------------------------ HEADER --#\n\n\"\"\"\n@author:\n    abtidona\n\n@description:\n    this is a description\n\n@applications:\n    - groom\n    - cfx\n    - fur\n\"\"\"\n\n#----------------------------------------------------------------------------#\n#----------------------------------------------------------------- IMPORTS --#\n\n# built-in\n\n\n# internal\nimport maya.cmds as cmds\n\n# external\nimport dw_channelBox_utils as dw_chbox\n\n#----------------------------------------------------------------------------#\n#----------------------------------------------------------------- GLOBALS --#\n\n\n#----------------------------------------------------------------------------#\n#---------------------------------------------------------------   CLASSES --#\n\n\n#----------------------------------------------------------------------------#\n#--------------------------------------------------------------- FUNCTIONS --#\n\ndef conform_preroll(frameSpacing=int(1), preroll=12, *args):\n    mySel = dw_chbox.get_channels()\n\n    myMinTime = int(cmds.playbackOptions(q=True, min=1))  # currentFrame\n    prerollEnd = myMinTime + preroll\n    value = cmds.getAttr(mySel)\n\n    for i in mySel:\n        cmds.setKeyframe(i.split('.')[0], attribute=i.split('.')[-1],\n                         t=[myMinTime, myMinTime + 10], v=0)\n        cmds.setKeyframe(i.split('.')[0], attribute=i.split('.')[-1],\n                         t=prerollEnd, v=value)\n\n\nconform_preroll()" 
+        -enableBackground 0
+        -backgroundColor 0 0 0 
+        -highlightColor 0.321569 0.521569 0.65098 
+        -align "center" 
+        -label "prerollConform" 
+        -labelOffset 0
+        -rotation 0
+        -flipX 0
+        -flipY 0
+        -useAlpha 1
+        -font "plainLabelFont" 
+        -imageOverlayLabel "prerollConform" 
+        -overlayLabelColor 0.8 0.8 0.8 
+        -overlayLabelBackColor 0 0 0 0.5 
+        -image "pythonFamily.png" 
+        -image1 "pythonFamily.png" 
+        -style "iconOnly" 
+        -marginWidth 1
+        -marginHeight 1
+        -command "#!/usr/bin/env python\n#----------------------------------------------------------------------------#\n#------------------------------------------------------------------ HEADER --#\n\n\"\"\"\n@author:\n    abtidona\n\n@description:\n    this is a description\n\n@applications:\n    - groom\n    - cfx\n    - fur\n\"\"\"\n\n#----------------------------------------------------------------------------#\n#----------------------------------------------------------------- IMPORTS --#\n\n# built-in\n\n\n# internal\nimport maya.cmds as cmds\n\n# external\nimport dw_channelBox_utils as dw_chbox\n\n#----------------------------------------------------------------------------#\n#----------------------------------------------------------------- GLOBALS --#\n\n\n#----------------------------------------------------------------------------#\n#---------------------------------------------------------------   CLASSES --#\n\n\n#----------------------------------------------------------------------------#\n#--------------------------------------------------------------- FUNCTIONS --#\n\ndef conform_preroll(frameSpacing=int(1), preroll=12, *args):\n    mySel = dw_chbox.get_channels()\n\n    myMinTime = int(cmds.playbackOptions(q=True, min=1))  # currentFrame\n    prerollEnd = myMinTime + preroll\n    value = cmds.getAttr(mySel)\n\n    for i in mySel:\n        cmds.setKeyframe(i.split('.')[0], attribute=i.split('.')[-1],\n                         t=[myMinTime, myMinTime + 10], v=0)\n        cmds.setKeyframe(i.split('.')[0], attribute=i.split('.')[-1],\n                         t=prerollEnd, v=value)\n\n\nconform_preroll()" 
+        -sourceType "python" 
+        -commandRepeatable 1
+        -flat 1
+    ;
+    shelfButton
+        -enableCommandRepeat 1
+        -flexibleWidthType 3
+        -flexibleWidthValue 32
+        -enable 1
+        -width 35
+        -height 34
+        -manage 1
+        -visible 1
+        -preventOverride 0
+        -annotation "#!/usr/bin/env python\n#----------------------------------------------------------------------------#\n#------------------------------------------------------------------ HEADER --#\n\n\"\"\"\n@author:\n    abtidona\n\n@description:\n    this is a description\n\n@applications:\n    - groom\n    - cfx\n    - fur\n\"\"\"\n\n#----------------------------------------------------------------------------#\n#----------------------------------------------------------------- IMPORTS --#\n\n# built-in\nimport sys\n# ----- Edit sysPath -----#\nrdPath = '/people/abtidona/public/dw_tools/maya/'\n\nif not rdPath in sys.path:\n    print \"Add %r to sysPath\" % rdPath\n    sys.path.insert(0, rdPath)\n\n# internal\n\nimport maya.cmds as cmds\n\n# external\n\nimport dw_nucleus_utils as dwnx\n\n#----------------------------------------------------------------------------#\n#----------------------------------------------------------------- GLOBALS --#\n\n\n#----------------------------------------------------------------------------#\n#---------------------------------------------------------------   CLASSES --#\n\n\n#----------------------------------------------------------------------------#\n#--------------------------------------------------------------- FUNCTIONS --#\n\nsel_vtx = cmds.ls(sl=True)[0]\nif ':' in sel_vtx:\n    ns = sel_vtx.split(':')[0]\nelse:\n    ns = raw_input('namespace :')\n\nnucleus = [nuc for nuc in cmds.ls(type='nucleus') if nuc.startswith(ns + ':')]\n\nfor n in nucleus:\n    dwnx.motion_ctrl_nucleus(n, sel_vtx,\n                             ctrl=n,\n                             locator='{}_localisation_loc'.format(ns))\n" 
+        -enableBackground 0
+        -backgroundColor 0 0 0 
+        -highlightColor 0.321569 0.521569 0.65098 
+        -align "center" 
+        -label "motion_nucleus" 
+        -labelOffset 0
+        -rotation 0
+        -flipX 0
+        -flipY 0
+        -useAlpha 1
+        -font "plainLabelFont" 
+        -imageOverlayLabel "motion_nucleus" 
+        -overlayLabelColor 0.8 0.8 0.8 
+        -overlayLabelBackColor 0 0 0 0.5 
+        -image "pythonFamily.png" 
+        -image1 "pythonFamily.png" 
+        -style "iconOnly" 
+        -marginWidth 1
+        -marginHeight 1
+        -command "#!/usr/bin/env python\n#----------------------------------------------------------------------------#\n#------------------------------------------------------------------ HEADER --#\n\n\"\"\"\n@author:\n    abtidona\n\n@description:\n    this is a description\n\n@applications:\n    - groom\n    - cfx\n    - fur\n\"\"\"\n\n#----------------------------------------------------------------------------#\n#----------------------------------------------------------------- IMPORTS --#\n\n# built-in\nimport sys\n# ----- Edit sysPath -----#\nrdPath = '/people/abtidona/public/dw_tools/maya/'\n\nif not rdPath in sys.path:\n    print \"Add %r to sysPath\" % rdPath\n    sys.path.insert(0, rdPath)\n\n# internal\n\nimport maya.cmds as cmds\n\n# external\nimport dw_maya_utils as dwu\nimport dw_nucleus_utils as dwnx\nimport dw_decorators as dwdeco\n\n#----------------------------------------------------------------------------#\n#----------------------------------------------------------------- GLOBALS --#\n\n\n#----------------------------------------------------------------------------#\n#---------------------------------------------------------------   CLASSES --#\n\n\n#----------------------------------------------------------------------------#\n#--------------------------------------------------------------- FUNCTIONS --#\n@dwdeco.viewportOff\n@dwnx.tmp_disable_solver\ndef motion_nucleus():\n    range_ = dwu.current_timerange(range_=True)\n    vtx_track = cmds.filterExpand(sm=31)[0]\n    nucleus = cmds.ls(sl=True, type='nucleus')[0]\n    for frm in range_:\n        cmds.currentTime(frm, e=True)\n        pos = cmds.pointPosition(vtx_track)\n        cmds.setAttr(nucleus + '.t', *pos)\n        cmds.setKeyframe(nucleus, attribute=['tx', 'ty', 'tz'])\nmotion_nucleus()\n" 
+        -sourceType "python" 
+        -commandRepeatable 1
+        -flat 1
+    ;
+    shelfButton
+        -enableCommandRepeat 1
+        -flexibleWidthType 3
+        -flexibleWidthValue 32
+        -enable 1
+        -width 35
+        -height 34
+        -manage 1
+        -visible 1
+        -preventOverride 0
+        -annotation "transfer shader" 
+        -enableBackground 0
+        -backgroundColor 0 0 0 
+        -highlightColor 0.321569 0.521569 0.65098 
+        -align "center" 
+        -label "#!/usr/bin/env python\n#-----------------------------------------..." 
+        -labelOffset 0
+        -rotation 0
+        -flipX 0
+        -flipY 0
+        -useAlpha 1
+        -font "plainLabelFont" 
+        -imageOverlayLabel "transferShader" 
+        -overlayLabelColor 0.8 0.8 0.8 
+        -overlayLabelBackColor 0 0 0 0.5 
+        -image "pythonFamily.png" 
+        -image1 "pythonFamily.png" 
+        -style "iconOnly" 
+        -marginWidth 1
+        -marginHeight 1
+        -command "#!/usr/bin/env python\n#----------------------------------------------------------------------------#\n#------------------------------------------------------------------ HEADER --#\n\n\"\"\"\n@author:\n    abtidona\n\n@description:\n    this is a description\n\n@applications:\n    - groom\n    - cfx\n    - fur\n\"\"\"\n\n#----------------------------------------------------------------------------#\n#----------------------------------------------------------------- IMPORTS --#\n\n# built-in\n\n# internal\nimport maya.cmds as cmds\n# external\n\n\n#----------------------------------------------------------------------------#\n#----------------------------------------------------------------- GLOBALS --#\n\n\n#----------------------------------------------------------------------------#\n#---------------------------------------------------------------   CLASSES --#\n\n\n#----------------------------------------------------------------------------#\n#--------------------------------------------------------------- FUNCTIONS --#\n\nsel = cmds.ls(sl=1)[0]\nassignement = {}\nhist = cmds.listHistory(sel, f=1)\nshaders = cmds.listConnections(hist)\nfor shd in shaders:\n    sg = cmds.listConnections(shd, type='shadingEngine')\n    if sg and 'initialShadingGroup' not in sg:\n        faces = cmds.sets(sg[0], q=True)\n        if '.' in faces[0]:\n            assignement[sg[0]] = [f.split('.')[-1] for f in faces]\n        else:\n            assignement[sg[0]] = faces[0]\n            \n\n\norig, targ = cmds.ls(sl=1)\nfor sg in assignement:\n    if isinstance(assignement[sg], list):\n        ass = [targ + '.' + f for f in assignement[sg]]\n    else:\n        ass = targ\n    cmds.sets(ass, e=True, fe=sg)\n" 
+        -sourceType "python" 
+        -commandRepeatable 1
+        -flat 1
+    ;
+    shelfButton
+        -enableCommandRepeat 1
+        -flexibleWidthType 3
+        -flexibleWidthValue 32
+        -enable 1
+        -width 35
+        -height 34
+        -manage 1
+        -visible 1
+        -preventOverride 0
+        -annotation "import maya.cmds as cmds\nsel = cmds.ls(sl=True)\ncv = -1\n\nnew_sel = [cmds.ls(i+'.cv[*]', fl=True)[cv] for i in sel]\n\ncmds.select(new_sel)" 
+        -enableBackground 0
+        -backgroundColor 0 0 0 
+        -highlightColor 0.321569 0.521569 0.65098 
+        -align "center" 
+        -label "selectTips" 
+        -labelOffset 0
+        -rotation 0
+        -flipX 0
+        -flipY 0
+        -useAlpha 1
+        -font "plainLabelFont" 
+        -imageOverlayLabel "selectTips" 
+        -overlayLabelColor 0.8 0.8 0.8 
+        -overlayLabelBackColor 0 0 0 0.5 
+        -image "pythonFamily.png" 
+        -image1 "pythonFamily.png" 
+        -style "iconOnly" 
+        -marginWidth 1
+        -marginHeight 1
+        -command "import dw_maya_utils as dwu\nimport dw_feathers_utils as dwfeathers\n\ntry:\n    counter += 1\n    index = counter % 2\n    new_m_sel = [i.split('.')[0] for i in cmds.ls(sl=True)]\n    new_sel = dwu.lsTr(new_m_sel, dag=True, type='nurbsCurve', ni=True)\n    if new_m_sel:\n        if new_m_sel == m_sel:\n            sel = new_sel\nexcept:\n    counter = 0\n    index = 0\n    m_sel = [i.split('.')[0] for i in cmds.ls(sl=True)]\n    sel = dwu.lsTr(m_sel, dag=True, type='nurbsCurve', ni=True)\n\nselcp = dwfeathers.list_cv_index(sel, -index)\ncmds.select(selcp)\n" 
+        -sourceType "python" 
+        -commandRepeatable 1
+        -flat 1
+    ;
+    shelfButton
+        -enableCommandRepeat 1
+        -flexibleWidthType 3
+        -flexibleWidthValue 32
+        -enable 1
+        -width 35
+        -height 34
+        -manage 1
+        -visible 1
+        -preventOverride 0
+        -annotation "#!/usr/bin/env python\n#----------------------------------------------------------------------------#\n#------------------------------------------------------------------ HEADER --#\n\n\"\"\"\n@author:\n    ptrovillas\n\n@description:\n    this is a description\n\n@applications:\n    - groom\n    - cfx\n    - fur\n\"\"\"\n\n#----------------------------------------------------------------------------#\n#----------------------------------------------------------------- IMPORTS --#\n\n# built-in\nimport sys\n\n# internal\n\n# external\n# ----- Edit sysPath -----#\nrdPath = \"/people/ptorrevillas/public/py_scripts\"\nif not rdPath in sys.path:\n    print \"Add %r to sysPath\" % rdPath\n    sys.path.insert(0, rdPath)\nimport utils as pj_utils\n\n#----------------------------------------------------------------------------#\n#--------------------------------------------------------------- FUNCTIONS --#\n\n\npj_utils.grow_vertex_selection()" 
+        -enableBackground 0
+        -backgroundColor 0 0 0 
+        -highlightColor 0.321569 0.521569 0.65098 
+        -align "center" 
+        -label "growVtx" 
+        -labelOffset 0
+        -rotation 0
+        -flipX 0
+        -flipY 0
+        -useAlpha 1
+        -font "plainLabelFont" 
+        -imageOverlayLabel "growVtx" 
+        -overlayLabelColor 0.8 0.8 0.8 
+        -overlayLabelBackColor 0 0 0 0.5 
+        -image "pythonFamily.png" 
+        -image1 "pythonFamily.png" 
+        -style "iconOnly" 
+        -marginWidth 1
+        -marginHeight 1
+        -command "#!/usr/bin/env python\n#----------------------------------------------------------------------------#\n#------------------------------------------------------------------ HEADER --#\n\n\"\"\"\n@author:\n    ptrovillas\n\n@description:\n    this is a description\n\n@applications:\n    - groom\n    - cfx\n    - fur\n\"\"\"\n\n#----------------------------------------------------------------------------#\n#----------------------------------------------------------------- IMPORTS --#\n\n# built-in\nimport sys\n\n# internal\n\n# external\n# ----- Edit sysPath -----#\nrdPath = \"/people/ptorrevillas/public/py_scripts\"\nif not rdPath in sys.path:\n    print \"Add %r to sysPath\" % rdPath\n    sys.path.insert(0, rdPath)\nimport utils as pj_utils\n\n#----------------------------------------------------------------------------#\n#--------------------------------------------------------------- FUNCTIONS --#\n\n\npj_utils.grow_vertex_selection()" 
+        -sourceType "python" 
+        -commandRepeatable 1
+        -flat 1
+    ;
+    shelfButton
+        -enableCommandRepeat 1
+        -flexibleWidthType 3
+        -flexibleWidthValue 32
+        -enable 1
+        -width 35
+        -height 34
+        -manage 1
+        -visible 1
+        -preventOverride 0
+        -annotation "#!/usr/bin/env python\n#----------------------------------------------------------------------------#\n#------------------------------------------------------------------ HEADER --#\n\n\"\"\"\n@author:\n    abtidona\n\n@description:\n    this is a description\n\n@applications:\n    - groom\n    - cfx\n    - fur\n\"\"\"\n\n#----------------------------------------------------------------------------#\n#----------------------------------------------------------------- IMPORTS --#\n\n# built-in\n\n# internal\nimport maya.cmds as cmds\n# external\nimport dw_maya_utils as dwu\nimport dw_lsNode as dwn\n\n\n#----------------------------------------------------------------------------#\n#----------------------------------------------------------------- GLOBALS --#\n\ntry:\n    counter += 1\n    index = counter % modulo\n    new_sel = dwu.lsTr(sl=True, dag=True, type='dynamicConstraint')\n    if new_sel:\n        if new_sel[0] != sel:\n            counter = 0\n            index = 1\n            sel = new_sel[0]\nexcept:\n    counter = 0\n    index = 1\n    sel = dwu.lsTr(sl=True, dag=True, type='dynamicConstraint')[0]\n    m_sel = None\n#----------------------------------------------------------------------------#\n#---------------------------------------------------------------   CLASSES --#\n\n\n#----------------------------------------------------------------------------#\n#--------------------------------------------------------------- FUNCTIONS --#\n\ndef selectComponent(sel, counter):\n    sel = dwn.lsNode(sel, dag=True, type='dynamicConstraint')[0]\n    ncomponents = sel.nComponents\n    modulo = len(ncomponents)\n    m_sel = [nc.component for nc in ncomponents]\n    cmds.select(m_sel[counter])\n    return m_sel\n\n\nif counter == 0:\n    m_sel = selectComponent(sel, index)\n    modulo = len(m_sel)\nelse:\n    cmds.select(m_sel[index])\n" 
+        -enableBackground 0
+        -backgroundColor 0 0 0 
+        -highlightColor 0.321569 0.521569 0.65098 
+        -align "center" 
+        -label "ncomponent_sel" 
+        -labelOffset 0
+        -rotation 0
+        -flipX 0
+        -flipY 0
+        -useAlpha 1
+        -font "plainLabelFont" 
+        -imageOverlayLabel "ncomponent_sel" 
+        -overlayLabelColor 0.8 0.8 0.8 
+        -overlayLabelBackColor 0 0 0 0.5 
+        -image "pythonFamily.png" 
+        -image1 "pythonFamily.png" 
+        -style "iconOnly" 
+        -marginWidth 1
+        -marginHeight 1
+        -command "#!/usr/bin/env python\n#----------------------------------------------------------------------------#\n#------------------------------------------------------------------ HEADER --#\n\n\"\"\"\n@author:\n    abtidona\n\n@description:\n    this is a description\n\n@applications:\n    - groom\n    - cfx\n    - fur\n\"\"\"\n\n#----------------------------------------------------------------------------#\n#----------------------------------------------------------------- IMPORTS --#\n\n# built-in\n\n# internal\nimport maya.cmds as cmds\n# external\nimport dw_maya_utils as dwu\nimport dw_lsNode as dwn\n\n\n#----------------------------------------------------------------------------#\n#----------------------------------------------------------------- GLOBALS --#\n\ntry:\n    counter += 1\n    index = counter % modulo\n    new_sel = dwu.lsTr(sl=True, dag=True, type='dynamicConstraint')\n    if new_sel:\n        if new_sel[0] != sel:\n            counter = 0\n            index = 1\n            sel = new_sel[0]\nexcept:\n    counter = 0\n    index = 1\n    sel = dwu.lsTr(sl=True, dag=True, type='dynamicConstraint')[0]\n    m_sel = None\n#----------------------------------------------------------------------------#\n#---------------------------------------------------------------   CLASSES --#\n\n\n#----------------------------------------------------------------------------#\n#--------------------------------------------------------------- FUNCTIONS --#\n\ndef selectComponent(sel, counter):\n    sel = dwn.lsNode(sel, dag=True, type='dynamicConstraint')[0]\n    ncomponents = sel.nComponents\n    modulo = len(ncomponents)\n    m_sel = [nc.component for nc in ncomponents]\n    cmds.select(m_sel[counter])\n    return m_sel\n\n\nif counter == 0:\n    m_sel = selectComponent(sel, index)\n    modulo = len(m_sel)\nelse:\n    cmds.select(m_sel[index])\n" 
+        -sourceType "python" 
+        -commandRepeatable 1
+        -flat 1
+    ;
+
+} 
