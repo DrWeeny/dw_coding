@@ -1,7 +1,7 @@
-from PySide2.QtCore import *
-from PySide2.QtGui import *
-from PySide2.QtWidgets import *
-from shiboken2 import wrapInstance
+from PySide6.QtCore import *
+from PySide6.QtGui import *
+from PySide6.QtWidgets import *
+from shiboken6 import wrapInstance
 
 from maya import OpenMayaUI as omui
 from maya.app.general.mayaMixin import MayaQWidgetBaseMixin
@@ -16,85 +16,91 @@ import maya.standalone
 
 
 class Form(QDialog):
+    """A GUI for managing Ziva caches in Maya."""
 
     def __init__(self, parent=None):
-        super(Form, self).__init__(parent)
-        # widgets
+        super().__init__(parent)
+
+        # Widgets
         self.lCacheName = QLabel("Cache name")
         self.lCacheStart = QLabel("Start")
         self.lCacheEnd = QLabel("End")
         self.name = QLineEdit("zCache1")
         self.startFrame = QLineEdit("89")
         self.endFrame = QLineEdit("200")
-        self.writeButton = QPushButton("write cache")
-        self.loadButton = QPushButton("load cache")
+        self.writeButton = QPushButton("Write Cache")
+        self.loadButton = QPushButton("Load Cache")
         self.lResult = QLabel(" ")
-
         self.zivaCaches = QComboBox()
 
-        self.zivaCaches.addItems(
-            [zCaches for zCaches in cmds.ls(type='zCache')])
+        # Populate Ziva caches in the scene
+        self.zivaCaches.addItems([zCache for zCache in cmds.ls(type='zCache')])
 
-        str(cmds.getAttr('rayburn:muscle_zSolver.startFrame'))
-
-        mainlayout = QFormLayout()
-        layout = QFormLayout()
-        layout2 = QFormLayout()
-
-        layout.addRow(self.zivaCaches)
+        # Layout
+        layout = QFormLayout(self)
+        layout.addRow("Ziva Cache", self.zivaCaches)
         layout.addRow(self.lCacheName, self.name)
         layout.addRow(self.lCacheStart, self.startFrame)
         layout.addRow(self.lCacheEnd, self.endFrame)
         layout.addRow(self.writeButton, self.loadButton)
         layout.addRow(self.lResult)
 
-        # Set dialog layout
-        self.setLayout(layout)
-
+        # Signals
         self.writeButton.clicked.connect(self.savefile)
         self.loadButton.clicked.connect(self.openfile)
 
     def savefile(self):
-        dir = QFileDialog.getExistingDirectory(self, "Select Directory", "~",
-                                               QFileDialog.ShowDirsOnly | QFileDialog.DontResolveSymlinks)
-        if dir:
-            start_frame = int(self.startFrame.text())
-            end_frame = int(self.endFrame.text())
-            name = self.name.text()
-            currentCache = self.zivaCaches.currentText()
+        """Save the current Ziva cache to disk frame by frame."""
+        directory = QFileDialog.getExistingDirectory(self, "Select Directory", "~",
+                                                     QFileDialog.ShowDirsOnly | QFileDialog.DontResolveSymlinks)
+        if directory:
+            try:
+                start_frame = int(self.startFrame.text())
+                end_frame = int(self.endFrame.text())
+                cache_name = self.name.text()
+                current_cache = self.zivaCaches.currentText()
 
-            mm.eval("zCache -clear " + currentCache)
-            for i in xrange(start_frame, end_frame):
-                cmds.currentTime(i)
-                path = dir + '/' + name + '.%04i.zCache' % i
-                print path + " written to disk"
-                mm.eval('zCache -save "{}" {}'.format(path, currentCache))
-                mm.eval("zCache -clear " + currentCache)
+                mm.eval(f"zCache -clear {current_cache}")
+                for frame in range(start_frame, end_frame + 1):
+                    cmds.currentTime(frame)
+                    path = os.path.join(directory, f"{cache_name}.{frame:04d}.zCache")
+                    print(f"{path} written to disk")
+                    mm.eval(f'zCache -save "{path}" {current_cache}')
+                    mm.eval(f"zCache -clear {current_cache}")
 
-            self.lResult.setText(" ... SAVE SUCCESSFUL ... ")
+                self.lResult.setText("... SAVE SUCCESSFUL ...")
+
+            except Exception as e:
+                self.lResult.setText("Error saving cache")
+                print(f"Error: {e}")
 
     def openfile(self):
-        dir = QFileDialog.getExistingDirectory(self, "Select Directory", "~",
-                                               QFileDialog.ShowDirsOnly | QFileDialog.DontResolveSymlinks)
-        if dir:
-            sf = int(self.startFrame.text())
-            ef = int(self.endFrame.text())
-            nm = self.name.text()
-            currentCache = self.zivaCaches.currentText()
+        """Load a previously saved Ziva cache from disk."""
+        directory = QFileDialog.getExistingDirectory(self, "Select Directory", "~",
+                                                     QFileDialog.ShowDirsOnly | QFileDialog.DontResolveSymlinks)
+        if directory:
+            try:
+                start_frame = int(self.startFrame.text())
+                end_frame = int(self.endFrame.text())
+                cache_name = self.name.text()
+                current_cache = self.zivaCaches.currentText()
 
-            cmds.currentTime(sf)
+                cmds.currentTime(start_frame)
 
-            for i in xrange(sf, ef):
-                path = dir + '/' + nm + '.%04i.zCache' % i
-                print path + " loaded"
-                mm.eval('zCache -load "{}" {}'.format(path, currentCache))
+                for frame in range(start_frame, end_frame + 1):
+                    path = os.path.join(directory, f"{cache_name}.{frame:04d}.zCache")
+                    print(f"{path} loaded")
+                    mm.eval(f'zCache -load "{path}" {current_cache}')
 
-            self.lResult.setText(" ... LOAD SUCCESSFUL ... ")
+                self.lResult.setText("... LOAD SUCCESSFUL ...")
 
+            except Exception as e:
+                self.lResult.setText("Error loading cache")
+                print(f"Error: {e}")
 
 if __name__ == '__main__':
-    # Create the Qt Application
     app = QApplication.instance()
-    # Create and show the form
+    if app is None:
+        app = QApplication(sys.argv)
     form = Form()
     form.show()

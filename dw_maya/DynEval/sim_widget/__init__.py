@@ -18,6 +18,8 @@
 #----------------------------------------------------------------------------#
 #----------------------------------------------------------------- IMPORTS --#
 
-from .wgt_commentary import *
-from .wgt_maps_tree import *
-from .wgt_cache_tree import *
+from .wgt_commentary import CommentTitle, CommentEditor
+from .wgt_maps_tree import MapTree
+from .wgt_cache_tree import CacheTree
+from .wgt_colortextbutton import ColorTextButton
+from .wgt_mapedit import MapEdit

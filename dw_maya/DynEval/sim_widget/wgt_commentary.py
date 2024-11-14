@@ -21,125 +21,98 @@
 # built-in
 import sys, os
 # ----- Edit sysPath -----#
-rdPath = '/user_data/AMJB/coding/dw_tools/maya/DNEG2'
-if not os.path.isdir(rdPath):
-    rdPath = '/people/abtidona/public/dw_tools/maya/'
+rdPath = 'E:\\dw_coding\\dw_open_tools'
 if not rdPath in sys.path:
-    print "Add %r to sysPath" % rdPath
+    print(f"Add {rdPath} to sysPath")
     sys.path.insert(0, rdPath)
 
 # internal
-from PySide2 import QtWidgets, QtCore, QtGui
+import sys
+import os
+from pathlib import Path
+from PySide6 import QtWidgets, QtCore, QtGui
 # external
 
 #----------------------------------------------------------------------------#
 #--------------------------------------------------------------- FUNCTIONS --#
 
 class CommentEditor(QtWidgets.QWidget):
+    save_requested = QtCore.Signal(str)  # Renamed for clarity
 
-    save = QtCore.Signal(str)
+    def __init__(self, title=None, size=(400, 40), parent=None):
+        super().__init__(parent)
 
-    def __init__(self, title=None,
-                 size=[400, 40], parent=None):
-        QtWidgets.QWidget.__init__(self, parent)
+        # Main layout
+        main_layout = QtWidgets.QVBoxLayout(self)
 
-        _vl_main = QtWidgets.QVBoxLayout()
+        # Comment Title
+        self.comment_title = CommentTitle(title, size)
 
-        self._comment = CommentTitle(title, [400, 50])
+        # Display Area
+        self.display_area = QtWidgets.QTextEdit(readOnly=True)
+        self.display_area.setPlaceholderText("Display comment area")
+        self.display_area.setStyleSheet("font-weight: bold;")
 
-        self._le_dsp = QtWidgets.QTextEdit()
-        self._le_dsp.setPlaceholderText("display comment area")
-        self._le_dsp.setStyleSheet("font-weight: bold; "
-                              "color: white; "
-                              "background-color: rgb(64,64,64)")
-        self._le_dsp.setReadOnly(True)
+        # Separator
+        separator = QtWidgets.QFrame()
+        separator.setFrameShape(QtWidgets.QFrame.HLine)
+        separator.setFrameShadow(QtWidgets.QFrame.Sunken)
 
-        line = QtWidgets.QFrame()
-        line.setFrameShape(QtWidgets.QFrame.HLine)
-        line.setFrameShadow(QtWidgets.QFrame.Sunken)
+        # Write Area
+        self.write_area = QtWidgets.QTextEdit()
+        self.write_area.setPlaceholderText("Write a comment")
+        self.write_area.installEventFilter(self)
+        self.write_area.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
+        self.write_area.customContextMenuRequested.connect(self.show_context_menu)
 
-        self._le_write = QtWidgets.QTextEdit()
-        self._le_write.setPlaceholderText('write a comment')
+        # Add widgets to layout
+        main_layout.addWidget(self.comment_title)
+        main_layout.addWidget(self.display_area)
+        main_layout.addWidget(separator)
+        main_layout.addWidget(self.write_area)
+        self.setLayout(main_layout)
 
-        _vl_main.addWidget(self._comment)
-        _vl_main.addWidget(self._le_dsp)
-        _vl_main.addWidget(line)
-        _vl_main.addWidget(self._le_write)
-
-        self._le_write.installEventFilter(self)
-        self._le_write.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
-        self._le_write.customContextMenuRequested.connect(self.menu_save_comment)
-
-        self.setLayout(_vl_main)
-
-    def setComment(self, txt=None):
-        if txt:
-            self._le_dsp.setText(txt)
-        else:
-            self._le_dsp.clear()
+    def setComment(self, text=None):
+        self.display_area.setText(text if text else "")
 
     def getComment(self):
-        return self._le_write.toPlainText()
+        return self.write_area.toPlainText()
 
     def setTitle(self, title=None):
-        self._comment.setTitle(title)
+        self.comment_title.setTitle(title)
 
-    def menu_save_comment(self, position):
+    def show_context_menu(self, position):
+        menu = self.write_area.createStandardContextMenu()
+        save_action = QtWidgets.QAction("Save To Selected Cache", self)
+        save_action.triggered.connect(self.emit_save_comment)
+        menu.insertAction(menu.actions()[0], save_action)
+        menu.insertSeparator(menu.actions()[0])
+        menu.exec(self.write_area.viewport().mapToGlobal(position))
 
-        menu = self._le_write.createStandardContextMenu()
-        save = QtWidgets.QAction(self)
-        save.setText("Save To Selected Cache")
-        save.setObjectName("foo")
-        menu.setStyleSheet("QMenu::item#foo { color:red ;}")
-        save.triggered.connect(self.save_comment)
-
-        action_zero = menu.actions()[0]
-        menu.insertAction(action_zero, save)
-        menu.insertSeparator(action_zero)
-
-        menu.exec_(self._le_write.viewport().mapToGlobal(position))
-
-    def save_comment(self):
-        self.save.emit(self.getComment())
-        print("save comment")
+    def emit_save_comment(self):
+        self.save_requested.emit(self.getComment())
 
 
 class CommentTitle(QtWidgets.QFrame):
+    def __init__(self, title, size=(400, 40), parent=None):
+        super().__init__(parent)
 
-    imgpath = rdPath + '/../../ressources/pic_files'
-    if not os.path.isdir(imgpath):
-        imgpath = rdPath + '/../ressources/pic_files'
+        # Load icon
+        icon_path = Path('path/to/comment.png')
+        icon_label = QtWidgets.QLabel()
+        icon_label.setPixmap(QtGui.QPixmap(str(icon_path)).scaled(16, 16, QtCore.Qt.KeepAspectRatio))
 
-    def __init__(self, title, size=[400, 40], parent=None):
-        super(CommentTitle, self).__init__(parent)
+        # Title Label
+        self.title_label = QtWidgets.QLabel(title or "Comment")
+        self.title_label.setFont(QtGui.QFont("SF Pro Display", 10))
+        self.title_label.setAlignment(QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter)
 
-        pixmap = QtGui.QPixmap(self.imgpath + '/comment.png')
-        pixmap_label = QtWidgets.QLabel(pixmap=pixmap, scaledContents=True)
-
-        self.title_label = QtWidgets.QLabel(title)
-        self.title_label.setAlignment(QtCore.Qt.AlignLeft | QtCore.Qt.AlignCenter)
-
-        font = QtGui.QFont()
-        font.setFamily("SF Pro Display")
-        font.setPointSize(10)
-        self.title_label.setFont(font)
-        self.title_label.setWordWrap(True)
-
+        # Background layout
+        title_layout = QtWidgets.QHBoxLayout(self)
+        title_layout.addWidget(icon_label)
+        title_layout.addWidget(self.title_label)
+        title_layout.setContentsMargins(5, 5, 5, 5)
         self.setFixedSize(*size)
 
-        self.background_label = QtWidgets.QLabel(pixmap_label)
-        self.background_label.setFixedSize(*size)
-        # self.background_label.move(0, 0)
-
-        background_lay = QtWidgets.QVBoxLayout(self.background_label)
-        background_lay.addWidget(self.title_label)
-        background_lay.setMargin(0)
-        background_lay.setSpacing(0)
-
-        lay = QtWidgets.QVBoxLayout(self)
-        lay.setContentsMargins(0, 0, 0, 0)
-        lay.setSpacing(0)
-        lay.addWidget(pixmap_label)
-
-    def setTitle(self, txt=None):
-        self.title_label.setText(txt)
+    def setTitle(self, text=None):
+        self.title_label.setText(text if text else "Comment")

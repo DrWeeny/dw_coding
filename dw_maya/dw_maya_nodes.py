@@ -83,7 +83,7 @@ class MAttr(object):
         """
         return self
 
-    def next(self):
+    def __next__(self):
         """
         Support iteration over attribute values.
 
@@ -115,8 +115,8 @@ class MAttr(object):
         """
         try:
             return f'<<{str(self._type)}>>\n{" " * 16}{self.getAttr()}'
-        except:
-            return 'Warning Compound Attribute'
+        except Exception as e:
+            return f"Warning: Could not retrieve value. Error: {e}"
 
 
     def __str__(self):
@@ -171,24 +171,27 @@ class MAttr(object):
             return cmds.getAttr('{}.{}'.format(self._node, self.attr), **kwargs)
 
     @dwdeco.acceptString('destination')
-    def connectAttr(self, destination: List, force=True):
+    def connectAttr(self, destination: List[str], force=True):
         """
-        This is the cmds.connectAttr
+        Connects this attribute to another attribute(s).
+
         Args:
-            destination (bool): another attribute should be plugged
-            force (bool):  by default True
+            destination (list): List of attributes to connect to.
+            force (bool): Whether to force the connection.
 
-        Returns:
-
+        Raises:
+            ValueError: If invalid destinations are specified.
         """
         _isConnec = [True if '.' in i and cmds.ls(i) else False for i in destination]
         if not all(_isConnec):
             invalid_input = ', '.join([i for x, i in zip(_isConnec, destination) if not x])
-            cmds.error('please provide good attributes :``` {} ```are invalid'.format(invalid_input))
+            cmds.error(f"No valid attributes found in: {invalid_input}")
 
         if self.attr in self.listAttr(self.attr) or self.attr_bypass.search(self.attr):
-            for d in destination:
-                cmds.connectAttr('{}.{}'.format(self._node, self.attr), d, force=force)
+            try:
+                cmds.connectAttr(f'{self._node}.{self.attr}', d, force=force)
+            except Exception as e:
+                print(f"Failed to connect {self._node}.{self.attr} to {d}: {e}")
 
     def setChannelBoxVisibility(self, hide=True):
         """Hide or show the attribute in the channel box."""
@@ -389,7 +392,8 @@ class MayaNode(ObjPointer):
 
     def __getattr__(self, attr: str):
         """
-        getattr has been overrided so you can select maya attributes and set them
+            Override to dynamically access Maya node attributes.
+            Caches compound attributes to optimize repeated access and set them
         if you type an attribute, it will try to find if it exists in either shape or transform
         if it exists in both, it will always warn you that it returns shape in priority
         ``mn = MayaNode('pCube1')``
@@ -403,16 +407,16 @@ class MayaNode(ObjPointer):
         Note:
             You cant have the value without .getAttr()
         """
-        if attr in self.listAttr(attr):
-            return MAttr(self.node, attr)
-        elif attr in self.__dict__:
-            return self.__dict__[attr]
+        myattr = f'{self.attribute}.{attr}'
+        if hasattr(self, '_attr_cache') and myattr in self._attr_cache:
+            return self._attr_cache[myattr]
+        if myattr in self.listAttr(myattr):
+            cached_attr = MAttr(self._node, myattr)
+            # Cache the attribute for repeated access
+            self._attr_cache[myattr] = cached_attr
+            return cached_attr
         else:
-            try:
-                return self.__getattribute__(attr)
-            except AttributeError:
-                cmds.warning(f'{attr} doesn\'t exist, returning None instead.')
-                return None
+            return self.__getattribute__(attr)
 
     def __setattr__(self, key: str, value):
         """

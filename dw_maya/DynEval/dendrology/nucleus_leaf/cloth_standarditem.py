@@ -33,6 +33,7 @@ from pathlib import Path
 
 # internal
 from PySide6 import QtCore, QtGui, QtWidget
+from maya import cmds
 from .base_standarditem import BaseSimulationItem
 from dw_maya.DynEval import ncloth_cmds
 

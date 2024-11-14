@@ -2,15 +2,14 @@ import sys, os
 # ----- Edit sysPath -----#
 import re
 
-rdPath = '/user_data/AMJB/coding/dw_tools/maya/DNEG2'
-if not os.path.isdir(rdPath):
-    rdPath = '/people/abtidona/public/dw_tools/maya/'
+# ----- Edit sysPath -----#
+rdPath = 'E:\\dw_coding\\dw_open_tools'
 if not rdPath in sys.path:
-    print "Add %r to sysPath" % rdPath
+    print(f"Add {rdPath} to sysPath")
     sys.path.insert(0, rdPath)
 
 from PySide2 import QtWidgets, QtGui, QtCore
-from SimTool import ncloth_cmds, ziva_cmds
+from dw_maya.DynEval import ncloth_cmds, ziva_cmds
 
 
 class CacheItem(QtWidgets.QTreeWidgetItem):
@@ -100,5 +99,3 @@ class CacheItem(QtWidgets.QTreeWidgetItem):
         r = p.search(_file)
         if r:
             return int(r.group(1))
-
-

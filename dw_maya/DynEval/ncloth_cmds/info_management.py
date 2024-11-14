@@ -1,15 +1,6 @@
-import os
 import maya.cmds as cmds
-import maya.mel as mel
 from collections import defaultdict
 from operator import itemgetter
-import dw_maya.dw_presets_io as dw_json
-import dw_maya.dw_maya_utils as dwu
-import dw_maya.dw_nucleus_utils as dwnx
-import dw_maya.dw_duplication as dwdup
-import dw_maya.dw_maya_nodes as dwnn
-import dw_maya.dw_presets_io as dwpreset
-from dw_maya.dw_decorators import acceptString
 
 class ClothSys:
     """

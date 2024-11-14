@@ -13,6 +13,10 @@ import re
 import os
 import shutil
 from PySide6 import QtWidgets, QtGui, QtCore  # Use PySide6 for Maya compatibility with Python 3
+from pathlib import Path
+from concurrent.futures import ThreadPoolExecutor
+import maya.utils as mu
+import mmap
 
 # External module imports (always required)
 import dw_maya.dw_presets_io as dw_json
@@ -20,48 +24,84 @@ from dw_maya.dw_presets_io import make_dir
 
 # Application mode variables
 MODE = 0
-MODE_MAYA = False
-MODE_HOUDINI = False
 
-def is_houdini():
-    """Check if running in a Houdini environment."""
-    global MODE_HOUDINI
-    try:
-        import hou
-        MODE_HOUDINI = True
-        return True
-    except ImportError:
-        return False
-
-def is_maya():
-    """Check if running in a Maya environment."""
-    global MODE_MAYA
-    try:
-        import maya.cmds as cmds
-        import maya.OpenMayaUI as omui
-        from shiboken6 import wrapInstance  # Maya now uses shiboken6 with PySide6
-        from . import ncloth_cmds
-        from . import ziva_cmds
-        from .dendrology.nucleus_leaf import *
-        from .dendrology.rfx_nucleus_leaf import *
-        from .dendrology.rfx_ziva_leaf import *
-        from . import sim_widget
-        MODE_MAYA = True
-        return True
-    except ImportError:
-        return False
-
-# Initialize environment mode
-if is_houdini():
-    # Houdini specific setup can be added here
+try:
+    import hou
     MODE=2
-elif is_maya():
-    # Maya specific setup can be added here
-    MODE=0
-else:
-    MODE=1
-    print("Warning: Running outside supported environments (Houdini or Maya). Limited functionality may be available.")
+except ImportError:
+    pass
 
+try:
+    import maya.cmds as cmds
+    import maya.OpenMayaUI as omui
+    from shiboken6 import wrapInstance  # Maya now uses shiboken6 with PySide6
+    from . import ncloth_cmds
+    from . import ziva_cmds
+    from .dendrology.nucleus_leaf import *
+    from .dendrology.ziva_leaf import ZSolverTreeItem, FasciaTreeItem, SkinTreeItem
+    from .dendrology.cache_leaf import CacheItem
+    from .sim_widget import CacheTree, CommentEditor, MapTree
+    MODE = 1
+except ImportError:
+    pass
+
+# ====================================================================
+# GENERAL FUNCTIONS
+# ====================================================================
+
+def copy_file(src, dest):
+    """Helper function to copy a single file."""
+    shutil.copyfile(src, dest)
+
+def copy_files_parallel(file_paths, destination_dir, max_workers=4):
+    """
+    Copies multiple files to the destination directory in parallel.
+
+    Args:
+        file_paths (list): List of file paths to copy.
+        destination_dir (str): Directory to copy files to.
+        max_workers (int): Number of parallel workers (threads).
+    """
+    destination_dir = Path(destination_dir)
+    if not destination_dir.exists():
+        destination_dir.mkdir(parents=True)
+
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = []
+        for src in file_paths:
+            dest = destination_dir / Path(src).name
+            futures.append(executor.submit(copy_file, src, dest))
+
+        for future in futures:
+            future.result()  # Ensure all files are copied
+
+
+def safe_copy_file(src, dest):
+    """Copy file safely, ensuring no file exists at the destination and creating directories as needed."""
+    dest_path = Path(dest)
+    dest_path.parent.mkdir(parents=True, exist_ok=True)
+
+    if not dest_path.exists():
+        shutil.copyfile(src, dest)
+
+
+def copy_files_safely(file_paths, destination_dir):
+    """
+    Copies multiple files to the destination directory sequentially.
+    Ensures Maya commands are only called from the main thread.
+    """
+    for src in file_paths:
+        dest = os.path.join(destination_dir, os.path.basename(src))
+
+        # Use Maya's main thread handling if any Maya-dependent file preparation or checks are needed.
+        mu.executeInMainThreadWithResult(safe_copy_file, src, dest)
+
+def copy_large_file(src, dest):
+    """Copy large files using memory mapping."""
+    with open(src, "rb") as fsrc, open(dest, "wb") as fdst:
+        # Memory-map the file, length 0 means whole file
+        with mmap.mmap(fsrc.fileno(), 0, access=mmap.ACCESS_READ) as m:
+            shutil.copyfileobj(m, fdst)
 # ====================================================================
 # WINDOW GETTER
 # ====================================================================
@@ -85,25 +125,26 @@ def get_houdini_window():
     return win
 
 
-def get_all_treeitems(tree_widget):
-    """ 
-    Get all QTreeWidgetItem objects from a given QTreeWidget.
+def get_all_treeitems(model, item_type=None):
+    """
+    Generator that yields items in the tree, optionally filtered by item type.
 
     Args:
-        tree_widget (QTreeWidget): The QTreeWidget instance to gather items from.
+        model (QtGui.QStandardItemModel): The model containing the tree.
+        item_type (str, optional): The type of items to yield (e.g., "nCloth").
 
-    Returns:
-        list[QTreeWidgetItem]: A list of all QTreeWidgetItem objects in the tree.
+    Yields:
+        QtGui.QStandardItem: Each matching item in the tree.
     """
-    items = []
-    iterator = QtWidgets.QTreeWidgetItemIterator(tree_widget)
+    def recurse(parent_item):
+        for row in range(parent_item.rowCount()):
+            child_item = parent_item.child(row)
+            if item_type is None or child_item.node_type == item_type:
+                yield child_item
+            yield from recurse(child_item)
 
-    while iterator.value():
-        item = iterator.value()
-        items.append(item)
-        iterator += 1
-
-    return items
+    root_item = model.invisibleRootItem()
+    yield from recurse(root_item)
 
 
 class DynEvalUI(QtWidgets.QMainWindow):
@@ -116,10 +157,17 @@ class DynEvalUI(QtWidgets.QMainWindow):
     def __init__(self, parent=None):
         super(DynEvalUI, self).__init__(parent)
         self.setGeometry(867, 546, 900, 400)
-        self.setWindowTitle('UI for Dynamic systems')
-        self.initUI()
+        self.setWindowTitle('UI for Dynamic Systems')
+        self.edit_mode = 'cache'
+        self.cache_mode = 'override' or 'increment'
 
-    def initUI(self):
+        self.central_widget = QtWidgets.QWidget(self)
+        self.setCentralWidget(self.central_widget)
+
+        self.init_ui()
+
+
+    def init_ui(self):
 
         """
         There is a tree node representing the solver
@@ -130,25 +178,20 @@ class DynEvalUI(QtWidgets.QMainWindow):
 
         """
 
-        self.edit_mode = 'cache'  # cache maps
-        self.cache_mode = 'override' or 'increment'
-
-        self.centralwidget = QtWidgets.QWidget(self)
-        self.setCentralWidget(self.centralwidget)
         main_layout = QtWidgets.QHBoxLayout()
 
-        # =====================================================================
-        # TREE WITH ALL THE HIERARCHY =========================================
-        vl_dyneval = QtWidgets.QVBoxLayout()
-        self.dyn_eval_tree = QtWidgets.QTreeWidget()
-        self.dyn_eval_tree.setObjectName("dyn_hierarchy")
-        # enable multiple selection
+        # Set up the main tree model
+        self.dyn_eval_tree = QtWidgets.QTreeView()
+        self.dyn_eval_model = QtGui.QStandardItemModel()
+        self.dyn_eval_tree.setModel(self.dyn_eval_model)
         self.dyn_eval_tree.setSelectionMode(QtWidgets.QAbstractItemView.ExtendedSelection)
-        self.dyn_eval_tree.setColumnCount(2)
-        self.dyn_eval_tree.setHeaderLabels(["Name", "I/O"])
+        self.dyn_eval_tree.setHeaderHidden(False)
+        self.dyn_eval_model.setHorizontalHeaderLabels(["Name", "I/O"])
+
         self.dyn_eval_tree.setMinimumWidth(280)
         self.dyn_eval_tree.setMaximumWidth(300)
         self.dyn_eval_tree.setExpandsOnDoubleClick(False)
+        self.dyn_eval_tree.setColumnCount(2)
         # make last header 'I/O' not stretchable
         header = self.dyn_eval_tree.header()
         header.setStretchLastSection(False)
@@ -156,97 +199,173 @@ class DynEvalUI(QtWidgets.QMainWindow):
         self.dyn_eval_tree.setAlternatingRowColors(True)
         self.dyn_eval_tree.setColumnWidth(0, 250)
         self.dyn_eval_tree.setColumnWidth(1, 25)
-
-        # self.dyn_eval_tree.setItemDelegateForColumn(1, ToggleButtonDelegate(self.dyn_eval_tree))
-        # self.dyn_eval_tree.itemDelegateForColumn(1).toggled.connect(self.on_toggle)
-
+        # Button to switch on/off to the "I/O" column (1)
+        toggle_delegate = ToggleButtonDelegate(self.dyn_eval_tree)
+        self.dyn_eval_tree.setItemDelegateForColumn(1, toggle_delegate)
         # Create a contextual menu
         self.dyn_eval_tree.installEventFilter(self)
         self.dyn_eval_tree.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
         self.dyn_eval_tree.customContextMenuRequested.connect(self.context_main)
 
-        self.build_tree()
 
-        # =====================================================================
-        # TREE WITH ALL THE CACHE OR ALL THE MAPS PAINTABLE ===================
-        # radio box : cache / maps
-        # tree widget
-        # TODO : make a widget in order to teatoff
-        vl_cachemap = QtWidgets.QVBoxLayout()
-
+        # Set up the cache and maps area
         self.cb_mode_picker = QtWidgets.QComboBox()
-        self.cb_mode_picker.addItem("Cache List")
-        self.cb_mode_picker.addItem("Map List")
         # todo : deformer list
-        self.cb_mode_picker.setCurrentIndex(0)
-
-        self.cache_tree = sim_widget.CacheTree()
-        self.maps_tree = sim_widget.MapTree()
+        self.cb_mode_picker.addItems(["Cache List", "Map List"])
+        self.cache_tree = CacheTree()
+        self.maps_tree = MapTree()
         self.maps_tree.hide()
-        self.cache_tree.setMinimumHeight(365)
-        self.maps_tree.setMinimumHeight(365)
-        vl_cachemap.addStretch(True)
-        vl_cachemap.setMargin(2)
 
-        # =====================================================================
-        # TABS ================================================================
-        # number 01:
-        # Initialize tab screen
-        self.vl_tabs = QtWidgets.QVBoxLayout()
+        # Layout for Cache/Map
+        vl_cachemap = QtWidgets.QVBoxLayout()
+        vl_cachemap.addWidget(self.cb_mode_picker)
+        vl_cachemap.addWidget(self.cache_tree)
+        vl_cachemap.addWidget(self.maps_tree)
+        vl_cachemap.setStretch(0)
+
+        # Tab setup
         self.tabs = QtWidgets.QTabWidget()
-        self.tab1_comment = sim_widget.CommentEditor(None)
-        self.tab2 = QtWidgets.QWidget()
-        self.tab3 = QtWidgets.QWidget()
-        self.tab4 = QtWidgets.QWidget()
-        self.tab5 = QtWidgets.QWidget()
-        self.tab6 = QtWidgets.QWidget()
-        self.tab7 = QtWidgets.QWidget()
-
+        self.tab1_comment = CommentEditor()
+        self.tabs.addTab(self.tab1_comment, "comments")
+        # TODO : add other tabs: paint presets attributes wedging sim rig utils
         self.tabs.resize(200, 500)
 
-        # Add tabs
-        self.tabs.addTab(self.tab1_comment, "comments")
-        self.tabs.addTab(self.tab2, "paint")
-        self.tabs.addTab(self.tab3, "presets")
-        self.tabs.addTab(self.tab4, "attributes")
-        self.tabs.addTab(self.tab7, "wedging")
-        self.tabs.addTab(self.tab5, "sim rig")
-        self.tabs.addTab(self.tab6, "utils")
 
-        # Add tabs to widget
-        self.vl_tabs.addWidget(self.tabs)
-
-        # =====================================================================
-        # SET LAYOUT AND WIDGET ===============================================
-        main_layout.addLayout(vl_dyneval)
+        # Add layouts to main layout
+        main_layout.addWidget(self.dyn_eval_tree)
         main_layout.addLayout(vl_cachemap)
-        main_layout.addLayout(self.vl_tabs)
-        vl_dyneval.addWidget(self.dyn_eval_tree)
-        vl_cachemap.addWidget(self.cb_mode_picker)
-        vl_cachemap.addWidget(self.maps_tree)
-        vl_cachemap.addWidget(self.cache_tree)
-        self.centralwidget.setLayout(main_layout)
+        main_layout.addWidget(self.tabs)
 
-        # =====================================================================
-        # SIGNAL ==============================================================
-        # First Tree Widget
-
-        self.dyn_eval_tree.itemSelectionChanged.connect(self.cache_map_sel)
-        self.dyn_eval_tree.itemDoubleClicked.connect(self.select)
-        # Mode Select
+        # Connections
         self.cb_mode_picker.currentIndexChanged.connect(self.cache_map_on_change)
-
-        self.cache_tree.cache_tree.itemSelectionChanged.connect(self.set_comment)
+        self.dyn_eval_tree.selectionModel().selectionChanged.connect(self.cache_map_sel)
         self.tab1_comment.save.connect(self.save_comment)
+        # Handle toggle actions with itemChanged signal
+        self.dyn_eval_model.itemChanged.connect(self.on_toggle)
 
+        self.build_tree()
+
+
+    # ====================================================================
+    # TREE BUILDING METHODS
+    # ====================================================================
+    def build_tree(self):
+        """
+        Populates the model with items representing nucleus-based and Ziva elements.
+        Clears the current model contents before rebuilding.
+        """
+        # Clear existing items to rebuild the tree
+        self.dyn_eval_model.clear()
+
+        # Populate nucleus and ziva trees separately
+        self._build_nucleus_tree()
+        self._build_ziva_tree()
+
+    def _build_nucleus_tree(self):
+        """
+        Helper to populate the tree with nucleus-based elements.
+        This includes characters, solvers, and dynamic elements like nCloth and nHair.
+        """
+        # Retrieve the system hierarchy for nucleus items
+        system_hierarchy = ncloth_cmds.dw_get_hierarchy()
+
+        # Loop through each character to build the tree
+        for character, solvers in system_hierarchy.items():
+            char_item = CharacterTreeItem(character)  # Create the character item
+
+            # Sort solvers and loop through each one, attaching dynamic elements
+            for solver in ncloth_cmds.sort_list_by_outliner(solvers):
+                solver_item = NucleusStandardItem(solver)
+                char_item.appendRow(solver_item)
+                elements = solvers[solver]
+
+                # Populate cloth, hair, and rigid items
+                self._populate_elements(elements, solver_item)
+
+            # Add the character item to the main model
+            self.dyn_eval_model.appendRow(char_item)
+
+    def _build_ziva_tree(self):
+        """
+        Helper to populate the tree with Ziva simulation elements.
+        This includes characters, muscles, and skin nodes.
+        """
+        # Retrieve the Ziva system hierarchy
+        ziva_hierarchy = ziva_cmds.ziva_sys()
+
+        # Loop through each character to build Ziva-related elements
+        for character, node_types in ziva_hierarchy.items():
+            char_item = CharacterTreeItem(character)
+
+            # Populate muscles and skins under the character item
+            self._populate_items(node_types.get('muscle', []), FasciaTreeItem, char_item)
+            self._populate_items(node_types.get('skin', []), SkinTreeItem, char_item)
+
+            # Add the character item to the main model
+            self.dyn_eval_model.appendRow(char_item)
+
+    def _populate_elements(self, elements, parent_item):
+        """
+        Populates dynamic elements such as nCloth, hairSystem, and nRigid under a parent item.
+
+        Args:
+            elements (dict): Dictionary with element types as keys (e.g., 'nCloth') and nodes as values.
+            parent_item (QtGui.QStandardItem): The parent tree item to attach elements to.
+        """
+        # Populate each element type
+        self._populate_items(elements.get('nCloth', []), ClothTreeItem, parent_item)
+        self._populate_items(elements.get('hairSystem', []), HairTreeItem, parent_item)
+        self._populate_items(elements.get('nRigid', []), NRigidTreeItem, parent_item)
+
+    def _populate_items(self, nodes, item_class, parent_item):
+        """
+        Helper function to populate items of a specific type under a given parent item.
+
+        Args:
+            nodes (list): List of node names to add as items.
+            item_class (type): The class used to create items (e.g., ClothTreeItem).
+            parent_item (QtGui.QStandardItem): The parent item to append nodes to.
+        """
+        # Sort and add each node to the parent item
+        for node in ncloth_cmds.sort_list_by_outliner(nodes):
+            item = item_class(node)
+            parent_item.appendRow(item)
+
+    # ====================================================================
+    # SELECTION HELPERS
+    # ====================================================================
+
+    def get_selected_tree_item(self,
+                               multiple_selection=False) -> QtGui.QStandardItem:
+        """Get the first selected item in the QTreeView.
+
+        Returns:
+            QtGui.QStandardItem: The first selected item, if any.
+        """
+        indexes = self.dyn_eval_tree.selectionModel().selectedRows()
+        if indexes:
+            if multiple_selection:
+                return [self.dyn_eval_model.itemFromIndex(index) for index in indexes]
+            return self.dyn_eval_model.itemFromIndex(indexes[0])
+        return None
+
+    # ====================================================================
+    # TOGGLE AND STATE MANAGEMENT
+    # ====================================================================
 
     def on_toggle(self, index, state):
         """Slot to handle toggling of dynamic state from delegate."""
         item = self.model.itemFromIndex(index)
         item.setData(state, QtCore.Qt.UserRole + 3)  # Update model data if needed
         # Apply state change to the node in Maya
-        cmds.setAttr(f"{item.node}.{item.state_attr}", int(state))
+        try:
+            cmds.setAttr(f"{item.node}.{item.state_attr}", int(state))
+        except Exception as e:
+            cmds.warning(f"Failed to toggle state for {item.node}: {e}")
 
+    # ====================================================================
+    # CONTEXT MENU AND ACTIONS
+    # ====================================================================
 
     def context_main(self, position):
 
@@ -271,7 +390,7 @@ class DynEvalUI(QtWidgets.QMainWindow):
         # Open Documentation
         docu = QtWidgets.QMenu('documentation', self)
         char = QtWidgets.QAction(self)
-        char.setText('Winnie PlaceHolder')
+        char.setText('Character PlaceHolder')
         docu.addAction(char)
         menu.addMenu(docu)
 
@@ -281,402 +400,428 @@ class DynEvalUI(QtWidgets.QMainWindow):
             return
 
         # see what type of Item we had : nCloth, Nucleus, nHairSystem, Ziva...
-        _types = [i.node_type for i in items]
-        # Are they all from the same type
-        types_uniq = list(set(_types))
-        if len(types_uniq) == 1:
-            # if from the same type add cache methods Label
-            lock = QtWidgets.QWidgetAction(self)
-            lock.setDefaultWidget(QtWidgets.QLabel(' '*7+'Cache Methods :'))
-            menu.addAction(lock)
-            # Add Ncache
-            if 'nCloth' in types_uniq or 'hairSystem' in types_uniq:
-                lock = QtWidgets.QAction(self)
-                lock.setText('create nCache for sel')
-                lock.triggered.connect(self.createCache)
-                menu.addAction(lock)
-                menu.addSeparator()
-            # Add GeoCache : geocache should work elsewhere in the hierarchy
-            # if same topo
-            if 'nCloth' in types_uniq or 'nRigid' in types_uniq:
-                lock = QtWidgets.QAction(self)
-                lock.setText('create geocache for sel')
-                menu.addAction(lock)
-                menu.addSeparator()
-
-            if 'zSolverTransform' in types_uniq:
-                lock = QtWidgets.QAction(self)
-                lock.setText('create Alembic for sel')
-                lock.triggered.connect(self.createZAbcCache)
-                menu.addAction(lock)
-                menu.addSeparator()
+        # Check if items are all of the same type
+        unique_types = {i.node_type for i in items}
+        if len(unique_types) == 1:
+            node_type = unique_types.pop() # Get the single unique node type
+            self._context_add_cache_options(menu, node_type)
 
         menu.exec_(self.dyn_eval_tree.viewport().mapToGlobal(position))
 
+    def _context_add_cache_options(self, menu, node_type):
+        """
+        Adds cache creation options to the context menu based on the node type.
+
+        Args:
+            menu (QtWidgets.QMenu): The context menu to add cache options to.
+            node_type (str): The type of the selected node to determine applicable options.
+        """
+        # Add a label for the cache options section
+        cache_label = QtWidgets.QWidgetAction(self)
+        cache_label.setDefaultWidget(QtWidgets.QLabel(' '*7+'Cache Methods :'))
+        menu.addAction(cache_label)
+
+        # Add specific cache options based on the node type
+        if node_type in ['nCloth', 'hairSystem']:
+            menu.addAction(self._context_create_action('Create nCache for Selected', self.createCache))
+            menu.addSeparator()
+
+        if node_type in ['nCloth', 'nRigid']:
+            menu.addAction(self._context_create_action('Create GeoCache for Selected', self.createGeoCache))
+            menu.addSeparator()
+
+        if node_type == 'zSolverTransform':
+            menu.addAction(self._context_create_action('Create Alembic Cache', self.createZAbcCache))
+            menu.addSeparator()
+
+    def _context_create_action(self, text, handler):
+        """
+        Helper method to create a QAction for the context menu with a connected handler.
+
+        Args:
+            text (str): The display text for the action.
+            handler (callable): The function to call when the action is triggered.
+
+        Returns:
+            QtWidgets.QAction: The created action with the specified text and handler.
+        """
+        action = QtWidgets.QAction(text, self)
+        action.triggered.connect(handler) # Connect the specified handler function
+        return action
+
+    # ====================================================================
+    # CACHE CREATION METHODS
+    # ====================================================================
+
     def createZAbcCache(self):
+        """
+        Creates an Alembic cache for selected items and updates metadata.
+        This function supports multiple selections, typically for muscle and skin elements.
+        """
         dyn_items = self.dyn_eval_tree.selectedItems()
-        suffix = ''
-        _iter_list = sorted([str(i.get_iter() + 1) for i in dyn_items])
-        current_iter = int(_iter_list[-1])
-
-        meshes = []
-        futurdir = []
-
-        for i in dyn_items:
-            shape = i.get_meshes()
-            meshes += shape
-            if current_iter != i.get_iter():
-                mode = current_iter - i.get_iter()
-            else:
-                mode = 1 # increment the cache by one
-            cachePath = i.cache_file(mode, suffix)
-            futurdir.append(cachePath)
+        if not dyn_items:
+            cmds.warning("No items selected for Alembic caching.")
+            return
+        current_iter, futurdir, meshes = self._prepare_cache_items(dyn_items)
 
         # even if an abc cache of one item, it should have only one abc
         # we support multiple selection if we cache muscle + skin
-        futurdir = list(set(futurdir))
-        meshes = list(set(meshes))
         print(futurdir)
         caches = ziva_cmds.create_cache(futurdir[0], meshes)
         if len(futurdir) > 1:
             for file in futurdir:
-                limi = len(file.split('/')) - 4
-                dw_json.make_chmod_dir(file.rsplit('/', 1)[0],
-                                       limi)
-                shutil.copyfile(caches, file)
-                os.chmod(file, 0777)
+                copy_files_safely(caches, file)
 
         # ===============================================================
-        # Comment :
-        for i in dyn_items:
-            json_metadata = i.metadata()
-
-            solver = i.solver_name
-            json_recap_dic = {'comment': {}}
-            comment = self.tab1_comment.getComment() or None
-            if comment:
-                json_recap_dic['comment'][solver] = {}
-                json_recap_dic['comment'][solver][current_iter] = comment
-
-                if os.path.isfile(json_metadata):
-                    dw_json.updateJson(json_metadata, dict(json_recap_dic))
-                else:
-                    dw_json.saveJson(json_metadata, dict(json_recap_dic))
-
-            # PRESET AUTO SAVE :
-
-            if self.save_preset:
-                json_preset_dic = {'preset': {}}
-                current_preset = ziva_cmds.get_preset(solver)
-                json_preset_dic['preset'][solver] = {}
-                json_preset_dic['preset'][solver][current_iter] = current_preset
-
-            if os.path.isfile(json_metadata):
-                dw_json.updateJson(json_metadata, dict(json_preset_dic))
-            else:
-                dw_json.saveJson(json_metadata, dict(json_preset_dic))
-
-        # ===============================================================
+        # Comment + preset:
+        comment = self.tab1_comment.getComment() or None
+        preset = ziva_cmds.get_preset(dyn_items[0].solver_name) if self.save_preset else None
+        if comment or preset:
+            self._update_cache_metadata(dyn_items[0],
+                                        current_iter,
+                                        comment=comment,
+                                        preset=preset)
 
         # ===============================================================
         # attach cache
         for i in dyn_items:
             abc = i.alembic_target() + '.filename'
-            cmds.setAttr(abc, i.cache_file(0, suffix), type='string')
+            cmds.setAttr(abc, i.cache_file(0, suffix=""), type='string')
 
         # ===============================================================
         if self.edit_mode == 'cache':
-            cmds.evalDeferred('dwsimui.cache_tree.build_cache_list()')
+            mu.executeDeferred(self.cache_tree.build_cache_list)
 
 
     def createCache(self):
+        """
+        Creates an nCache for selected nCloth items and updates metadata.
+        This function supports multiple selections for nCloth items.
+        """
         # cacheDir cacheFile()
         dyn_items = self.dyn_eval_tree.selectedItems()
-        ncloth = []
-        futurdir = []
-        tmpdir = ''
-
-        _iter_list = sorted([str(i.get_iter() + 1) for i in dyn_items])
-        current_iter = _iter_list[-1]
-
         if not dyn_items:
-            cmds.warning('nothing selected')
+            cmds.warning("No items selected for nCache creation.")
             return
-        for i in dyn_items:
-            shape = i.node
-            ncloth.append(shape)
-            if tmpdir == '':
-                tmpdir = i.cache_dir(0)
-            if current_iter != i.get_iter():
-                mode = int(current_iter) - i.get_iter()
-            else:
-                mode = 1 # increment the cache by one
-            cachePath = i.cache_file(mode)
-            futurdir.append(cachePath)
+
+        current_iter, futurdir, ncloth = self._prepare_cache_items(dyn_items, is_abc=False)
+        tmpdir = dyn_items[0].cache_dir(0) if dyn_items else ''
+
+        # Ensure target directories exist
         for path in futurdir:
-            make_dir('/'.join(path.split('/')[:-1]))
+            Path(path).parent.mkdir(parents=True, exist_ok=True)
 
-        print(cachePath)
-
+        # Delete existing caches and create new ones
         cmds.waitCursor(state=1)
         ncloth_cmds.delete_caches(ncloth)
         cmds.waitCursor(state=0)
         caches = ncloth_cmds.create_cache(ncloth, tmpdir)
 
         # ===============================================================
-        # Comment + preset:
-        json_metadata = i.metadata()
-
-        solver = i.solver_name
-        json_recap_dic = {'comment': {}}
+        # Update metadata with comments and presets if applicable
         comment = self.tab1_comment.getComment() or None
+        preset = None  # Add logic to set preset if needed
+        if comment or preset:
+            self._update_cache_metadata(dyn_items[0], current_iter, comment=comment, preset=preset)
+
+        # Attach cache to nCloth nodes
+        self._attach_ncache(caches, futurdir, ncloth, tmpdir)
+
+        # Refresh cache list in edit mode
+        if self.edit_mode == 'cache':
+            mu.executeDeferred(self.cache_tree.build_cache_list)
+
+    # ====================================================================
+    # CACHE ITEM PREPARATION AND ATTACHMENT HELPERS
+    # ====================================================================
+
+    def _prepare_cache_items(self, dyn_items, is_abc=True):
+        """
+        Prepares items for caching, including calculating cache paths and collecting meshes.
+
+        Args:
+            dyn_items (list): Selected dynamic items for caching.
+            is_abc (bool): Flag to differentiate between Alembic and nCache.
+
+        Returns:
+            tuple: A tuple containing current iteration, future cache directories, and node/mesh lists.
+        """
+        suffix = ''
+        _iter_list = sorted([str(i.get_iter() + 1) for i in dyn_items])
+        current_iter = int(_iter_list[-1])
+
+        futurdir = []
+        nodes_or_meshes = []
+
+        for i in dyn_items:
+            shape = i.get_meshes() if is_abc else i.node
+            nodes_or_meshes += shape if isinstance(shape, list) else [shape]
+
+            # Determine cache mode based on iteration
+            mode = current_iter - i.get_iter() if current_iter != i.get_iter() else 1
+            cache_path = i.cache_file(mode, suffix)
+            futurdir.append(cache_path)
+
+        return current_iter, list(set(futurdir)), list(set(nodes_or_meshes))
+
+    def _update_cache_metadata(self, item: QtWidgets.QTreeWidgetItem,
+                               recap_dic: dict,
+                               current_iter: str,
+                               comment=None,
+                               preset=None):
+        """
+        Helper to update cache metadata with comments and presets.
+
+        Args:
+            item (QtWidgets.QTreeWidgetItem): Tree item representing the cached object.
+            current_iter (int): Current iteration/version of the cache.
+            comment (str, optional): User-specified comment for the cache.
+            preset (dict, optional): Preset data for the cache.
+        """
+
+        recap_dic = recap_dic or {'comment': {}, 'preset': {}}
+        solver_name = item.solver_name
+
         if comment:
-            json_recap_dic['comment'][solver] = {}
-            json_recap_dic['comment'][solver][current_iter] = comment
+            recap_dic['comment'][solver_name] = {current_iter: comment}
 
-            if os.path.isfile(json_metadata):
-                dw_json.updateJson(json_metadata, dict(json_recap_dic))
-            else:
-                dw_json.saveJson(json_metadata, dict(json_recap_dic))
-        # ===============================================================
+        if preset:
+            recap_dic['preset'][solver_name] = {current_iter: preset}
 
-        # ===============================================================
-        # attach cache
-        mylist = os.listdir(tmpdir)
+        json_file = item.metadata()
 
-        for cache in zip(caches, futurdir, ncloth):
-            det = [c for c in mylist if c.startswith(cache[0])]
-            for fileName in det:
-                src = tmpdir + fileName
-                currext = src.split('.')[-1]
-                dst = cache[1].replace('.xml', '.' + currext)
+        # Use deferred JSON save or merge based on file existence
+        if os.path.isfile(json_file):
+            dw_json.merge_json(json_file, recap_dic, indent=4, defer=True)
+        else:
+            dw_json.save_json(json_file, recap_dic, indent=4, defer=True)
+
+    def _attach_ncache(self, caches, futurdir, ncloth, tmpdir):
+        """
+        Attaches nCaches to nCloth nodes.
+
+        Args:
+            caches (list): List of cache files.
+            futurdir (list): List of target cache directories.
+            ncloth (list): List of nCloth nodes.
+            tmpdir (str): Temporary directory for caches.
+        """
+        file_list = os.listdir(tmpdir)
+
+        for cache_name, target_dir, ncloth_node in zip(caches, futurdir, ncloth):
+            # Move and rename cache files based on cache name
+            cache_files = [f for f in file_list if f.startswith(cache_name)]
+            for file_name in cache_files:
+                src = os.path.join(tmpdir, file_name)
+                extension = src.split('.')[-1]
+                dst = target_dir.replace('.xml', '.' + extension)
                 shutil.move(src, dst)
             try:
-                cmd = "simtool.ncloth_cmds.attach_ncache('{}', '{}')"
-                cmds.evalDeferred(cmd.format(cache[1],
-                                             cache[2]))
-            except:
-                cmds.evalDeferred(
-                    "ncloth_cmds.attach_ncache('{}', '{}')".format(cache[1],
-                                                                 cache[2]))
-        # ===============================================================
-        if self.edit_mode == 'cache':
-            cmds.evalDeferred('dwsimui.cache_tree.build_cache_list()')
+                # Deferred execution for attaching nCache
+                mu.executeDeferred(ncloth_cmds.attach_ncache, target_dir, ncloth_node)
+            except Exception as e:
+                cmds.warning(f"Failed attaching {target_dir} to {ncloth_node}. Error: {e}")
 
-    # GENERAL FUNCTION
+    # ====================================================================
+    # COMMENTS
+    # ====================================================================
+
+    def set_comment(self, dyn_item):
+        """
+        Sets the comment in the UI for the selected dynamic item, if applicable.
+
+        Args:
+            dyn_item: The dynamic item selected in the main tree view.
+        """
+        if not dyn_item or dyn_item.node_type not in ['zSolverTransform', 'nCloth', 'hairSystem']:
+            self.tab1_comment.setTitle(None)
+            self.tab1_comment.setComment(None)
+            return
+
+        cache_item = self.cache_tree.selected()
+        if cache_item:
+            metadata = dyn_item.metadata()
+            self.tab1_comment.setTitle(dyn_item.short_name)
+            if os.path.isfile(metadata):
+                # Load and set the comment if metadata exists
+                data = dw_json.load_json(metadata)
+                comment = data.get('comment', {}).get(dyn_item.solver_name, {}).get(cache_item.version, "")
+                self.tab1_comment.setComment(comment)
+            else:
+                # Clear comment if no cache item is selected or metadata is missing
+                self.tab1_comment.setComment(None)
+
     def save_comment(self, comment):
-        item = self.dyn_eval_tree.currentItem()
-        # ===============================================================
-        # Comment :
+        """
+        Saves a user-provided comment for selected cache versions of the selected item.
+
+        Args:
+            comment (str): The comment text to save.
+        """
+        item = self.get_selected_tree_item()
+        if not item:
+            cmds.warning("No item selected to save comment.")
+            return
+
         json_metadata = item.metadata()
         solver = item.solver_name
-
         sel_caches = self.cache_tree.cache_tree.selectedItems()
 
         json_recap_dic = {'comment': {}}
         if comment:
             for cache in sel_caches:
-                json_recap_dic['comment'][solver] = {}
-                json_recap_dic['comment'][solver][cache.version] = comment
-
+                json_recap_dic['comment'][solver] = {cache.version: comment}
                 if os.path.isfile(json_metadata):
-                    dw_json.updateJson(json_metadata, dict(json_recap_dic))
+                    dw_json.merge_json(json_metadata, json_recap_dic, defer=True)
                 else:
-                    dw_json.saveJson(json_metadata, dict(json_recap_dic))
-        # ===============================================================
+                    dw_json.save_json(json_metadata, json_recap_dic, defer=True)
 
-    def set_comment(self):
-
-        _types = ['zSolverTransform', 'nCloth', 'hairSystem']
-
-        if self.edit_mode != 'cache':
-            return
-
-        dyn_item = self.dyn_eval_tree.currentItem()
-        if not dyn_item:
-            self.tab1_comment.setTitle(None)
-            self.tab1_comment.setComment(None)
-            return
-        else:
-            if dyn_item.node_type not in _types:
-                self.tab1_comment.setTitle(None)
-                self.tab1_comment.setComment(None)
-                return
-
-        cache_item = self.cache_tree.selected()
-        if cache_item:
-            name = cache_item.text(0)
-            p = re.compile('v([0-9]{3})')
-            _iter = str(int(p.search(name).group(0)[1:]))
-            solver = dyn_item.solver_name
-            metadata = dyn_item.metadata()
-
-            self.tab1_comment.setTitle(dyn_item.short_name)
-            self.tab1_comment.setComment('')
-
-            if os.path.isfile(metadata):
-                data = dw_json.loadJson(metadata)
-                if not solver in data['comment']:
-                    return
-                if not _iter in data['comment'][solver]:
-                    return
-                comm = data['comment'][solver][_iter]
-                self.tab1_comment.setComment(comm)
+    # ====================================================================
+    # CACHE AND MAP MODE TOGGLING
+    # ====================================================================
 
     def cache_map_on_change(self):
-        mode = self.cb_mode_picker.currentIndex()
-        if mode == 0:
-            self.edit_mode = 'cache'
-        else:
-            self.edit_mode = 'maps'
-
-        self.cache_map_sel()
+        """
+        Changes the UI mode between cache and maps based on the mode picker selection.
+        """
+        # Set edit mode based on current selection in the mode picker
+        self.edit_mode = 'cache' if self.cb_mode_picker.currentIndex() == 0 else 'maps'
+        self.cache_map_sel()  # Update the display based on the selected mode
 
     def cache_map_sel(self):
-        # find the current node
-        dyn_item = self.dyn_eval_tree.selectedItems()
+        """
+        Updates the display to show either the cache tree or the maps tree,
+        based on the current edit mode.
+        """
+        dyn_item = self.get_selected_tree_item()
 
+        # Toggle visibility of cache and maps trees
         if self.edit_mode == 'cache':
-            # hide the map, show cache
-            self.maps_tree.hide()
+            self.maps_tree.hide() # apparently there is a method setVisible(bool)
             self.cache_tree.show()
-            # refresh the cache tree
             self.cache_tree.set_node(dyn_item)
-            self.cache_tree.select(0)
-            # set comment if there is
-            self.set_comment()
+            self.set_comment(dyn_item)
         else:
-            # show the map, hide cache
             self.cache_tree.hide()
             self.maps_tree.show()
-            # refresh the map tree
-            self.maps_tree.set_node(dyn_item[0])
+            self.maps_tree.set_node(dyn_item)
 
+    # ====================================================================
+    # SELECTION METHOD
+    # ====================================================================
 
     def select(self):
+        """
+        Selects the appropriate transform or node for the current item in the dyn_eval_tree.
+        """
         dyn_item = self.dyn_eval_tree.currentItem()
-        if dyn_item.node:
-            filter = ['nRigid', 'dynamicConstraint']
-            if dyn_item.node_type in filter:
-                transform = cmds.listRelatives(dyn_item.node, p=1)
-            elif dyn_item.node_type == 'nCloth':
-                # transform = cmds.listRelatives(item.node, p=1)
-                transform = dyn_item.mesh_transform
-            else:
-                transform = dyn_item.node
-            ncloth_cmds.cmds.select(transform, r=True)
+        if not dyn_item or not dyn_item.node:
+            cmds.warning("No item selected or item has no associated node.")
+            return
 
-    def guess_sel_tree_item(self, type='nCloth', sel_input=None):
+        # Determine the transform based on node type
+        _filter = ['nRigid', 'dynamicConstraint']
+        if dyn_item.node_type in _filter:
+            transform = cmds.listRelatives(dyn_item.node, p=1)
+        elif dyn_item.node_type == 'nCloth':
+            # transform = cmds.listRelatives(item.node, p=1)
+            transform = dyn_item.mesh_transform
+        else:
+            transform = dyn_item.node
 
+        # Execute selection command with the determined transform
+        cmds.select(transform, r=True)
+
+    # ====================================================================
+    # TREE ITEM SELECTION GUESSING
+    # ====================================================================
+
+    def guess_sel_tree_item(self, _type='nCloth', sel_input=None):
+        """
+        Attempts to auto-select a tree item in the UI based on a guessed selection.
+
+        Args:
+            type (str): The type of item to select ('nCloth', 'hairSystem', or 'refresh').
+            sel_input: Optional input to directly set as selected if type is 'refresh'.
+
+        Returns:
+            bool: True if a matching item was found and selected, False otherwise.
+        """
+
+        selected = None
         all_items = get_all_treeitems(self.dyn_eval_tree)
-        if type == 'refresh':
-            selected = sel_input
-        elif type == 'nCloth':
-            selected = ncloth_cmds.get_nucleus_sh_from_sel()
-        elif type == 'hairSystem':
-            selected = ncloth_cmds.get_nucleus_sh_from_sel()
+        selected = self._get_selected_node(_type, sel_input)
+
         if selected:
             for item in all_items:
                 if item.node == selected:
-                    # Auto-select cloth node in the UI
+                    # Auto-select the matching tree item in the UI
                     self.dyn_eval_tree.setCurrentItem(item)
 
-                    # DW - expand the parents
-                    if item.parent():
-                        item.parent().setExpanded(True)
-                    if item.parent().parent():
-                        item.parent().parent().setExpanded(True)
+                    # Expand parent items to make the selection visible
+                    self._expand_parents(item)
                     return True
         return False
 
-    def build_tree(self):
+    def _get_selected_node(self, _type, sel_input):
+        """
+        Determines the selected node based on the provided type and input.
 
-        self.dyn_eval_tree.clear()
+        Args:
+            type (str): The type of item to select ('nCloth', 'hairSystem', or 'refresh').
+            sel_input: Optional input to directly set as selected if type is 'refresh'.
 
-        items = []
+        Returns:
+            str or None: The name of the selected node, or None if not found.
+        """
+        if type == 'refresh':
+            return sel_input
+        elif type in ['nCloth', 'hairSystem']:
+            # Retrieve nucleus shape node for both 'nCloth' and 'hairSystem'
+            return ncloth_cmds.get_nucleus_sh_from_sel()
+        return None
 
-        _sys = ncloth_cmds.dw_get_hierarchy()
-        for char in _sys.keys():
-            # char are the characters name
-            char_item = CharacterTreeItem(str(char), self.dyn_eval_tree)
-            nucleus_list = ncloth_cmds.sort_list_by_outliner(_sys[char])
-            for nucleus in nucleus_list:
-                # add nucleus
-                tree_nucleus = NucleusTreeItem(nucleus, char_item)
-                char_item.addChild(tree_nucleus)
+    def _expand_parents(self, item):
+        """
+        Expands the parent items of the specified tree item to make it visible.
 
-                # ADD CLOTH AND HAIRSYS
-                if 'nCloth' in _sys[char][nucleus]:
-                    if _sys[char][nucleus]['nCloth']:
-                        ncloth_nodes = _sys[char][nucleus]['nCloth']
-                        ncloth_list = ncloth_cmds.sort_list_by_outliner(ncloth_nodes)
-                        for cloth in ncloth_list:
-                            tree_cloth = ClothTreeItem(cloth, tree_nucleus)
-                            tree_nucleus.addChild(tree_cloth)
+        Args:
+            item: The tree item to expand parents for.
+        """
+        # Recursively expand parents to reveal the item in the tree view
+        parent = item.parent()
+        while parent:
+            parent.setExpanded(True)
+            parent = parent.parent()
 
-                if 'nHair' in _sys[char][nucleus]:
-                    if _sys[char][nucleus]['nHair']:
-                        nhair_nodes = _sys[char][nucleus]['nHair']
-                        nhair_list = ncloth_cmds.sort_list_by_outliner(nhair_nodes)
-                        for cloth in nhair_list:
-                            tree_hair = HairTreeItem(cloth, tree_nucleus)
-                            tree_nucleus.addChild(tree_hair)
-
-                # ADD NRIGID
-                if _sys[char][nucleus]['nRigid']:
-                    for nrigid in _sys[char][nucleus]['nRigid']:
-                        #tree_rigid = NRigidTreeItem(nrigid, tree_nucleus)
-                        tree_rigid = NRigidTreeItem(nrigid, tree_nucleus)
-                        tree_nucleus.addChild(tree_rigid)
-
-                #
-                #     # charItem.addChild(tree_cloth)
-                #
-                # for hair in _sys[char][nucleus]['nHair']:
-                #     tree_hair = HairTreeItem(hair, tree_nucleus)
-                #     # charItem.addChild(tree_hair)
-
-            items.append(char_item)
-
-        ziva_sys = ziva_cmds.rfx_sys()
-
-        for char in ziva_sys.keys():
-            # char are the characters name
-            char_item = CharacterTreeItem(str(char), self.dyn_eval_tree)
-            muscle_list = ziva_sys[char]['muscle']
-            if muscle_list:
-                muscle_list = ncloth_cmds.sort_list_by_outliner(muscle_list)
-                # MUSCLES
-                for muscle in muscle_list:
-                    tree_fascia = FasciaTreeItem(muscle, char_item)
-                    char_item.addChild(tree_fascia)
-
-            skin_list = ziva_sys[char]['skin']
-            if skin_list:
-                skin_list = ncloth_cmds.sort_list_by_outliner(skin_list)
-                # MUSCLES
-                for skin in skin_list:
-                    tree_skin = SkinTreeItem(skin, char_item)
-                    char_item.addChild(tree_skin)
-
-            items.append(char_item)
-
-        self.dyn_eval_tree.addTopLevelItems(items)
+    # ====================================================================
+    # SIGNAL RECONNECTION
+    # ====================================================================
 
     def reconnect(self, signal, newhandler=None, oldhandler=None):
-        '''
-        NB: the loop is needed for safely disconnecting a specific handler,
-            because it may have been connected multple times, and disconnect
-            only removes one connection at a time
-        '''
+        """
+        Safely reconnects a signal to a new handler, optionally disconnecting a specific old handler.
+
+        Args:
+            signal (QtCore.Signal): The signal to reconnect.
+            newhandler (callable, optional): The new handler function to connect to the signal.
+            oldhandler (callable, optional): The specific old handler function to disconnect.
+                                             If not provided, all existing connections are removed.
+        """
+        # Disconnect the old handler(s) safely, accounting for multiple connections
         while True:
             try:
                 if oldhandler is not None:
+                    # Disconnect only the specified handler, one connection at a time
                     signal.disconnect(oldhandler)
                 else:
+                    # Disconnect all connections if no specific old handler is provided
                     signal.disconnect()
             except TypeError:
+                # Break loop when no more connections of oldhandler are found
                 break
+
+        # Connect the new handler if provided
         if newhandler is not None:
             signal.connect(newhandler)
 
@@ -704,122 +849,6 @@ def show_ui():
         simtoolui.show()
         return simtoolui
 
-
-class CharacterTreeItem(QtWidgets.QTreeWidgetItem):
-    """
-    Placeholder item for the character node at the top of the tree.
-    Contains character name and optional details like node type and short name.
-
-    Args:
-        name (str): Name of the character or item.
-        parent (QTreeWidgetItem): Parent item in the QTreeWidget.
-    """
-
-    def __init__(self, name, parent):
-        super().__init__(parent)
-
-        # Set item font and text
-        font = QtGui.QFont()
-        font.setBold(True)
-        self.setText(0, name)
-        self.setFont(0, font)
-
-        # Initialize attributes
-        self.name = name
-        self.node = None  # Can be linked to a character's node in the scene
-        self.node_type = None  # e.g., for specifying types like "rig" or "simulation"
-        self.short_name = name.split('|')[-1]  # Optional: just the final part of the name
-        self.characterName = name
-
-
-class ColorTextButton(QtWidgets.QWidget):
-    """
-    A custom widget with a clickable button overlaid by a text label.
-    Args:
-        text (str): Text to display on the label.
-        parent (QWidget, optional): Parent widget, if any.
-    """
-
-    def __init__(self, text, parent=None):
-        super().__init__(parent)
-
-        # Main stacked layout
-        main_layout = QtWidgets.QStackedLayout()
-        main_layout.setStackingMode(QtWidgets.QStackedLayout.StackAll)
-
-        # Label displaying text
-        self.label = QtWidgets.QLabel(text)
-        self.label.setAlignment(QtCore.Qt.AlignCenter)
-
-        # Button overlay
-        self.button = QtWidgets.QPushButton()
-        self.button.setStyleSheet("background-color: rgba(121, 121, 121, 60);")
-
-        # Add to layout
-        main_layout.addWidget(self.label)
-        main_layout.addWidget(self.button)
-        self.setLayout(main_layout)
-
-    def clicked(self, function):
-        """
-        Connect a function to the button's clicked signal.
-        Args:
-            function (callable): Function to call on button click.
-        """
-        self.button.clicked.connect(function)
-
-    def setStyleSheet(self, style):
-        """
-        Apply a stylesheet to the button.
-        Args:
-            style (str): Stylesheet string to apply.
-        """
-        self.button.setStyleSheet(style)
-
-
-class MapEdit(QtWidgets.QWidget):
-    def __init__(self):
-        super().__init__()
-
-        # Main layout
-        main_layout = QtWidgets.QVBoxLayout()
-        self.setLayout(main_layout)
-
-        # Radio buttons for choosing edit mode
-        self.rbVtxRange = QtWidgets.QRadioButton("Range")
-        self.rbVtxRange.setChecked(True)
-        main_layout.addWidget(self.rbVtxRange)
-
-        self.rbVtxValue = QtWidgets.QRadioButton("Value")
-        main_layout.addWidget(self.rbVtxValue)
-
-        # Widget range selection
-        self.range_layout = QtWidgets.QHBoxLayout()
-
-        self.leMinRange = QtWidgets.QLineEdit()
-        self.leMaxRange = QtWidgets.QLineEdit()
-
-        self.range_layout.addWidget(QtWidgets.QLabel("Min:"))
-        self.range_layout.addWidget(self.leMinRange)
-        self.range_layout.addWidget(QtWidgets.QLabel("Max:"))
-        self.range_layout.addWidget(self.leMaxRange)
-
-        main_layout.addLayout(self.range_layout)
-
-        # Update range visibility based on selection
-        self.rbVtxRange.toggled.connect(self.update_range_visibility)
-        self.rbVtxValue.toggled.connect(self.update_range_visibility)
-
-        # Initialize visibility
-        self.update_range_visibility()
-
-    def update_range_visibility(self):
-        """
-        Toggle visibility of min and max range line edits based on radio selection.
-        """
-        is_range_mode = self.rbVtxRange.isChecked()
-        self.leMinRange.setVisible(is_range_mode)
-        self.leMaxRange.setVisible(is_range_mode)
 
 # try:
 #     ex.deleteLater()

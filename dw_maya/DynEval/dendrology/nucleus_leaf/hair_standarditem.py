@@ -63,13 +63,4 @@ class HairTreeItem(BaseSimulationItem):
         """Returns the attribute used to toggle hair simulation."""
         return 'simulationMethod'
 
-    @property
-    def state(self):
-        """Current state of the simulation (0 = Off, 1 = Static, 2+ = Dynamic)."""
-        return cmds.getAttr(f"{self.node}.{self.state_attr}")
-
-    def set_state(self, state):
-        """Set the simulation state for hair."""
-        cmds.setAttr(f"{self.node}.{self.state_attr}", state)
-        self.setData(state, QtCore.Qt.UserRole + 3)  # Update model data for delegate use
 

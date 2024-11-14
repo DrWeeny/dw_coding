@@ -66,13 +66,32 @@ class BaseSimulationItem(QtGui.QStandardItem):
 
     @property
     def state(self):
-        return cmds.getAttr(f"{self.node}.{self.state_attr}")
+        """Returns the enabled/disabled state of the node."""
+        attr = f"{self.node}.{self.state_attr}"
+        try:
+            return cmds.getAttr(attr)
+        except Exception as e:
+            cmds.warning(f"Failed to get attribute '{self.state_attr}' on '{self.node}': {e}")
+            return None
 
-    def set_state(self, state):
-        cmds.setAttr(f"{self.node}.{self.state_attr}", state)
+    @state.setter
+    def state(self, enabled):
+        """Sets the enabled/disabled state of the node."""
+        self._set_attribute_value(self.state_attr, enabled)
+        self.setData(enabled, QtCore.Qt.UserRole + 3)  # Update internal data for the state
+
+
+    def set_state(self, state: str):
+        """Sets the simulation node's state."""
+        try:
+            cmds.setAttr(f"{self.node}.{self.state_attr}", state)
+            self.setData(state, QtCore.Qt.UserRole + 3)
+        except Exception as e:
+            cmds.warning(f"Error setting state for {self.node}: {e}")
 
     @property
     def short_name(self):
+        """Retrieve a user-friendly, short name for the node."""
         return self.node.split('|')[-1].split(':')[-1].split('_Sim')[0]
 
     @property

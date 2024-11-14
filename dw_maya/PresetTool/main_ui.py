@@ -63,9 +63,8 @@ class PresetManager(QtWidgets.QMainWindow):
     preset_name = 'presetName'
 
     def __init__(self, parent=None):
-        if parent is None:
-            parent = get_maya_main_window()
-        super(PresetManager, self).__init__(parent)
+        super(PresetManager, self).__init__(parent or get_maya_main_window())
+
 
         self._path = f"/people/abtidona/public/{self._proj}/assets/{{}}/{{}}/cfx/master/simRig/data/attr_presets/"
         self._dynC_path = f"/people/abtidona/public/{self._proj}/assets/{{}}/{{}}/cfx/master/simRig/data/attr_presets/dynC/"
@@ -194,31 +193,47 @@ class PresetManager(QtWidgets.QMainWindow):
 
     def save_preset(self):
         """
-        Save the selected attributes and dynamic constraints as presets.
+        Save the current Maya node attributes and dynamic constraint rig settings as a preset.
+
+        This function collects attributes from selected node types, applies any namespace filters,
+        and saves them as a JSON file in the specified path. If dynamic constraints are enabled,
+        those settings are saved separately.
+
+        Raises:
+            OSError: If there is an error creating directories or saving files.
+
+        Example:
+            >>> preset_manager.save_preset()
         """
-        # Retrieve selected nodes based on node types
-        nodes = cmds.ls(type=self.node_types)
-        if self.ns_filter != ':':
-            nodes = [n for n in nodes if n.startswith(self.ns_filter + ':')]
+        try:
+            # Retrieve selected nodes based on node types
+            nodes = cmds.ls(type=self.node_types)
+            if self.ns_filter != ':':
+                nodes = [n for n in nodes if n.startswith(self.ns_filter + ':')]
 
-        attr_dic = dwpreset.createAttrPreset(nodes)
-        attr_dic['data_type'] = self.node_types
-        full_path = self.path + self.preset_name + '.json'
+            # Create attribute preset dictionary
+            attr_dic = dwpreset.createAttrPreset(nodes)
+            attr_dic['data_type'] = self.node_types
+            full_path = os.path.join(self.path, f"{self.preset_name}.json")
 
-        # Save the attribute presets
-        make_chmod_dir(self.path)
-        dwpreset.save_json(full_path, attr_dic)
-        os.chmod(full_path, 0o777)
+            # Save the attribute presets
+            make_chmod_dir(self.path)
+            dwpreset.save_json(full_path, attr_dic)
+            os.chmod(full_path, 0o777)
 
-        # Save dynamic constraint rig presets if enabled
-        if self.dynCRig:
-            make_chmod_dir(self.dynC_path)
-            full_dyn_path = dwnx.saveNConstraintRig(namespace=self.ns_filter,
-                                                    path=self.dynC_path,
-                                                    file=self.preset_name)
-            os.chmod(full_dyn_path, 0o777)
+            # Save dynamic constraint rig presets if enabled
+            if self.dynCRig:
+                make_chmod_dir(self.dynC_path)
+                full_dyn_path = dwnx.saveNConstraintRig(namespace=self.ns_filter,
+                                                        path=self.dynC_path,
+                                                        file=self.preset_name)
+                os.chmod(full_dyn_path, 0o777)
 
-        self.populate_presets()
+            self.populate_presets()
+        except OSError as e:
+            print(f"Error saving preset: {e}")
+        except Exception as e:
+            print(f"An unexpected error occurred: {e}")
 
     def load_preset(self):
         """

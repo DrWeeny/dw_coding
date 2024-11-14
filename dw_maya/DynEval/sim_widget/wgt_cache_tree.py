@@ -20,14 +20,11 @@
 
 # built-in
 import sys, os
-# ----- Edit sysPath -----#
 import re
-
-rdPath = '/user_data/AMJB/coding/dw_tools/maya/DNEG2'
-if not os.path.isdir(rdPath):
-    rdPath = '/people/abtidona/public/dw_tools/maya/'
+# ----- Edit sysPath -----#
+rdPath = 'E:\\dw_coding\\dw_open_tools'
 if not rdPath in sys.path:
-    print "Add %r to sysPath" % rdPath
+    print(f"Add {rdPath} to sysPath")
     sys.path.insert(0, rdPath)
 
 from operator import itemgetter
@@ -37,7 +34,7 @@ MODE = 0
 # internal
 try:
     import hou
-    from PySide2 import QtWidgets, QtGui, QtCore
+    from PySide6 import QtWidgets, QtGui, QtCore
 
     MODE = 2
 except:
@@ -46,18 +43,18 @@ except:
 if not MODE > 0:
     try:
         import maya.cmds as cmds
-        from PySide2 import QtWidgets, QtGui, QtCore
-        from SimTool.dendrology.cache_leaf import CacheItem
-        from SimTool import ncloth_cmds, ziva_cmds
+        from PySide6 import QtWidgets, QtGui, QtCore
+        from dw_maya.DynEval.dendrology.cache_leaf import CacheItem
+        from  dw_maya.DynEval import ncloth_cmds, ziva_cmds
 
-        import dw_json
+        import dw_maya.dw_presets_io as dw_json
         MODE = 1
     except:
         pass
 
 # external
 if MODE == 0:
-    from PySide2 import QtWidgets, QtCore, QtGui
+    from PySide6 import QtWidgets, QtGui, QtCore
 
 
 def get_all_treeitems(qtreewidget):
@@ -81,16 +78,22 @@ def get_all_treeitems(qtreewidget):
             all_items += 1
     return items
 
+
 class CacheTree(QtWidgets.QWidget):
 
     def __init__(self, parent=None):
-        super(CacheTree, self).__init__(parent)
-
+        super().__init__(parent)
         self.node = None
 
-        _vl_main = QtWidgets.QVBoxLayout()
-
+        # UI Setup
         self.cache_tree = QtWidgets.QTreeWidget()
+        self.setup_ui()
+
+        # Layout Setup
+        main_layout = QtWidgets.QVBoxLayout(self)
+        main_layout.addWidget(self.cache_tree)
+
+    def setup_ui(self):
         self.cache_tree.setMinimumWidth(280)
         self.cache_tree.setMaximumWidth(280)
         self.cache_tree.setColumnCount(1)
@@ -100,17 +103,11 @@ class CacheTree(QtWidgets.QWidget):
         self.cache_tree.setExpandsOnDoubleClick(False)
         self.cache_tree.setHeaderLabels([""])
         self.cache_tree.header().setDefaultAlignment(QtCore.Qt.AlignCenter)
-        sel_mode = QtWidgets.QAbstractItemView.ExtendedSelection
-        self.cache_tree.setSelectionMode(sel_mode)
+        self.cache_tree.setSelectionMode(QtWidgets.QAbstractItemView.ExtendedSelection)
 
-
-        # Create a contextual menu
-        self.cache_tree.installEventFilter(self)
+        # Context menu setup
         self.cache_tree.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
         self.cache_tree.customContextMenuRequested.connect(self.context_cache)
-
-        _vl_main.addWidget(self.cache_tree)
-        self.setLayout(_vl_main)
 
     def selected(self):
         return self.cache_tree.currentItem()
@@ -123,50 +120,34 @@ class CacheTree(QtWidgets.QWidget):
         self.node = treenode
         self.build_cache_list()
 
-    def context_cache(self, position):
-        """
-        Contextual menu, for all the items:
-        Args:
-            position (QPos): position of the item in screen
-        """
+    def add_menu_action(menu: QtWidgets.QMenu, title: str, handler: callable):
+        action = QtWidgets.QAction(title, menu)
+        action.triggered.connect(handler)
+        menu.addAction(action)
+
+    def context_cache(self, position: QtCore.QPoint):
+        """Creates a context menu for cache items in the tree."""
         menu = QtWidgets.QMenu(self)
+        add_menu_action(menu, 'Attach Cache', self.attach_selected_cache)
 
-        # Attach Cache
-        act_attach = QtWidgets.QAction(self)
-        act_attach.setText('attach cache')
-        menu.addAction(act_attach)
-        act_attach.triggered.connect(self.attach_selected_cache)
+        node_types = [node.node_type for node in self.node]
+        if 'nCloth' in node_types or 'zSolverTransform' in node_types:
+            add_menu_action(menu, 'Materialize', self.materialize)
 
-        # Materizlise the Cache
-        _node_types = [node.node_type for node in self.node]
-        if 'nCloth' in _node_types or 'zSolverTransform' in _node_types:
-            act_materialize = QtWidgets.QAction(self)
-            act_materialize.setText('materialize')
-            menu.addAction(act_materialize)
-            act_materialize.triggered.connect(self.materialize)
-
-        # Restore Settings
-        act_restore = QtWidgets.QAction(self)
-        act_restore.setText('restore settings')
-        menu.addAction(act_restore)
-        act_restore.triggered.connect(self.restore)
-
-        menu.exec_(self.cache_tree.viewport().mapToGlobal(position))
+        add_menu_action(menu, 'Restore Settings', self.restore)
+        menu.exec(self.cache_tree.viewport().mapToGlobal(position))
 
     def materialize(self):
-        """
-        for cloth mesh, it make a duplicate and assign selected cache
-        Returns:
-
-        """
-        sel_caches = self.cache_tree.selectedItems()
-        if self.node.node_type == 'zSolverTransform':
-            ziva_cmds.materialize(sel_caches[0].path)
+        """Materializes the selected caches by duplicating the cloth mesh and assigning the selected cache."""
+        selected_caches = self.cache_tree.selectedItems()
+        if not selected_caches:
             return
-        else:
-            for cache_node in sel_caches:
-                out = ncloth_cmds.materialize(cache_node.mesh,
-                                              cache_node.path)
+
+        for cache_node in selected_caches:
+            if self.node.node_type == 'zSolverTransform':
+                ziva_cmds.materialize(cache_node.path)
+            else:
+                ncloth_cmds.materialize(cache_node.mesh, cache_node.path)
 
     def restore(self):
         dyn_item = self.node
@@ -235,89 +216,64 @@ class CacheTree(QtWidgets.QWidget):
             cache_node.set_color()
 
     def build_cache_list(self):
-
-        # BUILD CACHE LIST
+        """Builds the cache list based on the provided simulation node."""
         self.cache_tree.clear()
-        # For top level
         caches_tree = []
-        # get cloth node selected
-        # self.dyn_eval_tree.selectedItems()
-        # TODO : hasattr(a, 'property')
-        #  ----- a.property
+
         for dyn_item in self.node:
-
             if dyn_item.node_type in ['nCloth', 'hairSystem']:
-                caches = dyn_item.get_cache_list()
-                cachedir = dyn_item.cache_dir()
-                json_metadata = dyn_item.metadata()
-                if 'cacheType' in json_metadata:
-                    cache_type = json_metadata['cacheType']
-                else:
-                    cache_type = 'nCache'
-                node = dyn_item.node
-                if caches:
-                    for i in caches:
-                        isvalid = False
-                        if os.path.isfile(json_metadata):
-                            data = dw_json.loadJson(json_metadata)
-                            isvalid = False
-                            if 'isvalid' in data:
-                                if i in data['isvalid']:
-                                    isvalid = True
-
-                        attach = ncloth_cmds.cache_is_attached(dyn_item.node, i)
-                        xml = cachedir + i + '.xml'
-
-                        cache_item = CacheItem(name=i, cache_node=node,
-                                              path=xml, isvalid=isvalid,
-                                              attached=attach, _type=cache_type)
-                        cache_item.setText(0, i)
-                        caches_tree.append(cache_item)
-
-                self.cache_tree.setHeaderLabels([str(dyn_item.short_name)])
-
+                cache_items = self._build_cache_items(dyn_item, 'nCache', 'xml')
             elif dyn_item.node_type == 'zSolverTransform':
-                caches = dyn_item.get_cache_list()
-                cachedir = dyn_item.cache_dir()
-                json_metadata = dyn_item.metadata()
-                if 'cacheType' in json_metadata:
-                    cache_type = json_metadata['cacheType']
-                else:
-                    cache_type = 'alembic'
+                cache_items = self._build_cache_items(dyn_item, 'alembic', 'abc')
+            else:
+                continue
 
-                node = dyn_item.node
-                if caches:
-                    for i in caches:
-                        isvalid = False
-                        if os.path.isfile(json_metadata):
-                            data = dw_json.loadJson(json_metadata)
-                            isvalid = False
-                            if 'isvalid' in data:
-                                if i in data['isvalid']:
-                                    isvalid = True
+            caches_tree.extend(cache_items)
+            self.cache_tree.setHeaderLabels([str(dyn_item.short_name)])
 
-                        targ = dyn_item.alembic_target()
-                        attach = ziva_cmds.cache_is_attached(targ, i)
-                        abc = cachedir + i + '.abc'
+        self._populate_cache_tree(caches_tree)
 
-                        cache_item = CacheItem(name=i, cache_node=node,
-                                              path=abc, isvalid=isvalid,
-                                              attached=attach, _type=cache_type)
-                        cache_item.setText(0, i)
-                        caches_tree.append(cache_item)
+    def _build_cache_items(self, dyn_item, cache_type: str, file_extension: str) -> list:
+        """Helper function to build cache items for a given dynamic item."""
+        caches = dyn_item.get_cache_list()
+        cachedir = dyn_item.cache_dir()
+        json_metadata = dyn_item.metadata()
+        node = dyn_item.node
+        cache_items = []
 
-                self.cache_tree.setHeaderLabels([str(dyn_item.short_name)])
+        if caches:
+            for cache_name in caches:
+                isvalid, attach = self._cache_metadata(json_metadata, cache_name, dyn_item, file_extension)
+                cache_path = os.path.join(cachedir, f"{cache_name}.{file_extension}")
+                cache_item = CacheItem(name=cache_name, cache_node=node, path=cache_path, isvalid=isvalid,
+                                       attached=attach, _type=cache_type)
+                cache_item.setText(0, cache_name)
+                cache_items.append(cache_item)
 
-        else:
-            self.cache_tree.setHeaderLabels([""])
+        return cache_items
 
-        id_list = []
-        for cache in caches_tree:
-            id = cache.version
-            id_list.append(id)
+    def _cache_metadata(self, json_metadata: str, cache_name: str, dyn_item, file_extension: str) -> tuple:
+        """Retrieve cache validity and attachment status from metadata."""
+        isvalid = False
+        attach = False
 
-        caches_ordered = [i[0] for i in
-                         sorted(zip(caches_tree, id_list), key=itemgetter(1),
-                                reverse=True)]
+        if os.path.isfile(json_metadata):
+            data = dw_json.loadJson(json_metadata)
+            isvalid = 'isvalid' in data and cache_name in data['isvalid']
 
-        self.cache_tree.addTopLevelItems(caches_ordered)
+        if dyn_item.node_type == 'nCloth':
+            attach = ncloth_cmds.cache_is_attached(dyn_item.node, cache_name)
+        elif dyn_item.node_type == 'zSolverTransform':
+            attach = ziva_cmds.cache_is_attached(dyn_item.alembic_target(), cache_name)
+
+        return isvalid, attach
+
+
+    def _populate_cache_tree(self, caches_tree: list):
+        """Sorts and populates cache items into the QTreeWidget."""
+
+        # Get the version information for sorting, assuming the version is encoded as 'v###'
+        sorted_caches = sorted(caches_tree, key=lambda item: item.version, reverse=True)
+
+        # Add sorted items to the cache tree
+        self.cache_tree.addTopLevelItems(sorted_caches)

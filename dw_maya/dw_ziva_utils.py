@@ -82,11 +82,14 @@ class ZSolver(dwnn.MayaNode):
 
 
 def conform_exponential():
-    """Conform the values of Ziva-related attributes that use exponential components.
+    """
+    Applies an exponential transformation to Ziva node.
 
-    This function searches for attributes in Ziva nodes that have an exponential component (e.g., 'Exp')
-    and adjusts their values if they are outside a certain range. The new values and their exponent
-    components are updated in the scene.
+    Returns:
+        bool: True if the attribute was successfully modified, False if the node or attribute does not exist.
+
+    Raises:
+        ValueError: If the base or multiplier is invalid.
     """
     ztypes = get_ziva_types()
     znodes = cmds.ls(type=ztypes)

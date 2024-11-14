@@ -38,14 +38,24 @@ from dw_maya.dw_decorators import acceptString
 
 def get_root_tip(sel: list, mode=1):
     """
-    Get the root or tip control vertex (CV) of the selected NURBS curve(s).
+    Retrieves either the root or tip control vertex (CV) of the specified NURBS curve(s).
+
+    This function selects the first or last CV of each curve in `sel` based on the specified mode,
+    allowing easy identification of either endpoint.
 
     Args:
-        sel (list): List of objects (curves) to process.
-        mode (int): If 1, return the tip CV, if 0, return the root CV.
+        sel (list): List of curve objects to process. Only NURBS curves are considered.
+        mode (int): Selection mode. If `1`, retrieves the tip (last CV); if `0`, retrieves the root (first CV).
 
     Returns:
-        list: A list of CVs in the format "curveShape.cv[index]".
+        list: A list of strings, each representing a CV in the format "curveShape.cv[index]".
+
+    Raises:
+        ValueError: If `sel` contains objects that are not NURBS curves.
+
+    Example:
+        >>> get_root_tip(["curve1", "curve2"], mode=1)
+        ['curve1.cv[3]', 'curve2.cv[5]']
     """
     # Ensure we are only working with NURBS curves
     sel = cmds.ls(sel, dag=True, type='nurbsCurve')
@@ -74,17 +84,26 @@ def get_root_tip(sel: list, mode=1):
 @acceptString('sel')
 def set_pivot(sel, method=(1, 12), **kwargs):
     """
-    Set the pivot of the selected objects based on the chosen method.
+    Sets the pivot point for the selected objects based on the specified method.
+
+    This function allows setting the pivot based on either the bounding box center or the highest vertex position.
+    A query mode can also be used to list available methods.
 
     Args:
-        sel (list): The list of selected objects to adjust the pivot for.
-        method (tuple): (method_type, method_value). The method_type can be 0 (bounding box) or 1 (vertex position).
-                        The method_value specifies further details depending on the method_type.
-        kwargs: Additional keyword arguments.
-                query: bool, if True, returns available methods and descriptions.
+        sel (list): The list of selected objects for which to adjust the pivot.
+        method (tuple): A tuple with (method_type, method_value).
+                        method_type: `0` for bounding box center, `1` for highest vertex position.
+                        method_value: Further specification depending on method_type.
+        **kwargs: Additional keyword arguments. If 'query' is set to True, lists available methods.
 
     Returns:
         None
+
+    Raises:
+        ValueError: If an invalid method is specified or if `sel` is empty.
+
+    Example:
+        >>> set_pivot(["object1", "object2"], method=(1, 12))
     """
     methDic = {0: 'bbox', 1: 'pos'}
 
@@ -136,13 +155,24 @@ def set_pivot(sel, method=(1, 12), **kwargs):
 
 def pgy_get_type(node: str) -> str:
     """
-    Get the type of the specified Yeti node.
+    Retrieves the type of a specified Yeti node.
+
+    This function checks if the node exists and is of type 'pgYetiMaya'. If these conditions are met,
+    it returns the type parameter value using the pgYetiGraph command.
 
     Args:
-        node (str): The name of the Yeti node.
+        node (str): Name of the Yeti node.
 
     Returns:
-        str: The type of the Yeti node.
+        str: Type of the Yeti node.
+
+    Raises:
+        ValueError: If the specified node does not exist.
+        TypeError: If the node is not a valid Yeti node.
+
+    Example:
+        >>> pgy_get_type("yetiNode1")
+        "YetiNodeType"
     """
     if not cmds.objExists(node):
         raise ValueError(f"The node '{node}' does not exist.")
@@ -154,14 +184,22 @@ def pgy_get_type(node: str) -> str:
 
 def pgy_get_param(node: str, param: str) -> any:
     """
-    Get the value of a specified parameter for a Yeti node.
+    Retrieves the value of a specified parameter for a Yeti node.
 
     Args:
-        node (str): The name of the Yeti node.
-        param (str): The parameter to retrieve the value for.
+        node (str): Name of the Yeti node.
+        param (str): Name of the parameter to retrieve.
 
     Returns:
-        any: The value of the specified parameter.
+        any: Value of the specified parameter for the Yeti node.
+
+    Raises:
+        ValueError: If the node does not exist.
+        TypeError: If the node is not a Yeti node or if the parameter is invalid.
+
+    Example:
+        >>> pgy_get_param("yetiNode1", "geometry")
+        "/path/to/geometry"
     """
     if not cmds.objExists(node):
         raise ValueError(f"The node '{node}' does not exist.")
@@ -173,13 +211,22 @@ def pgy_get_param(node: str, param: str) -> any:
 
 def yeti_description() -> dict:
     """
-    Collects information about Yeti nodes in the Maya scene, including the geometry, groom,
-    and guide data for each node.
+    Gathers detailed information about all Yeti nodes in the scene.
+
+    This function retrieves data for each Yeti node, including geometry, groom data, and guide sets.
+    It forces Yeti node evaluation as needed to ensure correct data retrieval.
 
     Returns:
-        dict: A dictionary where each key is a Yeti node identifier (e.g., 'yetiNode_fgeo',
-              'yetiNode_groom', 'yetiNode_guides'), and each value is a list of corresponding
-              geometries, groom data, or guide sets.
+        dict: A dictionary where each key is a Yeti node identifier (e.g., "yetiNode_fgeo") and each
+              value is a list of geometries, groom data, or guide sets associated with that node.
+
+    Example:
+        >>> yeti_description()
+        {
+            "yetiNode1_fgeo": ["/path/to/geometry1", "/path/to/geometry2"],
+            "yetiNode1_groom": ["groomNode1", "groomNode2"],
+            "yetiNode1_guides": ["guideSet1"]
+        }
     """
     yeti_data = {}
     yeti_nodes = cmds.ls(type='pgYetiMaya')

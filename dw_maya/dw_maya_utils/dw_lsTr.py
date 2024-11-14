@@ -28,7 +28,7 @@ if not rdPath in sys.path:
     sys.path.insert(0, rdPath)
 
 import re
-from typing import List, Optional
+from typing import List
 # internal
 from maya import cmds, mel
 # external
@@ -60,21 +60,16 @@ def lsTr(*args, **kwargs) -> List[str]:
     long_name = Flags(kwargs, None, 'long', 'l')
     unique = Flags(kwargs, True, 'unique', 'u')
 
-    if not parent:
-        flags = {'parent': parent}
-    else:
-        flags = {'parent': True}
-    if 'parent' in kwargs:
-        del kwargs['parent']
-    if 'p' in kwargs:
-        del kwargs['p']
+    flags = {'parent': parent if parent else True}
+    kwargs.pop('parent', None)
+    kwargs.pop('p', None)
+
     if long_name:
         # this is only for the corresponding flag of listRelatives
         flags['f'] = True
-    if 'unique' in kwargs:
-        del kwargs['unique']
-    if 'u' in kwargs:
-        del kwargs['u']
+
+    kwargs.pop('unique', None)
+    kwargs.pop('u', None)
     if 'ni' not in kwargs or 'noIntermediate' not in kwargs:
         kwargs['ni'] = True
 
@@ -92,8 +87,8 @@ def lsTr(*args, **kwargs) -> List[str]:
                 r = cmds.listRelatives(r, **flags)
             except:
                 pass
-    if unique:
-        if r:
-            o = list(set(r))
-            return o
+
+    if unique and r:
+        r = list(set(r))
+
     return r

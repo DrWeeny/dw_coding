@@ -22,11 +22,9 @@
 import sys, os
 
 # ----- Edit sysPath -----#
-rdPath = '/user_data/AMJB/coding/dw_tools/maya/DNEG2'
-if not os.path.isdir(rdPath):
-    rdPath = '/people/abtidona/public/dw_tools/maya/'
+rdPath = 'E:\\dw_coding\\dw_open_tools'
 if not rdPath in sys.path:
-    print "Add %r to sysPath" % rdPath
+    print(f"Add {rdPath} to sysPath")
     sys.path.insert(0, rdPath)
 
 # internal

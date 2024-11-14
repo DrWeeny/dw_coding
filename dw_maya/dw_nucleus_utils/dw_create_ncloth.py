@@ -52,13 +52,12 @@ def create_ncloth(meshes: List[str],
 
     # Find mesh shapes
     meshes = cmds.listRelatives(meshes, f=True, ni=True, s=True, type="mesh")
-    num_meshes = len(meshes)
 
-    if num_meshes == 0:
+    if not meshes:
         cmds.error("No mesh selected for nCloth creation.")
 
-    # Create nucleus if needed
-    nucleus = create_nucleus(nucleus_node)
+    # Create or use existing nucleus node
+    nucleus = nucleus_node or create_nucleus()
 
     _iter = 0
     regex = re.compile('_ncloth', re.IGNORECASE)
@@ -112,12 +111,7 @@ def create_ncloth(meshes: List[str],
             out_mesh = cmds.createNode("mesh", name=out_mesh_name)
 
         # Transfer shading connections
-        shad_cons = cmds.listConnections(f"{mesh}.instObjGroups[0]", d=True, sh=True, type="shadingEngine")
-        if shad_cons:
-            if not cmds.about(batch=True):
-                cmds.hyperShade(assign=shad_cons[0])
-        else:
-            cmds.sets(out_mesh, add="initialShadingGroup")
+        _apply_shading(mesh, out_mesh)
 
         # Set up attributes
         cmds.setAttr(f"{out_mesh}.quadSplit", 0)
@@ -133,29 +127,55 @@ def create_ncloth(meshes: List[str],
         cmds.setAttr(f"{cloth_tforms[0]}.scale", lock=True)
 
         # Calculate thickness
-        bbox = cmds.exactWorldBoundingBox(mesh)
-        x, y, z = bbox[3] - bbox[0], bbox[4] - bbox[1], bbox[5] - bbox[2]
-        bbox_surface_area = 2 * ((x * y) + (x * z) + (y * z))
-        num_faces = cmds.polyEvaluate(mesh, face=True)
-        max_ratio = 0.005
-        min_width = 0.0001
-        obj_size = sqrt(bbox_surface_area)
-        new_width = obj_size * max_ratio
-        if num_faces > 0:
-            estimated_edge_length = sqrt(bbox_surface_area / num_faces)
-            thickness = 0.13 * estimated_edge_length
-            if thickness > new_width:
-                cmds.setAttr(f"{ncloth}.selfCollisionFlag", 3)  # vertex face
-            else:
-                new_width = thickness
-                cmds.setAttr(f"{ncloth}.selfCollideWidthScale", 1)
-
-        new_width = max(new_width, min_width)
-        cmds.setAttr(f"{ncloth}.thickness", new_width)
-        cmds.setAttr(f"{ncloth}.pushOutRadius", new_width * 4.0)
+        _set_ncloth_attributes(ncloth, mesh)
 
     if cmds.about(batch=True):
         for cloth in new_cloth_nodes:
             cmds.getAttr(f"{cloth}.forceDynamics")
 
     return new_cloth_nodes
+
+
+def _apply_shading(original_mesh: str, out_mesh: str):
+    """
+    Transfers shading from the original mesh to the nCloth output mesh.
+
+    Args:
+        original_mesh (str): Name of the original mesh.
+        out_mesh (str): Name of the output mesh.
+    """
+    shading_groups = cmds.listConnections(f"{original_mesh}.instObjGroups[0]", d=True, sh=True, type="shadingEngine")
+    if shading_groups:
+        cmds.sets(out_mesh, e=True, forceElement=shading_groups[0])
+    else:
+        cmds.sets(out_mesh, e=True, forceElement="initialShadingGroup")
+
+
+def _set_ncloth_attributes(ncloth: str, mesh: str):
+    """
+    Sets key attributes for the nCloth node based on the mesh's properties.
+
+    Args:
+        ncloth (str): Name of the nCloth node.
+        mesh (str): Original mesh node.
+    """
+    bbox = cmds.exactWorldBoundingBox(mesh)
+    x, y, z = bbox[3] - bbox[0], bbox[4] - bbox[1], bbox[5] - bbox[2]
+    bbox_surface_area = 2 * ((x * y) + (x * z) + (y * z))
+    num_faces = cmds.polyEvaluate(mesh, face=True)
+    max_ratio = 0.005
+    min_width = 0.0001
+    obj_size = sqrt(bbox_surface_area)
+    new_width = obj_size * max_ratio
+    if num_faces > 0:
+        estimated_edge_length = sqrt(bbox_surface_area / num_faces)
+        thickness = 0.13 * estimated_edge_length
+        if thickness > new_width:
+            cmds.setAttr(f"{ncloth}.selfCollisionFlag", 3)  # vertex face
+        else:
+            new_width = thickness
+            cmds.setAttr(f"{ncloth}.selfCollideWidthScale", 1)
+
+    new_width = max(new_width, min_width)
+    cmds.setAttr(f"{ncloth}.thickness", new_width)
+    cmds.setAttr(f"{ncloth}.pushOutRadius", new_width * 4.0)
