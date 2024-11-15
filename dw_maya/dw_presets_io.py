@@ -18,7 +18,7 @@ from typing import Any, Dict, Optional, List
 
 from collections import defaultdict
 from dw_maya.dw_maya_utils.dw_maya_data import merge_two_dicts
-import dw_decorators as dwdeco
+import dw_maya.dw_decorators as dwdeco
 
 def save_json(file_path: str, data: Dict[str, Any], indent=4, defer=False) -> bool:
     """

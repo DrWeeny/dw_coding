@@ -230,7 +230,8 @@ def cvWeights2Geo(crv):
 
         attr = cmds.listConnections(c + '.create', p=True)[0]
         if attr.startswith(cwOut):
-            weight_attr = f'weightList[{re.findall(r"\\d+", attr)[-1]}].weights'
+            nb = re.findall(r"\d+", attr)[-1]
+            weight_attr = f'weightList[{nb}].weights'
 
             # Set weights on the input node and reverse weights on the output node
             cmds.setAttr(f'{cwOut}.{weight_attr}[0:{length - 1}]', *weights, size=length)

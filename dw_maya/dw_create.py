@@ -7,7 +7,6 @@ if not rdPath in sys.path:
     sys.path.insert(0, rdPath)
 
 import maya.cmds as cmds
-import dw_deformers as dwdef
 from math import pow, sqrt
 from itertools import chain
 import re
@@ -50,6 +49,7 @@ def createSquareSphere(res=4):
                     c=1, kb=1, ksb=1, khe=0, kt=1, kmb=1, suv=1, peh=0, sl=1,
                     dpe=1, ps=0.1, ro=1, ch=1)
     # Apply shrink wrap deformer using the sphere as the target
+    import dw_maya.dw_deformers as dwdef
     shWrp = dwdef.shrinkWrap(cub[0], sph[0], projection=3, reverse=1)
 
     # Delete the history of the cube and remove the temporary sphere

@@ -13,7 +13,6 @@ import maya.OpenMaya as om
 import dw_maya.dw_maya_utils as dwu
 import dw_maya.dw_presets_io as dwpreset
 import dw_maya.dw_decorators as dwdeco
-import dw_maya.dw_json as dwjson
 import re
 
 class MAttr(object):
@@ -739,7 +738,7 @@ class MayaNode(ObjPointer):
             fullpath = path + file
 
             print('node saved as json to {}'.format(fullpath))
-            return dwjson.saveJson(fullpath, self.attrPreset())
+            return dwpreset.save_json(fullpath, self.attrPreset())
 
     def loadNode(self, preset: dict, blend=1, targ_ns=':'):
         """
