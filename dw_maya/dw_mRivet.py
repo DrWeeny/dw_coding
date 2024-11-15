@@ -87,10 +87,10 @@ def _create(edges, geometry_type, autoGroup):
         list: The transform nodes created.
     """
     obj = edges[0].split('.')[0]
-    myRegFace = '^' + obj.split('.')[0] + '.f[[]\d+[]]$'
-    if re.compile(myRegFace).match(obj):
+    myRegFace = '^' + obj.split('.')[0] + r'\.f\[\d+\]$'
+    if re.compile(myRegFace).match(edges[0]):
         # Get the edges of the selected face
-        edges = cmds.polyInfo(obj, faceToEdge=True)[0].split(":")[1].split()
+        edges = cmds.polyInfo(edges[0], faceToEdge=True)[0].split(":")[1].split()
         idx1, idx2 = int(edges[0]), int(edges[2])
     else:
         idx1, idx2 = [int(edge.split('.')[-1].replace('e[', '').replace(']', '')) for edge in edges]
@@ -120,7 +120,6 @@ def _create(edges, geometry_type, autoGroup):
     # Group the rivet for rigging
     _group_rivet(xform, autoGroup)
 
-    print("Rivet has been created from edges")
     return xforms
 
 
