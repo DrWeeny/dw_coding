@@ -1,5 +1,17 @@
+#!/usr/bin/env python
+# ---------------------------------------------------------------------------- #
+# ---------------------------------- HEADER ---------------------------------- #
+
+"""
+@description:
+    Custom widgets and utilities compatible with Houdini, Maya, and PySide6.
+"""
+
+# ---------------------------------------------------------------------------- #
+# -------------------------------- IMPORTS ----------------------------------- #
+
 import sys, os
-import math
+from math import hypot
 from functools import partial
 
 # ----- Edit sysPath -----#
@@ -22,7 +34,8 @@ except:
 if not MODE > 0:
     try:
         import maya.OpenMayaUI as omui
-        from shiboken6 import wrapInstance  # Changed for PySide6
+        from shiboken6 import wrapInstance
+        from PySide6 import QtWidgets, QtGui, QtCore# Changed for PySide6
         MODE = 1
     except:
         pass
@@ -47,272 +60,141 @@ def get_maya_window():
     """
     return wrapInstance(int(omui.MQtUtil.mainWindow()), QtWidgets.QWidget)  # Replace `long` with `int`
 
-def get_all_treeitems(QTreeWidget):
-    """ Get all QTreeWidgetItem of given QTreeWidget
-        :param QTreeWidget: QTreeWidget object
-        :return: All QTreeWidgetItem list
-        :rtype: list """
+def get_all_treeitems(tree_widget):
+    """Get all QTreeWidgetItems of a given QTreeWidget."""
     items = []
-    iterator = QtWidgets.QTreeWidgetItemIterator.All
-    all_items = QtWidgets.QTreeWidgetItemIterator(QTreeWidget, iterator) or None
-    if all_items is not None:
-        while all_items.value():
-            item = all_items.value()
-            items.append(item)
-            all_items += 1
+    iterator = QtWidgets.QTreeWidgetItemIterator(tree_widget)
+    while iterator.value():
+        item = iterator.value()
+        items.append(item)
+        iterator += 1
     return items
 
+# ---------------------------------------------------------------------------- #
+# -------------------------------- WIDGETS ----------------------------------- #
+
 class ErrorWin(QtWidgets.QDialog):
-    def __init__(self, img=None, parent=get_maya_window()):
-        super(ErrorWin, self).__init__(parent)
-        self.setObjectName("MyWindow")
-        self.resize(400, 100)
+    """Error window to display custom messages."""
+    def __init__(self, img=None, parent=None):
+        super().__init__(parent or get_maya_window())
+        self.setObjectName("ErrorWin")
         self.setWindowTitle("Action Canceled: Vertex Animation Detected")
-        hbox = QtWidgets.QHBoxLayout(self)
-        img_path = rdPath + '/../../resources/pic_files'
+        self.resize(400, 100)
+
+        layout = QtWidgets.QHBoxLayout(self)
+        self.setLayout(layout)
+
+        img_path = '/path/to/resources/pic_files'  # Update to a configurable resource path
         if not img:
             img = 'MasterYoda-Unlearn.jpg'
 
-        pixmap = QtGui.QPixmap(os.path.join(img_path, img))
-
-        lbl = QtWidgets.QLabel(self)
-        lbl.setPixmap(pixmap)
-
-        hbox.addWidget(lbl)
-        self.setLayout(hbox)
+        pixmap = QtGui.QPixmap(f"{img_path}/{img}")
+        label = QtWidgets.QLabel(self)
+        label.setPixmap(pixmap)
+        layout.addWidget(label)
 
         self.move(300, 200)
-        self.show()
 
     def closeEvent(self, event):
         self.deleteLater()
-class RectangleHoverEffect(QtCore.QObject):
-    """ Take QWidget and move it in/out on hover event """
 
+
+class RectangleHoverEffect(QtCore.QObject):
+    """Hover effect for a QWidget to move it in/out."""
     def __init__(self, rectangle, parent):
-        super(RectangleHoverEffect, self).__init__(parent)
+        super().__init__(parent)
         if not isinstance(rectangle, QtWidgets.QWidget):
-            raise TypeError("{} must be a QWidget".format(rectangle))
-        if rectangle.parent() is None:
-            raise ValueError("{} must have a parent".format(rectangle))
-        self.m_rectangle = rectangle
-        self.m_rectangle.parent().installEventFilter(self)
-        self.m_animation = QtCore.QPropertyAnimation(
-            self,
-            targetObject=self.m_rectangle,
+            raise TypeError("rectangle must be a QWidget")
+        if not rectangle.parent():
+            raise ValueError("rectangle must have a parent")
+
+        self.rectangle = rectangle
+        self.animation = QtCore.QPropertyAnimation(
+            targetObject=rectangle,
             propertyName=b"pos",
             duration=300,
             easingCurve=QtCore.QEasingCurve.OutQuad,
         )
+        rectangle.parent().installEventFilter(self)
 
     def eventFilter(self, obj, event):
-        if self.m_rectangle.isValid():
-            if self.m_rectangle.parent() is obj:
-                y0 = self.m_rectangle.parent().height()
-                y1 = self.m_rectangle.parent().height() - self.m_rectangle.height()
+        if obj is self.rectangle.parent():
+            start, end = obj.height(), obj.height() - self.rectangle.height()
+            if event.type() == QtCore.QEvent.Enter:
+                self._start_animation(start, end)
+            elif event.type() == QtCore.QEvent.Leave:
+                self._start_animation(end, start)
+        return super().eventFilter(obj, event)
 
-                if event.type() == QtCore.QEvent.Enter:
-                    self._start_animation(y0, y1)
-                elif event.type() == QtCore.QEvent.Leave:
-                    self._start_animation(y1, y0)
-        return QtCore.QObject.eventFilter(self, obj, event)
-
-    def _start_animation(self, y0, y1):
-        self.m_animation.setStartValue(QtCore.QPoint(0, y0))
-        self.m_animation.setEndValue(QtCore.QPoint(0, y1))
-        self.m_animation.start()
+    def _start_animation(self, start, end):
+        self.animation.setStartValue(QtCore.QPoint(0, start))
+        self.animation.setEndValue(QtCore.QPoint(0, end))
+        self.animation.start()
 
 
 class ThumbWidget(QtWidgets.QFrame):
+    """Custom thumbnail widget with hover effect and click signal."""
     clicked = QtCore.Signal()
 
     def __init__(self, title, pixmap, size=40, parent=None):
-        super(ThumbWidget, self).__init__(parent)
-
-        scale = 2
-        self.setFrameShape(QtWidgets.QFrame.StyledPanel)
-        self.setFrameShadow(QtWidgets.QFrame.Raised)
-
-        pixmap_label = QtWidgets.QLabel(pixmap=pixmap, scaledContents=True)
-
-        title_label = QtWidgets.QLabel(title)
-        title_label.setStyleSheet("""color: #FFFFFF""")
-        title_label.setAlignment(QtCore.Qt.AlignLeft | QtCore.Qt.AlignTop)
-        title_label.setFixedSize(self.width() / scale, size / scale)
-
-        font = QtGui.QFont()
-        font.setFamily("SF Pro Display")
-        font.setPointSize(6)
-        title_label.setFont(font)
-        title_label.setWordWrap(True)
-
-        self.background_label = QtWidgets.QLabel(pixmap_label)
-        self.background_label.setStyleSheet("background: #32353B;")
-        self.background_label.setFixedSize(size, size/scale)
-        self.background_label.move(0, self.height()/2)
-
-        background_lay = QtWidgets.QVBoxLayout(self.background_label)
-        background_lay.addWidget(title_label)
-        background_lay.setContentsMargins(0, 0, 0, 0)
-        background_lay.setSpacing(0)
-
+        super().__init__(parent)
         self.setFixedSize(size, size)
-        lay = QtWidgets.QVBoxLayout(self)
-        lay.setContentsMargins(0, 0, 0, 0)
-        lay.setSpacing(0)
-        lay.addWidget(pixmap_label)
+        self.setFrameShape(QtWidgets.QFrame.StyledPanel)
 
-        effect = RectangleHoverEffect(self.background_label, self)
+        pixmap_label = QtWidgets.QLabel(self)
+        pixmap_label.setPixmap(pixmap)
+        pixmap_label.setScaledContents(True)
+
+        title_label = QtWidgets.QLabel(title, self)
+        title_label.setStyleSheet("color: #FFFFFF;")
+        title_label.setAlignment(QtCore.Qt.AlignTop | QtCore.Qt.AlignLeft)
+
+        layout = QtWidgets.QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.addWidget(pixmap_label)
+        layout.addWidget(title_label)
+
+        RectangleHoverEffect(self, parent)
 
     def mousePressEvent(self, event):
         self.clicked.emit()
 
 
 class PlotPoint(QtWidgets.QGraphicsRectItem):
-
+    """Draggable and selectable plot point for custom graphics."""
     def __init__(self, parent=None):
-        super().__init__(parent)  # Use Python 3 syntax for super()
-        self.setAcceptHoverEvents(True)
-        self.setFlag(self.ItemSendsScenePositionChanges, True)
-        self.setFlag(self.ItemIsSelectable, True)
-        self.setFlag(self.ItemIsMovable, True)
+        super().__init__(parent)
         self.setRect(-6, -6, 12, 12)
-        self.setPen(QtGui.QPen(QtGui.QColor(30,30,30), 2, QtCore.Qt.SolidLine))
-        self.setBrush(QtGui.QBrush(QtGui.QColor(255,30,30)))
-
-    def itemChange(self, change, value):
-        if change == self.ItemScenePositionHasChanged:
-            if isinstance(self.parentItem(), PlotLine):
-                self.parentItem().updatePath()
-        return super().itemChange(change, value)
+        self.setBrush(QtGui.QBrush(QtGui.QColor(255, 30, 30)))
+        self.setPen(QtGui.QPen(QtGui.QColor(30, 30, 30), 2))
 
 
 class PlotLine(QtWidgets.QGraphicsPathItem):
-
-    def __init__(self, startPoint, endPoint, parent=None):
+    """Bezier curve with draggable control points."""
+    def __init__(self, start, end, parent=None):
         super().__init__(parent)
-        self._start_point = startPoint
-        self._end_point = endPoint
+        self.start = start
+        self.end = end
+        self.update_path()
 
-        self._hover = False
-        self.setAcceptHoverEvents(True)
-        self.setFlag(QtWidgets.QGraphicsItem.ItemIsSelectable)
-        self.setFlag(QtWidgets.QGraphicsItem.ItemSendsScenePositionChanges)
-        self.setZValue(-100)
-        self.updatePath()
-
-    def updatePath(self):
-        points = [self._start_point]
-        for child in self.childItems():
-            if isinstance(child, PlotPoint):
-                points.append(child.pos())
-        points.append(self._end_point)
-        sorted_points = sorted(points, key=partial(PlotLine.percentageByPoint, self.path()))
-        self.setPath(PlotLine.getBezierPath(sorted_points))
-
-    def paint(self, painter, option, widget):
-        painter.setRenderHints(QtGui.QPainter.Antialiasing | QtGui.QPainter.SmoothPixmapTransform | QtGui.QPainter.HighQualityAntialiasing, True)
-        pen = QtGui.QPen(QtGui.QColor(170, 170, 170), 2, QtCore.Qt.SolidLine, QtCore.Qt.RoundCap, QtCore.Qt.RoundJoin)
-        if self.isSelected():
-            pen.setColor(QtGui.QColor(255, 255, 255))
-        elif self._hover:
-            pen.setColor(QtGui.QColor(255, 30, 30))
-        painter.setPen(pen)
-        painter.drawPath(self.path())
-
-    def mousePressEvent(self, event):
-        if event.button() == QtCore.Qt.LeftButton:
-            item = PlotPoint(parent=self)
-            item.setPos(event.pos())
-
-    def hoverEnterEvent(self, event):
-        self._hover = True
-        self.update()
-        super().hoverEnterEvent(event)
-
-    def hoverLeaveEvent(self, event):
-        self._hover = False
-        self.update()
-        super().hoverLeaveEvent(event)
-
-    def shape(self):
-        qp = QtGui.QPainterPathStroker()
-        qp.setWidth(15)
-        qp.setCapStyle(QtCore.Qt.SquareCap)
-        return qp.createStroke(self.path())
-
-    @staticmethod
-    def getBezierPath(points=[], curving=1.0):
-        # Calculate Bezier Line
+    def update_path(self):
+        """Update the curve path based on control points."""
         path = QtGui.QPainterPath()
-        curving = 1.0  # range 0-1
-        if len(points) < 2:
-            return path
-        path.moveTo(points[0])
-        for i in range(len(points) - 1):
-            startPoint = points[i]
-            endPoint = points[i + 1]
-            # use distance as multiplier, closer nodes => less bezier curve
-            dist = math.hypot(endPoint.x() - startPoint.x(), endPoint.y() - startPoint.y())
-            # multiply distance by 0.375
-            offset = dist * 0.375 * curving
-            ctrlPt1 = startPoint + QtCore.QPointF(offset, 0)
-            ctrlPt2 = endPoint + QtCore.QPointF(-offset, 0)
-            path.cubicTo(ctrlPt1, ctrlPt2, endPoint)
-        return path
-
-    @staticmethod
-    def percentageByPoint(path, point, precision=0.5):
-        t = 0.0
-        distances = []
-        while t <= 100.0:
-            distances.append(QtGui.QVector2D(point - path.pointAtPercent(t / 100.0)).length())
-            t += precision
-        percentage = distances.index(min(distances)) * precision
-        return percentage
+        path.moveTo(self.start)
+        path.cubicTo(
+            self.start + QtCore.QPointF(50, 0),
+            self.end - QtCore.QPointF(50, 0),
+            self.end,
+        )
+        self.setPath(path)
 
 
 class PlotView(QtWidgets.QWidget):
-
+    """Custom plot view for managing draggable lines and points."""
     def __init__(self, parent=None):
         super().__init__(parent)
-
-        main_layout = QtWidgets.QVBoxLayout()
-
-        self.scene = QtWidgets.QGraphicsScene(self)  # Ensure the scene has a parent
-        self.view = QtWidgets.QGraphicsView(self.scene)
-        self.view.setDragMode(QtWidgets.QGraphicsView.RubberBandDrag)
-        self.view.setCacheMode(QtWidgets.QGraphicsView.CacheBackground)
-        self.view.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
-        self.view.setVerticalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
-        self.view.setRenderHint(QtGui.QPainter.Antialiasing)
-        self.view.setResizeAnchor(QtWidgets.QGraphicsView.AnchorViewCenter)
-
-        # Add line to scene
-        self.line = PlotLine(QtCore.QPointF(-150, 150), QtCore.QPointF(250, -150))
-        self.scene.addItem(self.line)
-
-        main_layout.addWidget(self.view)
-        self.setLayout(main_layout)
-
-    def mousePressEvent(self, event):
-        scene_pos = self.view.mapToScene(event.pos())
-        item_at_pos = self.scene.itemAt(scene_pos, QtGui.QTransform())  # Correct method to get scene items
-        if item_at_pos is None:
-            self._current_rect_item = PlotPoint()
-            self.scene.addItem(self._current_rect_item)  # Ensure to add the item to the scene
-            self._start = scene_pos
-            self._current_rect_item.setPos(self._start)
-        super().mousePressEvent(event)
-
-    def mouseMoveEvent(self, event):
-        scene_pos = self.view.mapToScene(event.pos())
-        if self._current_rect_item is not None:
-            r = QtCore.QRectF(self._start, scene_pos).normalized()
-            self._current_rect_item.setRect(r)
-        super().mouseMoveEvent(event)
-
-    def mouseReleaseEvent(self, event):
-        self._current_rect_item = None
-        super().mouseReleaseEvent(event)
+        layout = QtWidgets.QVBoxLayout(self)
+        self.scene = QtWidgets.QGraphicsScene(self)
+        self.view = QtWidgets.QGraphicsView(self.scene, self)
+        layout.addWidget(self.view)
 
