@@ -11,6 +11,7 @@ import maya.mel as mel
 import maya.api.OpenMaya as om  # API python 2.0
 import re
 from operator import itemgetter
+from pathlib import Path
 
 import dw_maya.dw_maya_utils as dwu
 from dw_maya.dw_decorators import acceptString
@@ -93,7 +94,7 @@ def cleanDuplication(dupList, cTransformations=1, cLayer=1, cSet=1, cShader=1, c
         if cTransformations:
             attrs = ['t', 'r', 's']
             axes = ['x', 'y', 'z']
-            output_attrs = ['{}.{}.{}'.format(dup, attr, axis) for attr in attrs for axis in axes]
+            output_attrs = ['{}.{}{}'.format(dup, attr, axis) for attr in attrs for axis in axes]
             if [0] * 6 + [1] * 3 != [cmds.getAttr(attr) for attr in output_attrs]:
                 for attr in output_attrs:
                     cmds.setAttr(attr, e=True, l=False)
@@ -189,7 +190,7 @@ def dupMesh(sel=[], **kwargs):
         pairingNames[zipNames[x][0]] = [zipNames[x][1]]
 
     # Duplicate the objects and rename them to the generated unique names
-    dopple = cmds.duplicate(pairingNames.keys(), n='dw_tmp_name001', rc=True)
+    dopple = cmds.duplicate(list(pairingNames.keys()), n='dw_tmp_name001', rc=True)
     for d, n in zip(dopple, pairingNames.values()):
         cmds.rename(d, n[0])
 
@@ -414,8 +415,8 @@ def dupAnim(sel=[]):
     restore_panels = []
 
     # Define temporary cache directory
-    directory = os.path.join(cmds.workspace(fileRuleEntry='fileCache'), 'tmp_bake')
-
+    base_path = Path(cmds.workspace(q=True, rd=True))
+    directory = str(base_path / cmds.workspace(fileRuleEntry='fileCache') / 'tmp_bake')
     # Ensure directory exists
     if not os.path.isdir(directory):
         make_dir(directory)
@@ -434,12 +435,14 @@ def dupAnim(sel=[]):
         restore_panels = isolate_viewport_for_bake()
 
     # Create cache for the duplicated objects
-    fileXml = dcgc.doCreateGeometryCache(duplicates[0], directory)
+    fileXml = dcgc.doCreateGeometryCache(sel, cacheDirectory=directory)
 
     # Use MEL to import the cache file
     objListMel = dwu.convert_list_to_mel_str(duplicates)
-    cmd_format = 'doImportCacheFile("{0}", "xmlcache", {1}, {{}});'
-    mel.eval(cmd_format.format(fileXml[0], objListMel))
+    # as_posix to have linux path style for MEL
+    cmd_format = f'doImportCacheFile("{Path(fileXml[0]).as_posix()}", "xmlcache", {objListMel}, {{}});'
+    print(cmd_format)
+    mel.eval(cmd_format)
 
     # Restore the original viewport settings if changed
     if restore_panels:

@@ -23,7 +23,7 @@ import sys, os
 from typing import List, Union, Optional, Tuple
 
 # ----- Edit sysPath -----#
-rdPath = 'E:\\dw_coding\\dw_open_tools\\maya'
+rdPath = 'E:\\dw_coding\\dw_open_tools\\'
 if not rdPath in sys.path:
     print("Add {} to sysPath".format(rdPath))
     sys.path.insert(0, rdPath)
@@ -37,7 +37,7 @@ import maya.OpenMayaUI as omui
 from dw_maya.dw_decorators import acceptString, load_plugin
 from .dw_maya_components import mag
 from .dw_maya_data import Flags
-from .dw_maya_object import lsTr
+from .dw_lsTr import lsTr
 
 
 #----------------------------------------------------------------------------#

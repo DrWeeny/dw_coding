@@ -21,6 +21,8 @@ import maya.cmds as cmds
 import maya.mel as mel
 import os.path
 import re
+from pathlib import Path
+
 
 import dw_maya.dw_decorators as dwdeco
 
@@ -147,7 +149,7 @@ def objIsDrawn(shape: str) -> bool:
     return True
 
 
-def getGeometriesToCache() -> list:
+def getGeometriesToCache(selection=None) -> list:
     """
     Retrieves the geometries that are eligible for caching based on the current selection in Maya.
     This function will return deformable shapes that are drawn and ensure no more than one cachable child per transform.
@@ -155,11 +157,17 @@ def getGeometriesToCache() -> list:
     Returns:
         list: A list of shape nodes that are eligible for caching.
     """
-    shapes = cmds.ls(sl=True, type='shape')
+    if not selection:
+        shapes = cmds.ls(sl=True, type='shape')
+    else:
+        shapes = cmds.ls(selection, type='shape')
 
     # If no shapes are selected, check for transforms and find their cachable child shapes
     if not shapes:
-        selected_transforms = cmds.ls(sl=True, type='transform')
+        if not selection:
+            selected_transforms = cmds.ls(sl=True, type='transform')
+        else:
+            selected_transforms = cmds.ls(selection, type='transform')
         for sel_obj in selected_transforms:
             cachable_child_count = 0
             child_shapes = cmds.listRelatives(sel_obj, pa=True, ni=True, shapes=True, type='shape')
@@ -389,14 +397,14 @@ def getCacheDirectory(directory="", filerule="", objsToCache=[], fileName="", us
 
     # Set the base directory
     if not directory:
-        directory = cmds.workspace(filerule, q=True, fileRuleEntry=True)
-        directory = cmds.workspace(en=directory) + "/"
+        # Define temporary cache directory
+        base_path = cmds.workspace(q=True, directory=True)
+        directory = os.path.join(base_path, cmds.workspace(fileRuleEntry=filerule))
+
         subDir = getNameForCacheSubDir(unique=False, mainDir=directory, subDirName="")
         baseDirectory = directory
         directory += subDir
     else:
-        if not directory.endswith('/'):
-            directory += '/'
         subDir = os.path.basename(os.path.normpath(directory))
         baseDirectory = directory[:-len(subDir) - 1]
 
@@ -409,10 +417,10 @@ def getCacheDirectory(directory="", filerule="", objsToCache=[], fileName="", us
         # Handle point caches
         if points:
             if not fileName or perGeometry == 1:
-                descriptionFileNames = ['{0}/{1}.xml'.format(cacheDirectory, obj) for obj in objsToCache if
-                                        os.path.exists('{0}/{1}.xml'.format(cacheDirectory, obj))]
+                descriptionFileNames = [f'{cacheDirectory}\\{obj}.xml' for obj in objsToCache if
+                                        os.path.exists(f'{cacheDirectory}\\{obj}.xml')]
             else:
-                path = '{0}/{1}.xml'.format(cacheDirectory, fileName)
+                path = f'{cacheDirectory}\\{fileName}.xml'
                 if os.path.exists(path):
                     descriptionFileNames.append(path)
 
@@ -456,7 +464,6 @@ def getCacheDirectory(directory="", filerule="", objsToCache=[], fileName="", us
 
     if not subDir:
         return ""
-
     return cacheDirectory
 
 
@@ -490,7 +497,6 @@ def doCreateGeometryCache(selection=[], fileName='', cacheDirectory='', timeRang
         list: List of cache files created.
     """
     cacheFiles = []
-    debug = kwargs.get('debug', 0)
 
     # Set start and end time based on timeRange or current playback range
     if timeRange is None:
@@ -511,7 +517,7 @@ def doCreateGeometryCache(selection=[], fileName='', cacheDirectory='', timeRang
         cmds.select(cmds.ls(selection), deselect=True)
     else:
         cmds.select(cmds.ls(sl=True, type='cacheFile'), deselect=True)
-    objsToCache = getGeometriesToCache()
+    objsToCache = getGeometriesToCache(selection)
 
     if not objsToCache:
         raise ValueError("You must select valid geometry to create a cache.")
@@ -528,8 +534,6 @@ def doCreateGeometryCache(selection=[], fileName='', cacheDirectory='', timeRang
     # Handle directory creation and cache conflict checking
     cacheDirectory = getCacheDirectory(cacheDirectory, "fileCache", objsToCache, fileName, useAsPrefix,
                                        perGeometry, action, force, 1)
-    if debug:
-        print(f'Cache directory: {cacheDirectory}')
 
     if not cacheDirectory:
         return cacheFiles
@@ -547,8 +551,10 @@ def doCreateGeometryCache(selection=[], fileName='', cacheDirectory='', timeRang
                                     distribution, perGeometry, simulationRate, sampleMultiplier, refresh, useAsPrefix,
                                     action, format)
 
+    print(f'Cache files: {cacheFiles}')
+
     if action == "export":
-        return [f"{cacheDirectory}/{cf}.xml" for cf in cacheFiles]
+        return [f"{cacheDirectory}\\{cf}.xml" for cf in cacheFiles]
 
     # Attach the caches to the geometry
     attachCaches(objsToCache, cacheFiles, cacheDirectory, action, format, perGeometry)

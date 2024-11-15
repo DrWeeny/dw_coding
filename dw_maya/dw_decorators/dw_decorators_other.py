@@ -7,17 +7,21 @@ if not rdPath in sys.path:
     sys.path.insert(0, rdPath)
 
 import maya.cmds as cmds
-from dw_maya.dw_maya_utils import maya_version
 from functools import wraps
 
 # THIS IS FEW DECORATORS
+def _maya_version():
+    from dw_maya.dw_maya_utils import maya_version
+    return maya_version()
+
 
 def evalManagerState(mode='off'):
     '''
     wrapper function for the evalManager so that it's switching is recorded in
     the undo stack via the Red9.evalManager_switch plugin
     '''
-    if maya_version() >= 2016:
+
+    if _maya_version() >= 2016:
         if not cmds.pluginInfo('evalManager_switch', q=True, loaded=True):
             try:
                 cmds.loadPlugin('evalManager_switch')
@@ -45,7 +49,7 @@ def evalManager_DG(func):
     def wrapper(*args, **kwargs):
         try:
             evalmode = None
-            if maya_version() >= 2016:
+            if _maya_version() >= 2016:
                 evalmode = cmds.evaluationManager(mode=True, q=True)[0]
                 if evalmode == 'parallel':
                     evalManagerState(mode='off')
