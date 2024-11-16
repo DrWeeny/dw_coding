@@ -6,79 +6,12 @@ if not rdPath in sys.path:
     sys.path.insert(0, rdPath)
 
 from maya import cmds, mel
+import maya.OpenMaya as om
 import re
 
 from dw_maya.dw_decorators import acceptString, timeIt, singleUndoChunk, load_plugin
 from dw_maya.dw_create import pointOnPolyConstraint
 
-
-# Helper functions
-def filterSelection(inputFaces=[]):
-    if not inputFaces:
-        sel = cmds.ls(orderedSelection=True, fl=True)
-    else:
-        sel = cmds.ls(inputFaces, fl=True)
-    meshFaces = cmds.filterExpand(sel, expand=True, selectionMask=34) or []
-    meshTransforms = cmds.filterExpand(expand=True, selectionMask=12) or []
-    nurbsSurfaceTransforms = cmds.filterExpand(expand=True, selectionMask=10) or []
-    nurbsCurvesTransforms = cmds.filterExpand(expand=True, selectionMask=9) or []
-    return meshFaces, meshTransforms, nurbsSurfaceTransforms, nurbsCurvesTransforms
-
-
-def getFalloffRadius(ssr):
-    if ssr:
-        if cmds.softSelect(q=True, softSelectEnabled=True):
-            return cmds.softSelect(q=True, softSelectDistance=True)
-        return 0.0
-    return 0.5
-
-
-def generate_control_name(geo_name, component, name_prefix=''):
-    """
-    Generates a unique control name based on the mesh and component information
-    or using a provided name prefix.
-    """
-    if name_prefix:
-        base_name = name_prefix
-    else:
-        base_name = geo_name.replace(":", "_") + "_" + component
-    return getUniqueBaseName(base_name, dstSuffixes=['_zro', '_ctrl', '_follicle', '_follicleShape'])
-
-
-def create_control_group(base_name, radius=1.0, create_control=False):
-    """
-    Creates a control and its parent zero group, or just the zero group if create_control is False.
-    """
-    ctrl = ''
-    if create_control:
-        ctrl = cmds.circle(n=base_name + '_ctrl', ch=0, radius=radius * 0.5 + 0.1)[0]
-        cmds.rotate(-90, 0, 0, ctrl + ".cv[0:7]", os=True, r=True)
-        cmds.setAttr(ctrl + '.v', keyable=False, channelBox=False)
-        ctrl_shape = cmds.listRelatives(ctrl, shapes=True)[0]
-        cmds.setAttr((ctrl_shape + ".overrideEnabled"), 1)
-        cmds.setAttr((ctrl_shape + ".overrideColor"), 27)
-        ctrl_zro = cmds.group(ctrl, n=base_name + '_zro')
-    else:
-        ctrl_zro = cmds.group(empty=True, n=base_name + '_zro')
-
-    return ctrl, ctrl_zro
-
-def create_follicle_constraint(ctrl_zro, mesh_shape, uv, base_name):
-    """
-    Creates a follicle and sets it up to drive the control group.
-    """
-    from dw_maya.dw_nucleus_utils import create_follicles
-    follicle = create_follicles(mesh_shape, uv, name=base_name + '_follicle')
-    follicle_shape = cmds.listRelatives(follicle)[0]
-    cmds.setAttr(follicle_shape + '.v', 0)
-
-    # Parent the control zero group to the follicle
-    cmds.parent(ctrl_zro, follicle, relative=1)
-    normal_cnt = cmds.normalConstraint(mesh_shape, ctrl_zro, weight=1, aimVector=(0, 1, 0), upVector=(0, 0, 1),
-                                       worldUpVector=(0, 0, 1), worldUpType='scene')
-    cmds.delete(normal_cnt)
-
-    return follicle
 
 @singleUndoChunk
 def createSticky(componentSel=None, parent=None, _type='softMod'):
@@ -104,7 +37,6 @@ def createSticky(componentSel=None, parent=None, _type='softMod'):
     out = createStickyDeformers(_type, parent=grp, inputFaces=componentSel)
 
     # Set the falloff radius to 0.5 (adjust as needed)
-    print(out)
     cmds.setAttr("{}.falloffRadius".format(out[0]), 0.5)
 
     return out
@@ -163,70 +95,144 @@ def createStickyDeformers(deformerType, name=None, parent=None, inputFaces=[], s
     return stickyControls, deformer_output
 
 
-def createDeformers(deformerType: str, name: str = '',
-                    parents: list = [], members: list = [],
-                    meshFaces: list = [],
-                    multiFaceMode: bool = False, falloffRadius: float = None,
-                    createOffsetCtrls: bool = False) -> list:
-    """
-    Create deformers (cluster/softMod/locator) and set up connections so they travel with the parent(s), if any.
+@acceptString('parents')
+def createDeformers(deformerType, name='', parents=[], members=[],
+                    falloffRadius=None, createOffsetCtrls=False):
 
-    Args:
-        deformerType (str): Type of deformer to create ("cluster", "softMod", "locator").
-        name (str): Optional name for the deformers.
-        parents (list): List of parent objects to define the center of deformation.
-        members (list): Objects/components to be influenced by the deformer.
-        meshFaces (list): Specific faces on a mesh that should be influenced by the deformer.
-        multiFaceMode (bool): Whether to allow deformation on multiple faces.
-        falloffRadius (float): Radius of influence for deformation.
-        createOffsetCtrls (bool): If True, create offset controls for deformers.
-
-    Returns:
-        list: A list of offset controls created for the deformers.
-    """
 
     defaultFalloffRadius = falloffRadius if falloffRadius else 1.0
 
     if not members:
-        print("No geometry provided. Nothing created.")
-        return []
+        print("No geometry provided. Nothing created")
+        return None
 
     deformers = []
-    offsetCtrls = []
+    offsetCtrls = []  # will be returned by this function
+    baseName = name
+    for parentNum, parent in enumerate(parents):
+        if not createOffsetCtrls:
+            uniqueOffsetCtrlName = getUniqueBaseName(srcObjName=parent, dstSuffixes=['_offset_ctrl'])
+            parent = cmds.rename(parent, uniqueOffsetCtrlName + '_offset_ctrl')
 
-    baseName = getUniqueBaseName(parents, name)
+        name = getUniqueBaseName(srcObjName=baseName, dstSuffixes=['_' + deformerType, '_ctrl'])
 
-    if not createOffsetCtrls:
-        uniqueOffsetCtrlName = getUniqueBaseName(parents, dstSuffixes=['_offset_ctrl'])
-        parent = cmds.rename(parents, uniqueOffsetCtrlName + '_offset_ctrl')
-    else:
-        parent = parents
+        # create a curve for control
+        _create_control(deformerType, name, falloffRadius)
 
-    # Generate unique deformer name
-    name = getUniqueBaseName(baseName, dstSuffixes=['_' + deformerType, '_ctrl'])
+        # offset ctrl --------------------------------------------------------------------------------------------------
+        offsetCtrl = _create_offset_control(name, falloffRadius, createOffsetCtrls, parent)
 
-    # Create Control
-    ctrl = _create_control(deformerType, name, defaultFalloffRadius)
+        # Add locator shape to access worldPosition
+        offsetCtrlLocatorShape = _add_locator_shape_to_offset_ctrl(offsetCtrl)
 
-    # Offset Control Creation
-    offsetCtrl = _create_offset_control(name, falloffRadius, createOffsetCtrls, parent)
+        verts = all(re.search(r"\.vtx\[", member) for member in members)
 
-    # Add locator shape to access worldPosition
-    _add_locator_shape_to_offset_ctrl(offsetCtrl)
+        # check if only verts are given as members, but no parent
+        if not parent and verts:
+            dummy = cmds.cluster(members, name="DELETE", bf=1)[1]
+            pos = cmds.xform(dummy, q=1, ws=1, rp=1)
+            cmds.delete(dummy)
+            cmds.xform(offsetCtrl, ws=1, t=pos)
+            cmds.xform(ctrl, ws=1, t=pos)
+        elif parent:
+            pos = cmds.xform(parent, q=1, ws=1, rp=1)
+            cmds.xform(offsetCtrl, ws=1, t=pos)
 
-    # Create Deformer
-    deformer = _create_deformer(ctrl, offsetCtrl, members, meshFaces, falloffRadius, deformerType, multiFaceMode)
+            rot = cmds.xform(parent, q=1, ws=1, ro=1)
+            cmds.xform(offsetCtrl, ws=1, ro=rot)
 
-    # Finalize Control Setup
-    cmds.parent(ctrl, offsetCtrl)
-    _reset_transform(ctrl)
+        # deformer creation
+        deformer, ctrl = _deformer_setup(members, name,
+                        weightNode=[ctrl, ctrl],
+                        offsetCtrl=offsetCtrlLocatorShape,
+                        falloffRadius=falloffRadius,
+                        deformerType=deformerType)
 
-    if createOffsetCtrls:
-        cmds.parent(offsetCtrl, parent)
+        _no_double_transform(members, deformer)
 
-    offsetCtrls.append(offsetCtrl)
+        cmds.parent(ctrl, offsetCtrl)
+
+        axis = "tr"
+        for a in axis:
+            cmds.setAttr(f"{ctrl}.{a}", *[0,0,0])
+
+        if createOffsetCtrls:
+            cmds.parent(offsetCtrl, parent)
 
     return offsetCtrls
+
+# Helper functions
+def filterSelection(inputFaces=[]):
+    if not inputFaces:
+        sel = cmds.ls(orderedSelection=True, fl=True)
+    else:
+        sel = cmds.ls(inputFaces, fl=True)
+    meshFaces = cmds.filterExpand(sel, expand=True, selectionMask=34) or []
+    meshTransforms = cmds.filterExpand(expand=True, selectionMask=12) or []
+    nurbsSurfaceTransforms = cmds.filterExpand(expand=True, selectionMask=10) or []
+    nurbsCurvesTransforms = cmds.filterExpand(expand=True, selectionMask=9) or []
+    return meshFaces, meshTransforms, nurbsSurfaceTransforms, nurbsCurvesTransforms
+
+
+def getFalloffRadius(ssr):
+    if ssr:
+        if cmds.softSelect(q=True, softSelectEnabled=True):
+            return cmds.softSelect(q=True, softSelectDistance=True)
+        return 0.0
+    return 0.5
+
+
+def generate_control_name(geo_name, component, name_prefix=''):
+    """
+    Generates a unique control name based on the mesh and component information
+    or using a provided name prefix.
+    """
+    if name_prefix:
+        base_name = name_prefix
+    else:
+        base_name = geo_name.replace(":", "_") + "_" + component
+    return getUniqueBaseName(base_name, dstSuffixes=['_zro', '_ctrl', '_follicle', '_follicleShape'])
+
+
+def create_control_group(name, radius=1.0, create_control=False):
+    """
+    Creates a control and its parent zero group, or just the zero group if create_control is False.
+    """
+    ctrl_zro = ''
+    if create_control:
+        # only create (empty) groups
+        ctrl_zro = cmds.group(empty=True, n=name + '_zro')
+
+    else:
+        # create control parent groups (_zro) and control (_ctrl) objects
+        ctrl = cmds.circle(n=name + '_ctrl', ch=0, radius=radius * 0.5 + 0.1)[0]
+        cmds.rotate(-90, 0, 0, ctrl + ".cv[0:7]", os=True, r=True)
+        cmds.setAttr(ctrl + '.v', keyable=False, channelBox=False)
+        ctrlShape = cmds.listRelatives(ctrl, shapes=True)[0]
+        cmds.setAttr((ctrlShape + ".overrideEnabled"), 1)
+        cmds.setAttr((ctrlShape + ".overrideColor"), 27)
+
+        ctrl_zro = cmds.group(ctrl, n=name + '_zro')
+
+    return ctrl, ctrl_zro
+
+def create_follicle_constraint(ctrl_zro, mesh_shape, uv, base_name):
+    """
+    Creates a follicle and sets it up to drive the control group.
+    """
+    from dw_maya.dw_nucleus_utils import create_follicles
+    follicle = create_follicles(mesh_shape, uv, name=base_name + '_follicle')
+    follicle_shape = cmds.listRelatives(follicle)[0]
+    cmds.setAttr(follicle_shape + '.v', 0)
+
+    # Parent the control zero group to the follicle
+    cmds.parent(ctrl_zro, follicle, relative=1)
+    normal_cnt = cmds.normalConstraint(mesh_shape, ctrl_zro,
+                                       weight=1, aimVector=(0, 1, 0), upVector=(0, 0, 1),
+                                       worldUpVector=(0, 0, 1), worldUpType='scene')
+    cmds.delete(normal_cnt)
+
+    return follicle
 
 
 def getFaceCenterPositions(meshFaces, returnMPoints=False):
@@ -323,7 +329,8 @@ def getUniqueBaseName(srcObjName, dstSuffixes=[]):
         count += 1
 
 
-def createStickyControls(driverMeshFaces=[], createControlParentGroupsOnly=False, stickyControlsParent='', radius=1.0,
+def createStickyControls(driverMeshFaces=[], createControlParentGroupsOnly=False,
+                         stickyControlsParent='', radius=1.0,
                          namePrefix='', constrainViaFollicles=True):
     """
     Creates sticky controls (or empty parent groups) constrained to a mesh surface, using follicles or pointOnPolyConstraint.
@@ -338,20 +345,29 @@ def createStickyControls(driverMeshFaces=[], createControlParentGroupsOnly=False
 
     for driver in mesh_faces:
         geo_name, face_num = driver.split(".")
-        component = face_num.replace("[", "_").replace("]", "").replace(":", "_")
+        component = re.sub(r'[^a-zA-Z0-9]', '_', face_num)
 
-        base_name = generate_control_name(geo_name, component, namePrefix if not bGenerateName else '')
+        if bGenerateName:
+            base_name = geo_name.replace(":", "_") + "_" + component
+        else:
+            base_name = namePrefix
+
+        name = getUniqueBaseName(base_name, dstSuffixes=['_zro', '_ctrl', '_follicle', '_follicleShape'])
 
         # Create control or parent group
-        sticky_controls, ctrl_zro = create_control_group(base_name, radius, not createControlParentGroupsOnly)
-        sticky_control_zeroes.append(ctrl_zro)
+        ctrl, ctrl_zero = create_control_group(name, radius, createControlParentGroupsOnly)
+        sticky_controls.append(ctrl)
+        sticky_control_zeroes.append(ctrl_zero)
 
         if component:
-            cmds.addAttr(ctrl_zro, ln="following", dt="string")
-            cmds.setAttr(ctrl_zro + ".following", driver, type="string")
+            cmds.addAttr(ctrl_zero, ln="following", dt="string")
+            cmds.setAttr(ctrl_zero + ".following", driver, type="string")
 
-        mesh_shape = geo_name if cmds.nodeType(geo_name) == 'mesh' else \
-        cmds.listRelatives(geo_name, noIntermediate=1, shapes=1, fullPath=1)[0]
+        mesh_shape = geo_name
+        if cmds.nodeType(geo_name) == 'mesh':
+            mesh_shape = cmds.listRelatives(geo_name, noIntermediate=1, shapes=1, fullPath=1)[0]
+        # check the meshShape's input connection, if none is found force the creation of an origShape node through
+        # the generation of a temporary deformer
         in_mesh_con = cmds.connectionInfo(mesh_shape + '.inMesh', sourceFromDestination=True)
 
         temp_cluster = None
@@ -361,35 +377,37 @@ def createStickyControls(driverMeshFaces=[], createControlParentGroupsOnly=False
 
         # Get UVs and setup follicle or pointOnPoly constraint
         sh_only = mesh_shape.rsplit("|")[-1]  # key is only the shape
+        print(sh_only)
+        print(d_face_vs_face_position)
         face_m_point = d_face_vs_face_position[f'{sh_only}.{face_num}']
         # delay import to avoid circular call
         from dw_maya.dw_maya_utils import closest_uv_on_mesh
         uv = closest_uv_on_mesh(mesh_shape, position=face_m_point)
 
         if constrainViaFollicles:
-            follicle = create_follicle_constraint(ctrl_zro, mesh_shape, uv, base_name)
+            follicle = create_follicle_constraint(ctrl_zero, mesh_shape, uv, base_name)
             follicles.append(follicle)
         else:
-            pop_cnt = pointOnPolyConstraint(driver, ctrl_zro)
+            pop_cnt = pointOnPolyConstraint(driver, ctrl_zero)
 
         if temp_cluster:
             cmds.delete(temp_cluster)
 
+    # group all controls (and follicles) under one single parent node (if the stickyControlsParent arg was provided)
     if stickyControlsParent:
+        # create a group if the stickyControlsParent obj doesn't exist yet
         if not cmds.objExists(stickyControlsParent):
             stickyControlsParent = cmds.group(empty=True, name=stickyControlsParent)
 
-        cmds.parent(follicles if constrainViaFollicles else sticky_control_zeroes, stickyControlsParent)
+        if constrainViaFollicles:
+            cmds.parent(follicles, stickyControlsParent)
+        else:
+            cmds.parent(sticky_control_zeroes, stickyControlsParent)
 
     return sticky_control_zeroes if createControlParentGroupsOnly else sticky_controls
 
 
-
-
 def updateLocators(locators):
-    """
-    Main function to update a list of locators by applying constraints, baking transformations, and restoring visibility.
-    """
     if locators:
         for i, loc in enumerate(locators):
             if cmds.objExists(loc + ".following"):
@@ -397,9 +415,12 @@ def updateLocators(locators):
                 for attr in cmds.listAttr(loc):
                     cmds.cutKey(loc, cl=1, at=attr)
                 constTo = cmds.getAttr(loc + ".following")
-                pointOnPolyConstraint(constTo, loc) #doCreatePointOnPolyConstraintArgList 1 { "0","0","0","1","","1" }
+                cmds.select(constTo, r=1)
+                cmds.select(loc, add=1)
+                cmd = 'doCreatePointOnPolyConstraintArgList 1 { "0","0","0","1","","1" };'
+                res = mel.eval(cmd)
             else:
-                locators.remove(loc)
+                locators.pop(i)
 
         if locators:
             # now we have them all, lets bake them.
@@ -414,6 +435,7 @@ def updateLocators(locators):
                         nodesHidden.append(x)
                     except:
                         pass
+            cmds.select(cl=True)
             # bake
             start = cmds.playbackOptions(q=1, min=1)
             end = cmds.playbackOptions(q=1, max=1)
@@ -430,6 +452,7 @@ def updateLocators(locators):
             return None
     else:
         return None
+
 
 def _create_control(deformerType: str, name: str, falloffRadius: float) -> str:
     """
@@ -454,19 +477,20 @@ def _create_control(deformerType: str, name: str, falloffRadius: float) -> str:
         )
         if falloffRadius != 1.0:
             cmds.xform(ctrl, scale=[falloffRadius * 4] * 3)
-            cmds.makeIdentity(ctrl, s=True, apply=True)
+            cmds.makeIdentity(ctrl, s=True, r=False, t=False, apply=True, normal=0, preserveNormals=True)
 
     elif deformerType == "softMod":
         ctrl = cmds.group(em=True, name=name + "_ctrl")
-        circleX = cmds.circle(name=name + "X", nr=(1, 0, 0), r=falloffRadius, ch=False)[0]
-        circleY = cmds.circle(name=name + "Y", nr=(0, 1, 0), r=falloffRadius, ch=False)[0]
-        circleZ = cmds.circle(name=name + "Z", nr=(0, 0, 1), r=falloffRadius, ch=False)[0]
+        circleX = cmds.circle(name=name + "X", nr=(1, 0, 0), sw=360, r=falloffRadius, d=3, ut=0, tol=0.01, s=8, ch=False)[0]
+        circleY = cmds.circle(name=name + "Y", nr=(0, 1, 0), sw=360, r=falloffRadius, d=3, ut=0, tol=0.01, s=8, ch=False)[0]
+        circleZ = cmds.circle(name=name + "Z", nr=(0, 0, 1), sw=360, r=falloffRadius, d=3, ut=0, tol=0.01, s=8, ch=False)[0]
         cmds.parent(circleX + "Shape", circleY + "Shape", circleZ + "Shape", ctrl, r=True, s=True)
         cmds.delete(circleX, circleY, circleZ)
 
     elif deformerType == "locator":
-        ctrl = cmds.curve(name=name + "_ctrl", d=1, p=[(0, 1, 0), (0, -1, 0), (0, 0, 0), (0, 0, -1),
-                                                       (0, 0, 1), (0, 0, 0), (1, 0, 0), (-1, 0, 0)])
+        ctrl = cmds.curve(name=name + "_ctrl", d=1,
+                          p=[(0, 1, 0), (0, -1, 0), (0, 0, 0), (0, 0, -1), (0, 0, 1), (0, 0, 0), (1, 0, 0), (-1, 0, 0)],
+                          k=[0, 1, 2, 3, 4, 5, 6, 7])
         if falloffRadius != 1.0:
             cmds.xform(ctrl, scale=[falloffRadius * 2] * 3)
             cmds.makeIdentity(ctrl, s=True, apply=True)
@@ -490,7 +514,7 @@ def _create_offset_control(name: str, falloffRadius: float, createOffsetCtrls: b
     if createOffsetCtrls:
         offsetCtrl = cmds.circle(n=name + '_offset_ctrl', ch=False, radius=falloffRadius * 0.5)[0]
         cmds.rotate(-90, 0, 0, offsetCtrl + ".cv[0:7]", os=True, r=True)
-        cmds.setAttr(offsetCtrl + '.v', keyable=False)
+        cmds.setAttr(offsetCtrl + '.v', keyable=False, channelBox=False)
         offsetCtrlShape = cmds.listRelatives(offsetCtrl, shapes=True)[0]
         cmds.setAttr(offsetCtrlShape + ".overrideEnabled", 1)
         cmds.setAttr(offsetCtrlShape + ".overrideColor", 27)
@@ -513,10 +537,14 @@ def _add_locator_shape_to_offset_ctrl(offsetCtrl: str):
     cmds.setAttr(offsetCtrlLocatorShape + '.visibility', 0)
     cmds.delete(tempLocator)
     cmds.rename(offsetCtrlLocatorShape, offsetCtrl + "Shape")
+    return offsetCtrlLocatorShape
 
 
-def _create_deformer(ctrl: str, offsetCtrl: str, members: list, meshFaces: list,
-                      falloffRadius: float, deformerType: str, multiFaceMode: bool):
+def _deformer_setup(members, name,
+                     weightNode: list,
+                     offsetCtrl: str,
+                     falloffRadius: float,
+                     deformerType: str):
     """
     Connects the deformer to the members and sets up the required connections.
 
@@ -530,27 +558,37 @@ def _create_deformer(ctrl: str, offsetCtrl: str, members: list, meshFaces: list,
         multiFaceMode (bool): Whether to apply multi-face deformation.
     """
     if deformerType == "softMod":
-        deformer, _ = cmds.softMod(members, name=ctrl + '_softMod', weightedNode=[ctrl, ctrl],
-                                   bindState=1, falloffRadius=falloffRadius)
+        deformer, ctrl = cmds.softMod(members,
+                                      name=name + '_softMod',
+                                      weightedNode=weightNode,
+                                      bindState=1,
+                                      falloffRadius=falloffRadius,
+                                      falloffAroundSelection=0, before=1,
+                                      afterReference=False)
         cmds.connectAttr(offsetCtrl + ".worldPosition", deformer + ".falloffCenter")
-        cmds.addAttr(ctrl, ln="falloffRadius", at="float", dv=falloffRadius, k=True)
+        cmds.addAttr(ctrl, ln="falloffRadius", at="float", dv=falloffRadius, k=1, min=0.0)
         cmds.connectAttr(ctrl + ".falloffRadius", deformer + ".falloffRadius")
 
+        cmds.addAttr(ctrl, ln="falloffMode", at="enum", en='volume:surface', k=1)
+        cmds.connectAttr(ctrl + ".falloffMode", deformer + ".falloffMode")
+
     elif deformerType == "cluster":
-        deformer, _ = cmds.cluster(members, name=ctrl + '_cluster', weightedNode=[ctrl, ctrl], envelope=1)
+        deformer, ctrl = cmds.cluster(members,
+                                      name=name + '_cluster',
+                                      weightedNode=[ctrl, ctrl],
+                                      envelope=1, before=1, afterReference=False)
         worldPos = cmds.xform(offsetCtrl, q=True, translation=True, ws=True)
         cmds.percent(deformer, members, v=0.0)
 
         if falloffRadius:
             cmds.percent(deformer, members, dropoffPosition=worldPos, dropoffType='linearSquared',
                          dropoffDistance=falloffRadius, value=1)
-        if multiFaceMode and meshFaces:
-            setClusterWeightsFromSoftSelection(deformer, members[0], meshFaces[0], falloffRadius)
 
-    if deformerType != "locator":
+
+    if deformerType in ["softMod", "cluster"]:
         cmds.connectAttr(offsetCtrl + ".worldInverseMatrix", deformer + ".bindPreMatrix")
 
-    return deformer
+    return deformer, ctrl
 
 
 def _reset_transform(obj: str):
@@ -580,4 +618,19 @@ def _reset_transform(obj: str):
         cmds.setAttr(f"{obj}.shearXY", 0)
         cmds.setAttr(f"{obj}.shearXZ", 0)
         cmds.setAttr(f"{obj}.shearYZ", 0)
+
+def _no_double_transform(members, deformer):
+    # make sure that transforming the deformed object does not produce double-deformations
+    # NOTE: these connections should be established by the cluster/softMod command!
+    deformedObjs = []
+    for member in members:
+        deformedObj = member.split('.')[0]
+        if not deformedObj in deformedObjs:
+            deformedObjs.append(deformedObj)
+
+    for index, deformedObj in enumerate(deformedObjs):
+        srcCon = deformedObj + ".worldMatrix"
+        dstCon = deformer + f".geomMatrix[{index}]"
+        if not cmds.isConnected(srcCon, dstCon):
+            cmds.connectAttr(srcCon, dstCon, f=True)
 
