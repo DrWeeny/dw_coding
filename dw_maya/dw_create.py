@@ -9,7 +9,7 @@ if not rdPath in sys.path:
 import maya.cmds as cmds
 from math import pow, sqrt
 from itertools import chain
-from typing import List, Optional
+from typing import List, Optional, Tuple
 import re
 import dw_maya.dw_maya_nodes as dwnn
 
@@ -63,7 +63,7 @@ def createSquareSphere(res=4):
 def pointOnPolyConstraint(input_vertex: str,
                           tr: str,
                           name: Optional[str] = None,
-                          uv: Optional[List[int, int]] = [],
+                          uv: List[Tuple[int, int]] = None,
                           replace: bool = False):
     """
     Replacement for the Maya pointOnPolyConstraint command, addressing bugs with UV settings.
