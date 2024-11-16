@@ -9,3 +9,4 @@ if not rdPath in sys.path:
 
 from .dw_create_nucleus import create_nucleus
 from .dw_nconstraint_preset import saveNConstraintRig
+from .dw_create_follicle import create_follicles

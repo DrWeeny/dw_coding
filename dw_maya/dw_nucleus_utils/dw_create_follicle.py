@@ -11,7 +11,7 @@ from dw_maya.dw_decorators import acceptString
 import dw_maya.dw_maya_utils as dwu
 
 @acceptString("surface")
-def create_follicles(surface: str, uv_input: list = None, uvthreshold: float = 0.05, **kwargs) -> str:
+def create_follicles(surface, uv_input: list = None, uvthreshold: float = 0.05, **kwargs) -> str:
     """
     Creates a follicle on the given surface (mesh or nurbsSurface) based on UV input.
 
@@ -36,12 +36,12 @@ def create_follicles(surface: str, uv_input: list = None, uvthreshold: float = 0
     sh = sh[0]
 
     debug = []
-    hair = cmds.createNode('follicle', **flags)
+    hair = cmds.createNode('follicle')
     cmds.setAttr(f"{hair}.parameterU", u)
     cmds.setAttr(f"{hair}.parameterV", v)
     hair_dag = cmds.listRelatives(hair, p=True)[0]
 
-    if cmds.objExists(surface):
+    if cmds.objExists(sh):
         ntype = cmds.nodeType(sh)
         cmds.connectAttr(f"{sh}.worldMatrix[0]", f"{hair}.inputWorldMatrix")
 
@@ -57,6 +57,7 @@ def create_follicles(surface: str, uv_input: list = None, uvthreshold: float = 0
     else:
         cmds.setAttr(f"{hair}.startDirection", 1)
 
+    hair_dag = cmds.rename(hair_dag, flags["name"])
     return hair_dag
 
 

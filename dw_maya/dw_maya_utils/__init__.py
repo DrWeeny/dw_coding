@@ -21,6 +21,6 @@ from .dw_maya_time import current_timerange
 from .dw_maya_message import m_warning, m_error, m_message
 from .dw_lsTr import lsTr
 from .dw_maya_prefs import cache_maya_internal_data, os_build, maya_version
-from .dw_maya_raycast import nearest_uv_on_mesh, test_if_inside_mesh
+from .dw_uv import closest_uv_on_mesh, nearest_uv_on_mesh, get_uv_from_vtx
 from .dw_mesh_utils import extractFaces, uncombineMesh
 from .dw_vtx import change_curve_pivot, get_common_roots

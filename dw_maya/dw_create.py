@@ -9,6 +9,7 @@ if not rdPath in sys.path:
 import maya.cmds as cmds
 from math import pow, sqrt
 from itertools import chain
+from typing import List, Optional
 import re
 import dw_maya.dw_maya_nodes as dwnn
 
@@ -26,6 +27,7 @@ def create_implicite_sphere(name = None):
     if not name:
         name = 'implicitSphere#'
     return dwnn.MayaNode(name, 'implicitSphere')
+
 
 def createSquareSphere(res=4):
     """
@@ -58,32 +60,11 @@ def createSquareSphere(res=4):
     return cub[0]
 
 
-def getVertexMap(vertex, get_map_index=False):
-    """
-    Retrieves the UV map information for a given vertex.
-
-    Args:
-        vertex (str): The vertex for which the UV map is queried.
-        get_map_index (bool, optional): If True, returns the UV map index instead of UV coordinates. Default is False.
-
-    Returns:
-        list or str: If get_map_index is True, returns the UV map index; otherwise, returns the UV coordinates.
-    """
-    # Convert the vertex to its corresponding UV map
-    vtx_map = cmds.polyListComponentConversion(vertex, tuv=True)
-
-    # If get_map_index is True, return the map index directly
-    if get_map_index:
-        return vtx_map
-    # Query the UV coordinates
-    uv_coords = cmds.polyEditUV(vtx_map, query=True)
-    # If more than two UV values are returned, slice to get only the first two (U and V coordinates)
-    if len(uv_coords) > 2:
-        return uv_coords[:2]
-    return uv_coords
-
-
-def pointOnPolyConstraint(input_vertex: str, tr: str, name=None, **kwargs):
+def pointOnPolyConstraint(input_vertex: str,
+                          tr: str,
+                          name: Optional[str] = None,
+                          uv: Optional[List[int, int]] = [],
+                          replace: bool = False):
     """
     Replacement for the Maya pointOnPolyConstraint command, addressing bugs with UV settings.
 
@@ -96,8 +77,9 @@ def pointOnPolyConstraint(input_vertex: str, tr: str, name=None, **kwargs):
     Returns:
         str: The name of the created or modified pointOnPolyConstraint node.
     """
-
-    replace = kwargs.get('replace') or False
+    if uv and len(uv) != 2:
+        cmds.error("uv input shoud be [u, v] format")
+    uv_values = uv or []  # Ensure default is a new list instance
 
     # if other type of component has been input, change to vertices
     to_vertices = cmds.polyListComponentConversion(input_vertex, tv=True)
@@ -129,7 +111,10 @@ def pointOnPolyConstraint(input_vertex: str, tr: str, name=None, **kwargs):
         uv_attrs = [f'{ptC}.{a}' for a in attrs if pattern.search(a)]
 
         # Retrieve and set UV values for each vertex
-        uv_values = chain(*[getVertexMap(i) for i in vertices])
+        if not uv_values:
+            from dw_maya.dw_maya_utils import get_uv_from_vtx
+            uv_values = chain(*[get_uv_from_vtx(i) for i in vertices])
+
         for attr, value in zip(uv_attrs, uv_values):
             cmds.setAttr(attr, value)
 

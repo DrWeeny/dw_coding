@@ -1035,24 +1035,14 @@ def create_control_group(base_name, radius=1.0, create_control=False):
 
     return ctrl_zro
 
-def create_follicle_constraint(driver, ctrl_zro, mesh_shape, in_mesh_con, uv, base_name):
+def create_follicle_constraint(ctrl_zro, mesh_shape, uv, base_name):
     """
     Creates a follicle and sets it up to drive the control group.
     """
-    follicle_shape = cmds.createNode('follicle', n=base_name + '_follicleShape')
+    from dw_maya.dw_nucleus_utils import create_follicles
+    follicle = create_follicles(mesh_shape, uv, name=base_name + '_follicle')
+    follicle_shape = cmds.listRelatives(follicle)[0]
     cmds.setAttr(follicle_shape + '.v', 0)
-    follicle = cmds.listRelatives(follicle_shape, type='transform', parent=True)[0]
-    follicle = cmds.rename(follicle, base_name + '_follicle')
-
-    # Set follicle position via UVs
-    cmds.setAttr(follicle_shape + '.parameterU', uv[0])
-    cmds.setAttr(follicle_shape + '.parameterV', uv[1])
-
-    # Connect follicle
-    cmds.connectAttr(follicle_shape + '.outTranslate', follicle + '.translate', f=1)
-    cmds.connectAttr(follicle_shape + '.outRotate', follicle + '.rotate', f=1)
-    cmds.connectAttr(mesh_shape + '.worldMatrix[0]', follicle_shape + '.inputWorldMatrix', f=1)
-    cmds.connectAttr(in_mesh_con, follicle_shape + '.inputMesh', f=1)
 
     # Parent the control zero group to the follicle
     cmds.parent(ctrl_zro, follicle, relative=1)
@@ -1099,17 +1089,17 @@ def createStickyControls(driverMeshFaces=[], createControlParentGroupsOnly=False
             in_mesh_con = cmds.connectionInfo(mesh_shape + '.inMesh', sourceFromDestination=True)
 
         # Get UVs and setup follicle or pointOnPoly constraint
-        face_m_point = d_face_vs_face_position[str('%s.%s' % (mesh_shape, face_num))]
-        uv = getClosestMeshUVfromPosition(mesh_shape, position=face_m_point)
+        sh_only = mesh_shape.rsplit("|")[-1] # key is only the shape
+        face_m_point = d_face_vs_face_position[f'{sh_only}.{face_num}']
+        # delay import to avoid circular call
+        from dw_maya.dw_maya_utils import closest_uv_on_mesh
+        uv = closest_uv_on_mesh(mesh_shape, position=face_m_point)
 
         if constrainViaFollicles:
-            follicle = create_follicle_constraint(driver, ctrl_zro, mesh_shape, in_mesh_con, uv, base_name)
+            follicle = create_follicle_constraint(ctrl_zro, mesh_shape, uv, base_name)
             follicles.append(follicle)
         else:
-            pop_cnt = cmds.pointOnPolyConstraint(driver, ctrl_zro, weight=1)[0]
-            geo_short_name = geo_name.split('|')[-1]
-            cmds.setAttr(f'{pop_cnt}.{geo_short_name}U0', uv[0])
-            cmds.setAttr(f'{pop_cnt}.{geo_short_name}V0', uv[1])
+            pop_cnt = pointOnPolyConstraint(driver, ctrl_zro)
 
         if temp_cluster:
             cmds.delete(temp_cluster)
@@ -1300,49 +1290,7 @@ def getFaceCenterPositions(meshFaces, returnMPoints=False):
     return dFaceVsFacePosition
 
 
-def getClosestMeshUVfromPosition(shape, position=[]):
-    """
-    Get the UV coordinates closest to a given world position on a mesh.
-
-    Args:
-        shape (str): The name of the mesh shape node.
-        position (list or MPoint): The world position as [x, y, z] or an MPoint object.
-
-    Returns:
-        list: The UV coordinates [u, v] closest to the given position.
-    """
-    selMSelectionList = om.MSelectionList()
-    selMSelectionList.add(shape)
-    dagPathMDagPath = om.MDagPath()
-    componentMObject = om.MObject()
-
-    # Retrieve the mesh's DAG path
-    selMSelectionList.getDagPath(0, dagPathMDagPath, componentMObject)
-    meshFn = om.MFnMesh(dagPathMDagPath)
-
-    # Convert the position to MPoint if necessary
-    if isinstance(position, om.MPoint):
-        posMPoint = position
-    else:
-        posMPoint = om.MPoint(*position)
-
-    # Create a float2 array to hold the UV values
-    util = om.MScriptUtil()
-    util.createFromList([0.0, 0.0], 2)
-    float2ArrayPtr = util.asFloat2Ptr()
-
-    # Get the UV at the closest point on the mesh
-    meshFn.getUVAtPoint(posMPoint, float2ArrayPtr, om.MSpace.kWorld)
-
-    # Extract the UV values from the float2 array
-    uVal = om.MScriptUtil.getFloat2ArrayItem(float2ArrayPtr, 0, 0)
-    vVal = om.MScriptUtil.getFloat2ArrayItem(float2ArrayPtr, 0, 1)
-
-    # Return UV as a list [u, v]
-    return [uVal, vVal]
-
-
-def uiCreateStickyDeformers(deformerType, name=None, parent=None, inputFaces=[], ssr=False):
+def createStickyDeformers(deformerType, name=None, parent=None, inputFaces=[], ssr=False):
     # Filter selection
     meshFaces, meshTransforms, nurbsSurfaceTransforms, nurbsCurvesTransforms = filterSelection(inputFaces)
 
@@ -1352,7 +1300,6 @@ def uiCreateStickyDeformers(deformerType, name=None, parent=None, inputFaces=[],
 
     # Check user preferences for selection order tracking
     if not multiFaceMode:
-        trackSelectionOrderState = cmds.selectPref(q=True, trackSelectionOrder=True)
         cmds.selectPref(trackSelectionOrder=True)
 
     # Find deformer members (geometry to which deformer will be applied)
@@ -1366,7 +1313,7 @@ def uiCreateStickyDeformers(deformerType, name=None, parent=None, inputFaces=[],
     falloffRadius = getFalloffRadius(ssr)
 
     # Define parent group for controls if none exists
-    stickyControlsParent = parent if parent else 'dnStickyDeformers_grp'
+    stickyControlsParent = parent if parent else 'sticky_grp'
     if not cmds.objExists(stickyControlsParent):
         stickyControlsParent = cmds.group(empty=True, name=stickyControlsParent)
 
@@ -1390,9 +1337,6 @@ def uiCreateStickyDeformers(deformerType, name=None, parent=None, inputFaces=[],
         falloffRadius=falloffRadius,
         createOffsetCtrls=False
     )
-
-    # Restore the selection order preference
-    cmds.selectPref(trackSelectionOrder=trackSelectionOrderState)
 
     return stickyControls + deformer_output
 
@@ -1438,7 +1382,7 @@ def createSticky(componentSel=None, parent=None, _type='softMod'):
         grp = parent
 
     # Create sticky deformers (softMod, cluster, etc.)
-    out = uiCreateStickyDeformers(_type, parent=grp, inputFaces=componentSel)
+    out = createStickyDeformers(_type, parent=grp, inputFaces=componentSel)
 
     # Set the falloff radius to 0.5 (adjust as needed)
     cmds.setAttr("{}.falloffRadius".format(out[0]), 0.5)

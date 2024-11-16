@@ -8,7 +8,6 @@ if not rdPath in sys.path:
     print(f"Add {rdPath} to sysPath")
     sys.path.insert(0, rdPath)
 
-from dw_maya.dw_widgets import ErrorWin
 
 def vtxAnimDetection(argument):
     """
@@ -29,7 +28,7 @@ def vtxAnimDetection(argument):
             msg_error = "Vertex animation detected, canceling deformer command"
 
             # Check if the argument has a valid shape node
-            mesh_shape = cmds.listRelatives(argument, s=True)
+            mesh_shape = cmds.listRelatives([a.split(".")[0] for a in argument], s=True)
             if not mesh_shape:
                 print(f"Error: {argument} does not have a valid shape node.")
                 return
@@ -38,6 +37,9 @@ def vtxAnimDetection(argument):
             vtx_component  = cmds.ls(f"{mesh_shape}_pnts_*__pntx", fl=1)
             # check on tweak level too because you could be evil
             tweak_node = cmds.listConnections(mesh_shape, type='tweak')
+
+            # delay import to avoid circular call
+            from dw_maya.dw_widgets import ErrorWin
 
             if vtx_component:
                 print(msg_error)

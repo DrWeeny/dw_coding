@@ -23,3 +23,4 @@ from .dw_returnNodeDiff import returnNodeDiff
 from .dw_undo import singleUndoChunk, repeatable
 from .dw_viewportOff import viewportOff
 from .dw_decorators_other import evalManager_DG, evalManagerState
+from .dw_vtxAnimDetection import vtxAnimDetection

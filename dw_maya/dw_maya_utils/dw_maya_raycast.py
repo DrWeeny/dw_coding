@@ -33,120 +33,12 @@ from maya import cmds, mel
 import maya.OpenMaya as om
 import maya.OpenMayaUI as omui
 
-# external
-from dw_maya.dw_decorators import acceptString, load_plugin
-from .dw_maya_components import mag
-from .dw_maya_data import Flags
+
 from .dw_lsTr import lsTr
 
 
 #----------------------------------------------------------------------------#
 #--------------------------------------------------------------- FUNCTIONS --#
-
-@load_plugin('nearestPointOnMesh')
-@acceptString('targetMesh', 'points')
-def nearest_uv_on_mesh(targetMesh: Union[str, List[str]],
-                       points: List[Union[str, List[float]]],
-                       **kwargs) -> List:
-    """
-    Find the nearest UV coordinates, world space positions, face indices, or distances
-    between a list of points and the nearest point on a given mesh (or list of meshes).
-
-    Args:
-        targetMesh (str or list of str): Mesh or list of meshes to query.
-        points (list of str or list of lists): Points to project onto the mesh.
-        **kwargs: Additional flags to control output:
-                  - uvs or uv: Return nearest UVs.
-                  - position or pos: Return nearest world space positions.
-                  - face or f: Return the face index of the nearest point.
-                  - distance or d: Return the distance to the nearest point.
-
-    Returns:
-        list: List of nearest UVs, positions, face indices, or distances depending on the flags.
-    """
-
-    # Parse the flags
-    ouv = Flags(kwargs, None, 'uvs', 'uv')
-    opos = Flags(kwargs, None, 'position', 'pos')
-    oface = Flags(kwargs, None, 'face', 'f')
-    odist = Flags(kwargs, None, 'distance', 'd')
-
-    # check input is point position
-    pos_list = []
-    debug = []
-    for p in points:
-        try:
-            pos = cmds.pointPosition(p)
-            pos_list.append(pos)
-        except:
-            # check if p is already an array of 3 points
-            if isinstance(p, (list, tuple)):
-                if len(p) == 3:
-                    if all(isinstance(x, (int, float)) for x in p):
-                        pos_list.append(p)
-                    else:
-                        debug.append(p)
-                else:
-                    debug.append(p)
-            else:
-                debug.append(p)
-    if debug:
-        t = 'bad data detected for `points` variable, '
-        t += 'please inputs that can be evaluate :\n'
-        t += 'by `cmds.poinPoistion` '
-        t += 'or being a <list> of position `[[0,1,0],[1,.1,.5],[0,0,0]]`\n'
-        t += 'detected : {}'.format(' '.join(debug))
-        cmds.error(t)
-
-    # Create nearestPointOnMesh nodes and connect them to the target meshes
-    nearestNodes = []
-    for m in targetMesh:
-        name = f'nrstPoM_{m}_dwtmp'
-
-        if not cmds.objExists(name):
-            if cmds.nodeType(m) == 'transform':
-                objShape = cmds.listRelatives(m, ni=True, type='mesh')[0]
-            else:
-                objShape = m
-            node = cmds.createNode('nearestPointOnMesh', name=name)
-            nearestNodes.append(node)
-            cmds.connectAttr(objShape + ".worldMesh", node + ".inMesh")
-        elif cmds.objExists(name):
-            nearestNodes.append(name)
-
-    # Process each point and find the nearest details based on the flags
-    output = []
-    for pos in pos_list:
-        u, v, outUV = 0, 0, []
-        tmp = 10000000000
-        for nPoM in nearestNodes:
-            cmds.setAttr(nPoM + ".inPosition", type='double3', *pos)
-            target_pos = cmds.getAttr(nPoM + '.position')[0]
-            target_u = cmds.getAttr(nPoM + '.u')
-            target_v = cmds.getAttr(nPoM + '.v')
-            dist = mag(pos, target_pos)
-            if dist < tmp:
-                u = target_u
-                v = target_v
-                face = cmds.getAttr(nPoM + ".nearestFaceIndex")
-                tmp = dist
-                tpos = target_pos
-                inmesh = cmds.listConnections(nPoM + '.inMesh')[0]
-
-        if ouv:
-            output.append([inmesh, [u, v]])
-        elif opos:
-            output.append([inmesh, tpos])
-        elif oface:
-            output.append([inmesh, face])
-        elif odist:
-            output.append([inmesh, tmp])
-        tmp = 10000000000
-
-    # Clean up created nodes
-    cmds.delete(nearestNodes)
-    return output
-
 
 def test_if_inside_mesh(point: Tuple[float, float, float] = (0.0, 0.0, 0.0),
                         dir: Tuple[float, float, float] = (0.0, 0.0, 1.0),
