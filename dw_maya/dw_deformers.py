@@ -1005,7 +1005,7 @@ def deleteDeformer(deformers):
             cmds.warning(f"Deformer '{deformer}' does not exist.")
 
 
-def generate_control_name(driver, geo_name, component, name_prefix=''):
+def generate_control_name(geo_name, component, name_prefix=''):
     """
     Generates a unique control name based on the mesh and component information
     or using a provided name prefix.
@@ -1052,7 +1052,6 @@ def create_follicle_constraint(ctrl_zro, mesh_shape, uv, base_name):
 
     return follicle
 
-@singleUndoChunk
 def createStickyControls(driverMeshFaces=[], createControlParentGroupsOnly=False, stickyControlsParent='', radius=1.0,
                          namePrefix='', constrainViaFollicles=True):
     """
@@ -1070,7 +1069,7 @@ def createStickyControls(driverMeshFaces=[], createControlParentGroupsOnly=False
         geo_name, face_num = driver.split(".")
         component = face_num.replace("[", "_").replace("]", "").replace(":", "_")
 
-        base_name = generate_control_name(driver, geo_name, component, namePrefix if not bGenerateName else '')
+        base_name = generate_control_name(geo_name, component, namePrefix if not bGenerateName else '')
 
         # Create control or parent group
         ctrl_zro = create_control_group(base_name, radius, not createControlParentGroupsOnly)
@@ -1188,7 +1187,7 @@ def stringToListOfStrings(stringOfObjects):
     stringOfObjects = stringOfObjects.strip().lstrip('[').rstrip(']')
 
     # Replace unwanted characters (u' for unicode notation, commas, quotes)
-    cleanedString = stringOfObjects.replace("u'", '').replace("'", '').replace('"', '').replace(",", '')
+    cleanedString = stringOfObjects.replace("'", '').replace('"', '').replace(",", '')
 
     # Split the cleaned string into individual objects
     objList = cleanedString.split()
@@ -1362,6 +1361,7 @@ def getFalloffRadius(ssr):
     return 0.0
 
 
+@singleUndoChunk
 def createSticky(componentSel=None, parent=None, _type='softMod'):
     # Get the selected components if not provided
     if not componentSel:
