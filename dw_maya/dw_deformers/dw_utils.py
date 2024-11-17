@@ -10,7 +10,7 @@ from maya import cmds, mel
 from dw_maya.dw_decorators import acceptString
 
 
-def isDeformer(node: str) ->bool:
+def is_deformer(node: str) ->bool:
     """
     Check if the given node is a deformer by looking at its inherited node types.
 
@@ -111,7 +111,7 @@ def editDeformer(**kwargs):
 
     # Retrieve the history of the deformer and find any deformers in its history
     history = cmds.listHistory(deformer_sel)
-    filter_deformers = [i for i in history if isDeformer(i)]
+    filter_deformers = [i for i in history if is_deformer(i)]
 
     if not filter_deformers:
         print(f"Error: No deformers found in the history of {deformer_sel}.")

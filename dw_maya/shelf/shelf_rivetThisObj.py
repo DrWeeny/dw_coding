@@ -1,5 +1,8 @@
-__author__ = 'abaudoin'
+"""
+description : it allows to make a proper parent constraint from a mesh to a rivet
 
+warning the rivet is not actually created
+"""
 import maya.cmds as cmds
 
 sel = cmds.ls(sl=True)

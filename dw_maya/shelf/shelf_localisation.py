@@ -1,38 +1,30 @@
-import sys, os
-
-# ----- Edit sysPath -----#
-rdPath = '/home/abtidona/private/PycharmProjects/RND/dw_tools/maya/RFX'
-if not os.path.isdir(rdPath):
-    rdPath = '/people/abtidona/public/dw_tools/maya/'
-if not rdPath in sys.path:
-    print "Add %r to sysPath" % rdPath
-    sys.path.insert(0, rdPath)
-
 import maya.cmds as cmds
-import dw_maya_utils as dwu
-import dw_alembic_utils as dwabc
-import dw_nucleus_utils as dwnx
+import dw_maya.dw_maya_utils as dwu
+import dw_maya.dw_alembic_utils as dwabc
+import dw_maya.dw_nucleus_utils as dwnx
+from dw_maya.dw_nucleus_utils.dw_create_hierarchy import create_curve_ctrl
 
-CHARACTER = 'winnie'
+
+CHARACTER = 'charName'
 
 nodes = dwu.lsTr('*:cache:cache_GRP', dag=True, type=['nurbsCurve', 'mesh'])
 
-rfx_nodes = cmds.ls(type='rfxAlembicCacheDeformer')
-rfx_abc = [i for i in rfx_nodes if 'animCache' in i][-1]
-rfx_wrp_time = [c for c in cmds.listConnections(rfx_abc + '.time') if 'TimeWarp' in c][0]
+pipe_nodes = cmds.ls(type='AlembicNode')
+pipe_abc = [i for i in pipe_nodes if 'animCache' in i][-1]
+pipe_wrp_time = [c for c in cmds.listConnections(pipe_abc + '.time') if 'TimeWarp' in c][0]
 
-filepath = cmds.getAttr(rfx_abc+'.filename')
+filepath = cmds.getAttr(pipe_abc+'.filename')
 abc = dwabc.importAbc(filepath)
 body_con = cmds.ls('body_CON', long=True)[0]
 grp_del = '|' + body_con.split('|')[1]
-grp_abc = abc.values()[0]
+grp_abc = list(abc.values())[0]
 if grp_del in grp_abc:
     grp_abc.remove(grp_del)
     cmds.delete(grp_abc)
 
-cmds.connectAttr(rfx_wrp_time + '.outTime', abc.keys()[0] + '.time', force=True)
+cmds.connectAttr(pipe_wrp_time + '.outTime', list(abc.keys())[0] + '.time', force=True)
 
-ctrl = dwnx.create_curve_ctrl(CHARACTER)
+ctrl = create_curve_ctrl(CHARACTER)
 
 out_geo = dwu.lsTr('*:geometry_GRP', dag=True, type=['nurbsCurve', 'mesh'])
 out_wires = dwu.lsTr('*:animWires', dag=True, type=['nurbsCurve', 'mesh'])

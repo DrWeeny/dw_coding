@@ -1,48 +1,8 @@
-#!/usr/bin/env python
-#----------------------------------------------------------------------------#
-#------------------------------------------------------------------ HEADER --#
 
-"""
-@author:
-    abtidona
-
-@description:
-    this is a description
-
-@applications:
-    - groom
-    - cfx
-    - fur
-"""
-
-#----------------------------------------------------------------------------#
-#----------------------------------------------------------------- IMPORTS --#
-
-# built-in
-import sys, os
-# ----- Edit sysPath -----#
-rdPath = '/home/abtidona/private/PycharmProjects/RND/dw_tools/maya/RFX'
-if not os.path.isdir(rdPath):
-    rdPath = '/people/abtidona/public/dw_tools/maya/'
-if not rdPath in sys.path:
-    print "Add %r to sysPath" % rdPath
-    sys.path.insert(0, rdPath)
-# internal
 import maya.cmds as cmds
 # external
 import dw_maya_utils as dwu
 import dw_presets_io as dwpresets
-
-#----------------------------------------------------------------------------#
-#----------------------------------------------------------------- GLOBALS --#
-
-
-#----------------------------------------------------------------------------#
-#---------------------------------------------------------------   CLASSES --#
-
-
-#----------------------------------------------------------------------------#
-#--------------------------------------------------------------- FUNCTIONS --#
 
 def getDeformerInfo(deformerNode, *args):
     # Query Vertex
@@ -56,7 +16,7 @@ def getDeformerInfo(deformerNode, *args):
 
     print("range is : {0}".format(myRange))
 
-    Weight_values = cmds.getAttr(deformerNode + '.weightList[0].weights[{0}]'.format(myRange))
+    Weight_values = cmds.getAttr(f'{deformerNode}.weightList[0].weights[{myRange}]')
 
     dic = {'mainWeight': Weight_values}
 
@@ -83,7 +43,7 @@ def getBSinfo(BS01, *args):
     BS01_targets = zip(list(range(BS01_targetWeightsNb)), BS01_targetWeightsName)
 
     # Store Base Weight and Target Weight
-    baseWeight_values = cmds.getAttr(BS01 + '.inputTarget[0].baseWeights[' + myRange + ']')
+    baseWeight_values = cmds.getAttr(f'{BS01}.inputTarget[0].baseWeights[{myRange}]')
     # [:] is important, it will force to get every points
     # (not only the one with value) BUGS happening
 
@@ -92,7 +52,7 @@ def getBSinfo(BS01, *args):
     for target in range(BS01_targetWeightsNb):
         try:
             targetWeight_values.append(
-                cmds.getAttr(BS01 + '.inputTarget[' + str(0) + '].inputTargetGroup[0].tw[' + myRange + ']'))
+                cmds.getAttr(BS01 + f'{BS01}.inputTarget[0)].inputTargetGroup[0].tw[{myRange}]'))
         except:
             targetWeight_values.append('error')
 
@@ -102,45 +62,56 @@ def getBSinfo(BS01, *args):
 
     return dic
 
-def selIndexFromValue(myBSMap=[], *args):
-    indexToSel = []
-    if args:
-        if len(args) == 2:
-            for i, t in enumerate(myBSMap):
-                # print i, t
-                if t > args[0] and t < args[1]:
-                    indexToSel.append(i)
-            return indexToSel
+def sel_index_from_value(my_bs_map=None, *args):
+    """
+    Select indices from the given blend shape map based on specified thresholds.
 
+    Args:
+        my_bs_map (list): A list of blend shape values.
+        *args: Threshold values to filter indices:
+            - If 2 arguments are provided, selects indices where value is between args[0] and args[1].
+            - If 1 argument is provided, selects indices where value is greater than args[0].
+            - If no arguments are provided, selects indices where value is greater than 0.
 
-        elif len(args) == 1:
-            for i, t in enumerate(myBSMap):
-                # print i, t
-                if t > args[0]:
-                    indexToSel.append(i)
-            return indexToSel
+    Returns:
+        list: A list of indices that meet the specified condition.
+    """
+    if my_bs_map is None:
+        my_bs_map = []
 
+    index_to_sel = []
+
+    # Two thresholds: range-based selection
+    if len(args) == 2:
+        lower, upper = args
+        index_to_sel = [i for i, t in enumerate(my_bs_map) if lower < t < upper]
+
+    # One threshold: greater than selection
+    elif len(args) == 1:
+        threshold = args[0]
+        index_to_sel = [i for i, t in enumerate(my_bs_map) if t > threshold]
+
+    # Default: values greater than 0
     else:
-        for i, t in enumerate(myBSMap):
-            # print i, t
-            if t > 0:
-                indexToSel.append(i)
-        return indexToSel
+        index_to_sel = [i for i, t in enumerate(my_bs_map) if t > 0]
 
-def selectWeightedVertices(mesh=str, index=[]):
+    return index_to_sel
+
+
+def select_weighted_vertices(mesh=str, index=[]):
     cmds.select(clear=1)
-    sel = [mesh + '.vtx[{0}]'.format(i) for i in dwu.create_maya_ranges(index)]
+    sel = [f'{mesh}.vtx[{i}]' for i in dwu.create_maya_ranges(index)]
     cmds.select(sel)
 
 
 sel = cmds.ls(sl=True, fl=True)
 mesh = dwu.lsTr(sel, dag=True, type='shape')[0]
-deformer = [i for i in sel if dwpresets.isDeformer(i)][0]
+deformer = [i for i in sel if dwpresets.is_deformer(i)][0]
 _type = cmds.nodeType(deformer)
 if 'blendShape' == _type:
     myDic01 = getBSinfo(deformer)
 else:
     myDic01 = getDeformerInfo(deformer)
 
-cont = selIndexFromValue(myDic01['mainWeight'])
-selectWeightedVertices(mesh, cont)
+cont = sel_index_from_value(myDic01['mainWeight'])
+select_weighted_vertices(mesh, cont)

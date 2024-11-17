@@ -100,8 +100,8 @@ class PresetManager(QtWidgets.QMainWindow):
         self.le_preset_name = QtWidgets.QLineEdit()
         self.le_preset_name.setFixedWidth(_width_01)
         self.le_preset_name.setText('defaultPreset')
-        p_maya = QtCore.QRegExp("[A-Za-z_0-9]{1,20}")
-        validator_maya = QtGui.QRegExpValidator(p_maya, self)
+        p_maya = QtCore.QRegularExpression("[A-Za-z_0-9]{1,20}")
+        validator_maya = QtGui.QRegularExpressionValidator(p_maya, self)
         self.le_preset_name.setValidator(validator_maya)
         vl_save.addWidget(self.le_preset_name)
 

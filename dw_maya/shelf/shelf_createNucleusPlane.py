@@ -1,33 +1,27 @@
-__author__ = 'abaudoin'
-
 import maya.cmds as cmds
 
-def createDriverPlane():
+def create_nucleus_driver_plane():
 
     nucleus = cmds.ls(sl=True, type='nucleus')[0]
-    nodeName = cmds.polyPlane(n='nucleusPlane_driver',sh=0,sw=0,h=2, w=2)[0]
-    cmds.delete(nodeName, ch=True)
-    attr0 = '{}.{}'.format(nodeName, 'ty')
-    attr1 = '{}.{}'.format(nucleus, 'planeOriginY')
+    node_name = cmds.polyPlane(n='nucleusPlane_driver',sh=0,sw=0,h=2, w=2)[0]
+    cmds.delete(node_name, ch=True)
+    attr0 = f'{node_name}.ty'
+    attr1 = f'{nucleus}.planeOriginY'
     cmds.connectAttr(attr0, attr1, f=True)
 
-    hideAttr = ['rx','ry','rz','v', 'sy']
+    hide_attr = ['rx','ry','rz','v', 'sy']
 
-    for i in hideAttr:
-        attr2 = '{}.{}'.format(nodeName, i)
+    for a in hide_attr:
+        attr2 = f'{node_name}.{a}'
         cmds.setAttr(attr2, keyable=False, channelBox=False)
 
-    shape = cmds.listRelatives(nodeName, s=True)[0]
+    attr_set = {}
+    attr_set['backfaceCulling'] = 3
+    attr_set['template'] = 1
+    attr_set['displayTriangles'] = 1
 
-    attrSet = {}
-    attrSet['backfaceCulling'] = 3
-    attrSet['template'] = 1
-    attrSet['displayTriangles'] = 1
+    for attr, value in attr_set.items():
+        attr3 = f'{node_name}.{attr}'
+        cmds.setAttr(attr3, value)
 
-    for i in attrSet.keys():
-        attr3 = '{}.{}'.format(nodeName, i)
-        cmds.setAttr(attr3, attrSet[i])
-
-    shape = cmds.listRelatives(nodeName, s=True)[0]
-
-createDriverPlane()
+create_nucleus_driver_plane()

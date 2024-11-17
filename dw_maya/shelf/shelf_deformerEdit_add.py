@@ -21,7 +21,7 @@ def isDeformable(i):
     return meshes + nurbs
 
 sel = cmds.ls(sl=True, fl=True)
-deformer = [i for i in sel if dwpresets.isDeformer(i)][0]
+deformer = [i for i in sel if dwpresets.is_deformer(i)][0]
 components = [i for i in sel if '.' in sel]
 if not components:
     objs = [isDeformable(i)[0] for i in sel if isDeformable(i)]

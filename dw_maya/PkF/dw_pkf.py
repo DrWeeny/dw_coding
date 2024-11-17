@@ -437,7 +437,7 @@ uiDic['width'] = 200
 uiDic['keyingFunc'] = [vtx_set_key, set_key_on_already_keyed, set_key_on_point_with_value]
 uiDic['keyingFunc_niceName'] = ['Set Key on Vtx', 'Set Key on already keyed vtx', 'Set Key on vtx with values']
 
-def showUI():
+def PkF_showUI():
     if cmds.window("Points_Keyframing", exists = True):
         cmds.deleteUI("Points_Keyframing")
     window = cmds.window("Points_Keyframing",h=50 ,w=30, s=False,t="Points Keyframing UI")

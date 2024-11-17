@@ -28,7 +28,10 @@ def vtxAnimDetection(argument):
             msg_error = "Vertex animation detected, canceling deformer command"
 
             # Check if the argument has a valid shape node
-            mesh_shape = cmds.listRelatives([a.split(".")[0] for a in argument], s=True)
+            if not isinstance(argument, list):
+                mesh_shape = cmds.listRelatives(argument.split(".")[0], s=True)
+            else:
+                mesh_shape = cmds.listRelatives([a.split(".")[0] for a in argument], s=True)
             if not mesh_shape:
                 print(f"Error: {argument} does not have a valid shape node.")
                 return
