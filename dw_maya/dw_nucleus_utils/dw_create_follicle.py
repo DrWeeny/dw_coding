@@ -48,7 +48,8 @@ def create_follicles(surface, uv_input: list = None, uvthreshold: float = 0.05, 
         if ntype == "nurbsSurface":
             cmds.connectAttr(f"{sh}.local", f"{hair}.inputSurface")
         elif ntype == "mesh":
-            _handle_mesh_follicle(hair, sh, u, v, uvthreshold, debug)
+            cmds.connectAttr(f"{sh}.outMesh", f"{hair}.inputMesh")
+            _uv_sanity_check(hair, sh, u, v, uvthreshold, debug)
 
         cmds.connectAttr(f"{hair}.outTranslate", f"{hair_dag}.translate")
         cmds.connectAttr(f"{hair}.outRotate", f"{hair_dag}.rotate")
@@ -61,7 +62,7 @@ def create_follicles(surface, uv_input: list = None, uvthreshold: float = 0.05, 
     return hair_dag
 
 
-def _handle_mesh_follicle(hair: str, mesh: str, u: float, v: float, uvthreshold: float, debug: list):
+def _uv_sanity_check(hair: str, mesh: str, u: float, v: float, uvthreshold: float, debug: list):
     """Handles follicle creation on a mesh surface, including UV validation and approximation."""
     current_uv_set = cmds.polyUVSet(mesh, q=True, currentUVSet=True)
     cmds.setAttr(f"{hair}.mapSetName", current_uv_set[0], type="string")
@@ -88,14 +89,15 @@ def _adjust_uv_on_invalid_mesh(hair: str, mesh: str, u: float, v: float, uvthres
 
     # Get the centroid of the nearby vertices
     vert_positions = cmds.xform(near_vertices, q=True, t=True)
-    x, y, z = (
-        sum(vert_positions[0::3]) / len(near_vertices),
-        sum(vert_positions[1::3]) / len(near_vertices),
-        sum(vert_positions[2::3]) / len(near_vertices)
-    )
 
-    nearest_uv = dwu.nearest_uv_on_mesh([vertices[0].split('.')[0]], [[x, y, z]], uvs=True)[0]
-    vector2d = [(nearest_uv[1][0] - u) * uvthreshold, (nearest_uv[1][1] - v) * uvthreshold]
+    x, y, z = [sum(vert_positions[0::3]) / (len(vert_positions) / 3),
+               sum(vert_positions[1::3]) / (len(vert_positions) / 3),
+               sum(vert_positions[2::3]) / (len(vert_positions) / 3)]
+    middle_face_uv = dwu.nearest_uv_on_mesh([vtx[0].split('.')[0]],
+                                            [[x, y, z]],
+                                            uvs=True)[0]
+    vector2d = [(middle_face_uv[1][0] - u) * uvthreshold,
+                (middle_face_uv[1][1] - v) * uvthreshold]
 
     u_approx = u + vector2d[0]
     v_approx = v + vector2d[1]

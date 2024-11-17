@@ -214,7 +214,7 @@ def create_control_group(name, radius=1.0, create_control=False):
 
     return ctrl, ctrl_zro
 
-def create_follicle_constraint(ctrl_zro, mesh_shape, uv, base_name):
+def create_follicle_constraint(ctrl_zro, mesh_shape, uv, base_name, in_mesh_con):
     """
     Creates a follicle and sets it up to drive the control group.
     """
@@ -222,6 +222,7 @@ def create_follicle_constraint(ctrl_zro, mesh_shape, uv, base_name):
     follicle = create_follicles(mesh_shape, uv, name=base_name + '_follicle')
     follicle_shape = cmds.listRelatives(follicle)[0]
     cmds.setAttr(follicle_shape + '.v', 0)
+    cmds.connectAttr(in_mesh_con, follicle_shape + '.inputMesh', f=1)
 
     # Parent the control zero group to the follicle
     cmds.parent(ctrl_zro, follicle, relative=1)
@@ -371,6 +372,7 @@ def createStickyControls(driverMeshFaces=[], createControlParentGroupsOnly=False
         temp_cluster = None
         if not in_mesh_con:
             temp_cluster = cmds.cluster(mesh_shape, name='temp_cluster')
+            # avoid cycle by guessing where would be the input connection
             in_mesh_con = cmds.connectionInfo(mesh_shape + '.inMesh', sourceFromDestination=True)
 
         # Get UVs and setup follicle or pointOnPoly constraint
@@ -383,7 +385,7 @@ def createStickyControls(driverMeshFaces=[], createControlParentGroupsOnly=False
         uv = closest_uv_on_mesh(mesh_shape, position=face_m_point)
 
         if constrainViaFollicles:
-            follicle = create_follicle_constraint(ctrl_zero, mesh_shape, uv, base_name)
+            follicle = create_follicle_constraint(ctrl_zero, mesh_shape, uv, base_name, in_mesh_con)
             follicles.append(follicle)
         else:
             # not supported because bug on fullpath
