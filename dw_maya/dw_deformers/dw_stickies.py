@@ -9,7 +9,7 @@ from maya import cmds, mel
 import maya.OpenMaya as om
 import re
 
-from dw_maya.dw_decorators import acceptString, timeIt, singleUndoChunk, load_plugin
+from dw_maya.dw_decorators import acceptString, singleUndoChunk
 from dw_maya.dw_create import pointOnPolyConstraint
 
 
@@ -37,7 +37,7 @@ def createSticky(componentSel=None, parent=None, _type='softMod'):
     out = createStickyDeformers(_type, parent=grp, inputFaces=componentSel)
 
     # Set the falloff radius to 0.5 (adjust as needed)
-    cmds.setAttr("{}.falloffRadius".format(out[0]), 0.5)
+    cmds.setAttr("{}.falloffRadius".format(out[0][0]), 0.5)
 
     return out
 
@@ -86,8 +86,6 @@ def createStickyDeformers(deformerType, name=None, parent=None, inputFaces=[], s
         name='',
         parents=stickyControls,
         members=deformerMembers,
-        meshFaces=meshFaces,
-        multiFaceMode=multiFaceMode,
         falloffRadius=falloffRadius,
         createOffsetCtrls=False
     )
@@ -100,7 +98,7 @@ def createDeformers(deformerType, name='', parents=[], members=[],
                     falloffRadius=None, createOffsetCtrls=False):
 
 
-    defaultFalloffRadius = falloffRadius if falloffRadius else 1.0
+    falloffRadius = falloffRadius or 1.0
 
     if not members:
         print("No geometry provided. Nothing created")
@@ -114,10 +112,10 @@ def createDeformers(deformerType, name='', parents=[], members=[],
             uniqueOffsetCtrlName = getUniqueBaseName(srcObjName=parent, dstSuffixes=['_offset_ctrl'])
             parent = cmds.rename(parent, uniqueOffsetCtrlName + '_offset_ctrl')
 
-        name = getUniqueBaseName(srcObjName=baseName, dstSuffixes=['_' + deformerType, '_ctrl'])
+        name = getUniqueBaseName(srcObjName=parent, dstSuffixes=['_' + deformerType, '_ctrl'])
 
         # create a curve for control
-        _create_control(deformerType, name, falloffRadius)
+        ctrl = _create_control(deformerType, name, falloffRadius)
 
         # offset ctrl --------------------------------------------------------------------------------------------------
         offsetCtrl = _create_offset_control(name, falloffRadius, createOffsetCtrls, parent)
@@ -378,7 +376,7 @@ def createStickyControls(driverMeshFaces=[], createControlParentGroupsOnly=False
         # Get UVs and setup follicle or pointOnPoly constraint
 
         sh_only = cmds.listRelatives(mesh_shape.split("|")[-1],
-                                     shapes=1)  # key is only the shape
+                                     shapes=1)[0]  # key is only the shape
         face_m_point = d_face_vs_face_position[f'{sh_only}.{face_num}']
         # delay import to avoid circular call
         from dw_maya.dw_maya_utils import closest_uv_on_mesh
@@ -537,7 +535,7 @@ def _add_locator_shape_to_offset_ctrl(offsetCtrl: str):
     offsetCtrlLocatorShape = cmds.parent(offsetCtrlLocatorShape, offsetCtrl, r=True, s=True)[0]
     cmds.setAttr(offsetCtrlLocatorShape + '.visibility', 0)
     cmds.delete(tempLocator)
-    cmds.rename(offsetCtrlLocatorShape, offsetCtrl + "Shape")
+    offsetCtrlLocatorShape = cmds.rename(offsetCtrlLocatorShape, offsetCtrl + "Shape")
     return offsetCtrlLocatorShape
 
 
