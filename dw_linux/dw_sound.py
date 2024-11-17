@@ -6,6 +6,40 @@ try:
 except:
     pass
 
+def get_linux_volume():
+    p = subprocess.Popen(["amixer", "get", "Master"],
+                         stdin=subprocess.PIPE,
+                         stdout=subprocess.PIPE,
+                         stderr=subprocess.PIPE)
+
+    output, err = p.communicate(b"input data that is passed to subprocess' stdin")
+    rc = p.returncode
+
+    for i in output.split('\n'):
+        if i.strip().startswith('Front Left'):
+            volume = int(i.split('%')[0].split('[')[-1])
+            break
+        elif len(i.split('%')) > 1:
+            volume = int(i.split('%')[0].split('[')[-1])
+            break
+        else:
+            volume = None
+    return volume
+
+
+def playAudio(audio_file_path = "../dw_open_tools/audio_files/PeonReady1.mp3"):
+    #amixer set Master 100
+    vol = get_linux_volume()
+    if vol:
+        if vol > 60:
+            subprocess.call(["amixer", "set", "Master", str(vol/2)])
+        subprocess.call(["ffplay", "-nodisp", "-autoexit", audio_file_path])
+        if vol > 60:
+            subprocess.call(["amixer", "set", "Master", str(vol)])
+    else:
+        subprocess.call(["ffplay", "-nodisp", "-autoexit", audio_file_path])
+
+
 def win_sound_test():
     duration = 1000  # millisecond
     freq = 440  # Hz

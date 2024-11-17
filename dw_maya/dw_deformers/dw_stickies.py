@@ -376,9 +376,7 @@ def createStickyControls(driverMeshFaces=[], createControlParentGroupsOnly=False
             in_mesh_con = cmds.connectionInfo(mesh_shape + '.inMesh', sourceFromDestination=True)
 
         # Get UVs and setup follicle or pointOnPoly constraint
-
-        sh_only = cmds.listRelatives(mesh_shape.split("|")[-1],
-                                     shapes=1)[0]  # key is only the shape
+        sh_only = cmds.listRelatives(mesh_shape.split("|")[-1], shapes=1)[0]  # key is only the shape
         face_m_point = d_face_vs_face_position[f'{sh_only}.{face_num}']
         # delay import to avoid circular call
         from dw_maya.dw_maya_utils import closest_uv_on_mesh
