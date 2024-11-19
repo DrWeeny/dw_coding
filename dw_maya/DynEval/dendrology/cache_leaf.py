@@ -8,8 +8,8 @@ if not rdPath in sys.path:
     print(f"Add {rdPath} to sysPath")
     sys.path.insert(0, rdPath)
 
-from PySide2 import QtWidgets, QtGui, QtCore
-from dw_maya.DynEval import ncloth_cmds, ziva_cmds
+from PySide6 import QtWidgets, QtGui, QtCore
+from dw_maya.DynEval import sim_cmds
 
 
 class CacheItem(QtWidgets.QTreeWidgetItem):
@@ -66,11 +66,11 @@ class CacheItem(QtWidgets.QTreeWidgetItem):
         self.node = cache_node
         self.comment = ''
 
-        if ncloth_cmds.cmds.nodeType(self.node) in ['zSolver',
+        if sim_cmds.cmds.nodeType(self.node) in ['zSolver',
                                                    'zSolverTransform']:
             self.mesh = None
-        elif ncloth_cmds.cmds.nodeType(self.node) != 'hairSystem':
-            self.mesh = ncloth_cmds.get_ncloth_mesh(cache_node)
+        elif sim_cmds.cmds.nodeType(self.node) != 'hairSystem':
+            self.mesh = sim_cmds.get_ncloth_mesh(cache_node)
 
     def set_attached(self):
         brush = QtGui.QBrush(self.color_maya_blue)

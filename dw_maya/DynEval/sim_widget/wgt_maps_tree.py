@@ -42,7 +42,7 @@ if not MODE > 0:
         import maya.cmds as cmds
         from PySide6 import QtWidgets, QtGui, QtCore
         from dw_maya.DynEval.dendrology.nucleus_leaf import MapItem
-        from dw_maya.DynEval import ncloth_cmds
+        from dw_maya.DynEval import sim_cmds
         MODE = 1
     except:
         pass
@@ -104,4 +104,4 @@ class MapTree(QtWidgets.QWidget):
         """Activates Maya's paint tool on the selected cloth mesh's vertex map."""
         map_item = self.maps_tree.currentItem()
         if map_item and self.node and self.node.node_type in ['nCloth', 'nRigid']:
-            ncloth_cmds.paint_vtx_map(map_item.map_to_paint, map_item.cloth_mesh, self.node.solver_name)
+            sim_cmds.paint_vtx_map(map_item.map_to_paint, map_item.cloth_mesh, self.node.solver_name)

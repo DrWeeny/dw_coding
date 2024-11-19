@@ -60,20 +60,15 @@ class MAttr(object):
 
     def __getattr__(self, attr):
         """
-        Override to dynamically access Maya node attributes.
-
-        Args:
-            attr (str): name of the attribute
-
-        Returns:
-            str: it join all the attributes that has been chained : weightList[0].weight
-
+        Dynamically access Maya node attributes.
         """
-        myattr = f'{self.attribute}.{attr}'
+        myattr = f"{self.attr}.{attr}"
         if myattr in self.listAttr(myattr):
             return MAttr(self._node, myattr)
-        else:
-            return self.__getattribute__(attr)
+        try:
+            return object.__getattribute__(self, attr)
+        except AttributeError:
+            raise AttributeError(f"'{type(self).__name__}' object has no attribute '{attr}'")
 
     def __iter__(self):
         """
@@ -357,10 +352,10 @@ class MayaNode(ObjPointer):
 
     """
 
-    def __init__(self, name: str, preset: dict, blendValue=1):
+    def __init__(self, name: str, preset: dict=None, blendValue=1):
         super(MayaNode, self).__init__(name)
 
-        # this dict method is used to avoid calling __getattr__
+        # this dict method is used to avoid calling __getattr __
         _input = self.name()
         if _input:
             self.__dict__['node'] = _input #: str: current priority node evaluated
@@ -406,16 +401,15 @@ class MayaNode(ObjPointer):
         Note:
             You cant have the value without .getAttr()
         """
-        myattr = f'{self.attribute}.{attr}'
-        if hasattr(self, '_attr_cache') and myattr in self._attr_cache:
-            return self._attr_cache[myattr]
-        if myattr in self.listAttr(myattr):
-            cached_attr = MAttr(self._node, myattr)
-            # Cache the attribute for repeated access
-            self._attr_cache[myattr] = cached_attr
-            return cached_attr
-        else:
-            return self.__getattribute__(attr)
+        if attr in self.listAttr(attr):
+            return MAttr(self.node, attr)
+        elif attr in self.__dict__:
+            return self.__dict__[attr]
+        try:
+            return object.__getattribute__(self, attr)
+        except AttributeError:
+            cmds.warning(f"'{attr}' doesn't exist on MayaNode '{self.node}', returning None.")
+            return None
 
     def __setattr__(self, key: str, value):
         """
@@ -467,7 +461,7 @@ class MayaNode(ObjPointer):
     @property
     def nodeType(self) -> str:
         """str: return the current node type, by default it always return the shape"""
-        return cmds.nodeType(self.__node or self.sh)
+        return cmds.nodeType(self.sh or self.__node)
 
     @property
     def sh(self) -> str:
@@ -738,7 +732,7 @@ class MayaNode(ObjPointer):
             fullpath = path + file
 
             print('node saved as json to {}'.format(fullpath))
-            return dwpreset.save_json(fullpath, self.attrPreset())
+            return dwpreset.save_json(fullpath, self.attrPreset(), defer=True)
 
     def loadNode(self, preset: dict, blend=1, targ_ns=':'):
         """

@@ -23,3 +23,4 @@ from .wgt_maps_tree import MapTree
 from .wgt_cache_tree import CacheTree
 from .wgt_colortextbutton import ColorTextButton
 from .wgt_mapedit import MapEdit
+from .wgt_treewidget_toggle import TreeViewWithToggle

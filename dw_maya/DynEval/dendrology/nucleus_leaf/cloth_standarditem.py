@@ -21,6 +21,8 @@
 # built-in
 import sys, os
 
+from PySide6 import QtCore
+
 # ----- Edit sysPath -----#
 rdPath = 'E:\\dw_coding\\dw_open_tools'
 if not rdPath in sys.path:
@@ -32,10 +34,9 @@ from pathlib import Path
 
 
 # internal
-from PySide6 import QtCore, QtGui, QtWidget
 from maya import cmds
 from .base_standarditem import BaseSimulationItem
-from dw_maya.DynEval import ncloth_cmds
+from dw_maya.DynEval import sim_cmds
 
 
 class ClothTreeItem(BaseSimulationItem):
@@ -90,9 +91,9 @@ class ClothTreeItem(BaseSimulationItem):
 
     def get_maps(self):
         """Retrieve available vertex maps for the node."""
-        return ncloth_cmds.get_vtx_maps(self.node)
+        return sim_cmds.get_vtx_maps(self.node)
 
     def get_maps_mode(self):
         """Retrieve vertex map modes for each map."""
-        return [ncloth_cmds.get_vtx_map_type(self.node, f"{map_name}MapType") for map_name in self.get_maps()]
+        return [sim_cmds.get_vtx_map_type(self.node, f"{map_name}MapType") for map_name in self.get_maps()]
 

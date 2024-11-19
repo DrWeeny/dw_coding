@@ -1,5 +1,7 @@
-import sys, os
-import importlib
+import sys
+from typing import List, Any
+
+from PySide6.QtGui import QStandardItem
 
 #ROOT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 
@@ -9,18 +11,14 @@ if not rdPath in sys.path:
     print(f"Add {rdPath} to sysPath")
     sys.path.insert(0, rdPath)
 
-import re
-import os
 import shutil
 from PySide6 import QtWidgets, QtGui, QtCore  # Use PySide6 for Maya compatibility with Python 3
 from pathlib import Path
-from concurrent.futures import ThreadPoolExecutor
 import maya.utils as mu
 import mmap
 
 # External module imports (always required)
 import dw_maya.dw_presets_io as dw_json
-from dw_maya.dw_presets_io import make_dir
 
 # Application mode variables
 MODE = 0
@@ -35,12 +33,12 @@ try:
     import maya.cmds as cmds
     import maya.OpenMayaUI as omui
     from shiboken6 import wrapInstance  # Maya now uses shiboken6 with PySide6
-    from . import ncloth_cmds
-    from . import ziva_cmds
+    from . import sim_cmds
+    from .sim_cmds import ziva_cmds
     from .dendrology.nucleus_leaf import *
     from .dendrology.ziva_leaf import ZSolverTreeItem, FasciaTreeItem, SkinTreeItem
     from .dendrology.cache_leaf import CacheItem
-    from .sim_widget import CacheTree, CommentEditor, MapTree
+    from .sim_widget import CacheTree, CommentEditor, MapTree, TreeViewWithToggle
     MODE = 1
 except ImportError:
     pass
@@ -62,6 +60,7 @@ def copy_files_parallel(file_paths, destination_dir, max_workers=4):
         destination_dir (str): Directory to copy files to.
         max_workers (int): Number of parallel workers (threads).
     """
+    from concurrent.futures import ThreadPoolExecutor
     destination_dir = Path(destination_dir)
     if not destination_dir.exists():
         destination_dir.mkdir(parents=True)
@@ -177,31 +176,12 @@ class DynEvalUI(QtWidgets.QMainWindow):
         Returns:
 
         """
-
         main_layout = QtWidgets.QHBoxLayout()
 
         # Set up the main tree model
-        self.dyn_eval_tree = QtWidgets.QTreeView()
-        self.dyn_eval_model = QtGui.QStandardItemModel()
-        self.dyn_eval_tree.setModel(self.dyn_eval_model)
-        self.dyn_eval_tree.setSelectionMode(QtWidgets.QAbstractItemView.ExtendedSelection)
-        self.dyn_eval_tree.setHeaderHidden(False)
-        self.dyn_eval_model.setHorizontalHeaderLabels(["Name", "I/O"])
+        self.dyn_eval_tree = TreeViewWithToggle()
+        self.dyn_eval_tree.tree_view.setSelectionMode(QtWidgets.QAbstractItemView.ExtendedSelection)
 
-        self.dyn_eval_tree.setMinimumWidth(280)
-        self.dyn_eval_tree.setMaximumWidth(300)
-        self.dyn_eval_tree.setExpandsOnDoubleClick(False)
-        self.dyn_eval_tree.setColumnCount(2)
-        # make last header 'I/O' not stretchable
-        header = self.dyn_eval_tree.header()
-        header.setStretchLastSection(False)
-        # To be more clear
-        self.dyn_eval_tree.setAlternatingRowColors(True)
-        self.dyn_eval_tree.setColumnWidth(0, 250)
-        self.dyn_eval_tree.setColumnWidth(1, 25)
-        # Button to switch on/off to the "I/O" column (1)
-        toggle_delegate = ToggleButtonDelegate(self.dyn_eval_tree)
-        self.dyn_eval_tree.setItemDelegateForColumn(1, toggle_delegate)
         # Create a contextual menu
         self.dyn_eval_tree.installEventFilter(self)
         self.dyn_eval_tree.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
@@ -238,10 +218,10 @@ class DynEvalUI(QtWidgets.QMainWindow):
 
         # Connections
         self.cb_mode_picker.currentIndexChanged.connect(self.cache_map_on_change)
-        self.dyn_eval_tree.selectionModel().selectionChanged.connect(self.cache_map_sel)
+        self.dyn_eval_tree.tree_view.selectionModel().selectionChanged.connect(self.cache_map_sel)
         self.tab1_comment.save.connect(self.save_comment)
         # Handle toggle actions with itemChanged signal
-        self.dyn_eval_model.itemChanged.connect(self.on_toggle)
+        self.dyn_eval_tree.model.itemChanged.connect(self.on_toggle)
 
         self.build_tree()
 
@@ -255,7 +235,7 @@ class DynEvalUI(QtWidgets.QMainWindow):
         Clears the current model contents before rebuilding.
         """
         # Clear existing items to rebuild the tree
-        self.dyn_eval_model.clear()
+        self.dyn_eval_tree.model.clear()
 
         # Populate nucleus and ziva trees separately
         self._build_nucleus_tree()
@@ -267,14 +247,14 @@ class DynEvalUI(QtWidgets.QMainWindow):
         This includes characters, solvers, and dynamic elements like nCloth and nHair.
         """
         # Retrieve the system hierarchy for nucleus items
-        system_hierarchy = ncloth_cmds.dw_get_hierarchy()
+        system_hierarchy = sim_cmds.dw_get_hierarchy()
 
         # Loop through each character to build the tree
         for character, solvers in system_hierarchy.items():
             char_item = CharacterTreeItem(character)  # Create the character item
 
             # Sort solvers and loop through each one, attaching dynamic elements
-            for solver in ncloth_cmds.sort_list_by_outliner(solvers):
+            for solver in sim_cmds.sort_list_by_outliner(solvers):
                 solver_item = NucleusStandardItem(solver)
                 char_item.appendRow(solver_item)
                 elements = solvers[solver]
@@ -283,7 +263,7 @@ class DynEvalUI(QtWidgets.QMainWindow):
                 self._populate_elements(elements, solver_item)
 
             # Add the character item to the main model
-            self.dyn_eval_model.appendRow(char_item)
+            self.dyn_eval_tree.model.appendRow(char_item)
 
     def _build_ziva_tree(self):
         """
@@ -327,7 +307,7 @@ class DynEvalUI(QtWidgets.QMainWindow):
             parent_item (QtGui.QStandardItem): The parent item to append nodes to.
         """
         # Sort and add each node to the parent item
-        for node in ncloth_cmds.sort_list_by_outliner(nodes):
+        for node in sim_cmds.sort_list_by_outliner(nodes):
             item = item_class(node)
             parent_item.appendRow(item)
 
@@ -336,17 +316,17 @@ class DynEvalUI(QtWidgets.QMainWindow):
     # ====================================================================
 
     def get_selected_tree_item(self,
-                               multiple_selection=False) -> QtGui.QStandardItem:
+                               multiple_selection=False) -> list[Any]:
         """Get the first selected item in the QTreeView.
 
         Returns:
             QtGui.QStandardItem: The first selected item, if any.
         """
-        indexes = self.dyn_eval_tree.selectionModel().selectedRows()
+        indexes = self.dyn_eval_tree.tree_view.selectionModel().selectedRows()
         if indexes:
             if multiple_selection:
-                return [self.dyn_eval_model.itemFromIndex(index) for index in indexes]
-            return self.dyn_eval_model.itemFromIndex(indexes[0])
+                return [self.dyn_eval_tree.model.itemFromIndex(index) for index in indexes]
+            return self.dyn_eval_tree.model.itemFromIndex(indexes[0])
         return None
 
     # ====================================================================
@@ -355,7 +335,7 @@ class DynEvalUI(QtWidgets.QMainWindow):
 
     def on_toggle(self, index, state):
         """Slot to handle toggling of dynamic state from delegate."""
-        item = self.model.itemFromIndex(index)
+        item = self.dyn_eval_tree.model.itemFromIndex(index)
         item.setData(state, QtCore.Qt.UserRole + 3)  # Update model data if needed
         # Apply state change to the node in Maya
         try:
@@ -396,7 +376,7 @@ class DynEvalUI(QtWidgets.QMainWindow):
 
         # Contextual Menu depending of selection
         if not items:
-            menu.exec_(self.dyn_eval_tree.viewport().mapToGlobal(position))
+            menu.exec_(self.dyn_eval_tree.tree_view.viewport().mapToGlobal(position))
             return
 
         # see what type of Item we had : nCloth, Nucleus, nHairSystem, Ziva...
@@ -406,7 +386,7 @@ class DynEvalUI(QtWidgets.QMainWindow):
             node_type = unique_types.pop() # Get the single unique node type
             self._context_add_cache_options(menu, node_type)
 
-        menu.exec_(self.dyn_eval_tree.viewport().mapToGlobal(position))
+        menu.exec_(self.dyn_eval_tree.tree_view.viewport().mapToGlobal(position))
 
     def _context_add_cache_options(self, menu, node_type):
         """
@@ -478,6 +458,7 @@ class DynEvalUI(QtWidgets.QMainWindow):
         preset = ziva_cmds.get_preset(dyn_items[0].solver_name) if self.save_preset else None
         if comment or preset:
             self._update_cache_metadata(dyn_items[0],
+                                        {},
                                         current_iter,
                                         comment=comment,
                                         preset=preset)
@@ -513,16 +494,16 @@ class DynEvalUI(QtWidgets.QMainWindow):
 
         # Delete existing caches and create new ones
         cmds.waitCursor(state=1)
-        ncloth_cmds.delete_caches(ncloth)
+        sim_cmds.delete_caches(ncloth)
         cmds.waitCursor(state=0)
-        caches = ncloth_cmds.create_cache(ncloth, tmpdir)
+        caches = sim_cmds.create_cache(ncloth, tmpdir)
 
         # ===============================================================
         # Update metadata with comments and presets if applicable
         comment = self.tab1_comment.getComment() or None
         preset = None  # Add logic to set preset if needed
         if comment or preset:
-            self._update_cache_metadata(dyn_items[0], current_iter, comment=comment, preset=preset)
+            self._update_cache_metadata(dyn_items[0], {}, current_iter, comment=comment, preset=preset)
 
         # Attach cache to nCloth nodes
         self._attach_ncache(caches, futurdir, ncloth, tmpdir)
@@ -634,7 +615,7 @@ class DynEvalUI(QtWidgets.QMainWindow):
             # Move the file
             shutil.move(src, dst)
             # Attach the cache to the nCloth node
-            ncloth_cmds.attach_ncache(target_dir, ncloth_node)
+            sim_cmds.attach_ncache(target_dir, ncloth_node)
             print(f"Successfully moved {src} to {dst} and attached to {ncloth_node}")
         except Exception as e:
             cmds.warning(f"Failed to move {src} to {dst} or attach to {ncloth_node}. Error: {e}")
@@ -768,7 +749,7 @@ class DynEvalUI(QtWidgets.QMainWindow):
         """
 
         selected = None
-        all_items = get_all_treeitems(self.dyn_eval_tree)
+        all_items = get_all_treeitems(self.dyn_eval_tree.tree_view)
         selected = self._get_selected_node(_type, sel_input)
 
         if selected:
@@ -797,7 +778,7 @@ class DynEvalUI(QtWidgets.QMainWindow):
             return sel_input
         elif type in ['nCloth', 'hairSystem']:
             # Retrieve nucleus shape node for both 'nCloth' and 'hairSystem'
-            return ncloth_cmds.get_nucleus_sh_from_sel()
+            return sim_cmds.get_nucleus_sh_from_sel()
         return None
 
     def _expand_parents(self, item):

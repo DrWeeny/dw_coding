@@ -28,13 +28,13 @@ if not rdPath in sys.path:
 import re
 
 # internal
-from PySide6 import QtCore, QtGui, QtWidget
+from PySide6 import QtCore, QtGui, QtWidgets
 import maya.cmds as cmds
 
 # external
 from .base_standarditem import BaseSimulationItem
 from pathlib import Path
-from dw_maya.DynEval import ncloth_cmds
+from dw_maya.DynEval import sim_cmds
 
 
 class NucleusStandardItem(BaseSimulationItem):

@@ -16,7 +16,7 @@ except ImportError as e:
 # Explicit imports for clarity and maintainability
 from .dw_maya_attrs import get_type_io, add_attr, lock_attr
 from .dw_maya_components import chunks, mag, get_next_free_multi_index, create_maya_ranges
-from .dw_maya_data import Flags, unique_name, convert_list_to_mel_str
+from .dw_maya_data import Flags, unique_name, convert_list_to_mel_str, merge_two_dicts
 from .dw_maya_time import current_timerange
 from .dw_maya_message import m_warning, m_error, m_message
 from .dw_lsTr import lsTr

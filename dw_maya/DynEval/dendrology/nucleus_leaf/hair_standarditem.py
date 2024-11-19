@@ -28,7 +28,7 @@ if not rdPath in sys.path:
 import re
 
 # internal
-from PySide6 import QtCore, QtGui, QtWidget
+from PySide6 import QtCore, QtGui
 import maya.cmds as cmds
 
 # external

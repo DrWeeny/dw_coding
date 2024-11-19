@@ -27,8 +27,6 @@ if not rdPath in sys.path:
     print(f"Add {rdPath} to sysPath")
     sys.path.insert(0, rdPath)
 
-from operator import itemgetter
-
 MODE = 0
 
 # internal
@@ -45,7 +43,8 @@ if not MODE > 0:
         import maya.cmds as cmds
         from PySide6 import QtWidgets, QtGui, QtCore
         from dw_maya.DynEval.dendrology.cache_leaf import CacheItem
-        from  dw_maya.DynEval import ncloth_cmds, ziva_cmds
+        from  dw_maya.DynEval import sim_cmds
+        from dw_maya.DynEval.sim_cmds import ziva_cmds
 
         import dw_maya.dw_presets_io as dw_json
         MODE = 1
@@ -54,7 +53,7 @@ if not MODE > 0:
 
 # external
 if MODE == 0:
-    from PySide6 import QtWidgets, QtGui, QtCore
+    from PySide6 import QtWidgets, QtCore
 
 
 def get_all_treeitems(qtreewidget):
@@ -147,7 +146,7 @@ class CacheTree(QtWidgets.QWidget):
             if self.node.node_type == 'zSolverTransform':
                 ziva_cmds.materialize(cache_node.path)
             else:
-                ncloth_cmds.materialize(cache_node.mesh, cache_node.path)
+                sim_cmds.materialize(cache_node.mesh, cache_node.path)
 
     def restore(self):
         dyn_item = self.node
@@ -187,9 +186,9 @@ class CacheTree(QtWidgets.QWidget):
 
             if _type == 'nCloth':
                 cmds.waitCursor(state=1)
-                ncloth_cmds.delete_caches(cache_node.node)
+                sim_cmds.delete_caches(cache_node.node)
                 cmds.waitCursor(state=0)
-                ncloth_cmds.attach_ncache(cache_node.path, cache_node.node)
+                sim_cmds.attach_ncache(cache_node.path, cache_node.node)
 
             if _type == 'alembic':
                 # attach cache for ziva
@@ -211,7 +210,7 @@ class CacheTree(QtWidgets.QWidget):
             _type = cache_node.cache_type
             if _type == 'nCloth':
                 cmds.waitCursor(state=1)
-                ncloth_cmds.delete_caches(cache_node.node)
+                sim_cmds.delete_caches(cache_node.node)
                 cmds.waitCursor(state=0)
             cache_node.set_color()
 
@@ -262,7 +261,7 @@ class CacheTree(QtWidgets.QWidget):
             isvalid = 'isvalid' in data and cache_name in data['isvalid']
 
         if dyn_item.node_type == 'nCloth':
-            attach = ncloth_cmds.cache_is_attached(dyn_item.node, cache_name)
+            attach = sim_cmds.cache_is_attached(dyn_item.node, cache_name)
         elif dyn_item.node_type == 'zSolverTransform':
             attach = ziva_cmds.cache_is_attached(dyn_item.alembic_target(), cache_name)
 

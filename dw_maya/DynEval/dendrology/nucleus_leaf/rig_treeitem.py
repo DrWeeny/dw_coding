@@ -31,7 +31,7 @@ from . import ncloth_cmds
 
 
 # internal
-from PySide6 import QtCore, QtGui, QtWidget
+from PySide6 import QtCore, QtGui, QtWidgets
 import maya.cmds as cmds
 
 # external

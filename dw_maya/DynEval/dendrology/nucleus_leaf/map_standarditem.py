@@ -26,6 +26,7 @@ if not rdPath in sys.path:
     print(f"Add {rdPath} to sysPath")
     sys.path.insert(0, rdPath)
 import re
+from PySide6 import QtCore, QtGui, QtWidgets
 
 
 class MapItemModel(QtGui.QStandardItem):

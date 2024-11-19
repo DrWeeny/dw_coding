@@ -28,12 +28,12 @@ if not rdPath in sys.path:
 import re
 
 # internal
-from PySide6 import QtCore, QtGui, QtWidget
+from PySide6 import QtCore, QtGui, QtWidgets
 import maya.cmds as cmds
 
 # external
 from .base_standarditem import BaseSimulationItem
-from dw_maya.DynEval import ncloth_cmds
+from dw_maya.DynEval import sim_cmds
 import dw_maya.dw_maya_utils as dwu
 
 class NRigidTreeItem(BaseSimulationItem):
@@ -105,11 +105,11 @@ class NRigidTreeItem(BaseSimulationItem):
 
     def get_maps(self):
         """Retrieves the vertex maps associated with this node."""
-        return ncloth_cmds.get_vtx_maps(self.node)
+        return sim_cmds.get_vtx_maps(self.node)
 
     def get_maps_mode(self):
         """Retrieves the vertex map modes (types) for the maps associated with this node."""
         return [
-            ncloth_cmds.get_vtx_map_type(self.node, f"{map_name}MapType")
+            sim_cmds.get_vtx_map_type(self.node, f"{map_name}MapType")
             for map_name in self.get_maps()
         ]
