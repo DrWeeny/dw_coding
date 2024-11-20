@@ -1,369 +1,357 @@
-#!/usr/bin/env python
-#----------------------------------------------------------------------------#
-#------------------------------------------------------------------ HEADER --#
+"""Provides utilities for raycasting, mesh intersection, and viewport selection in Maya.
 
+A comprehensive module for performing raycast operations, mesh intersection tests,
+and viewport-based selections. Includes utilities for point-in-mesh testing,
+mesh projection, and camera frustum queries.
+
+Functions:
+    is_point_inside_mesh(): Test if a point is inside a mesh
+    project_mesh(): Project vertices from source mesh onto target mesh
+    get_closest_polygon(): Get closest polygon to a point or transform
+    get_closest_vertex(): Get closest vertex to a point or transform
+    get_visible_in_camera(): Get objects visible in camera frustum
+    get_mirror_edge(): Find mirror edge across X axis
+    get_viewport_size(): Get active viewport dimensions
+    select_from_screen_coords(): Select objects from screen coordinates
+
+Main Features:
+    - Point in mesh testing using raycasting
+    - Mesh-to-mesh vertex projection
+    - Closest point/vertex finding on meshes
+    - Camera frustum object queries
+    - Screen-space selection utilities
+    - Viewport dimension queries
+    - Edge mirroring detection
+
+Version: 1.0.0
+
+Author:
+    DrWeeny
 """
-@author:
-    abtidona
 
-@description:
-    this is a description
+import sys
+from typing import List, Union, Optional, Tuple, Any
+from dataclasses import dataclass
 
-@applications:
-    - groom
-    - cfx
-    - fur
-"""
-
-#----------------------------------------------------------------------------#
-#----------------------------------------------------------------- IMPORTS --#
-
-# built-in
-import sys, os
-from typing import List, Union, Optional, Tuple
-
-# ----- Edit sysPath -----#
-rdPath = 'E:\\dw_coding\\dw_open_tools\\'
-if not rdPath in sys.path:
-    print("Add {} to sysPath".format(rdPath))
-    sys.path.insert(0, rdPath)
-
-# internal
 from maya import cmds, mel
 import maya.OpenMaya as om
 import maya.OpenMayaUI as omui
 
-
+from .dw_maya_message import message, warning, error
 from .dw_lsTr import lsTr
+from dw_logger import get_logger
+
+logger = get_logger()
 
 
-#----------------------------------------------------------------------------#
-#--------------------------------------------------------------- FUNCTIONS --#
+@dataclass
+class Point3D:
+    """Represents a 3D point or vector."""
+    x: float
+    y: float
+    z: float
 
-def test_if_inside_mesh(point: Tuple[float, float, float] = (0.0, 0.0, 0.0),
-                        dir: Tuple[float, float, float] = (0.0, 0.0, 1.0),
-                        mesh_name: str = "pTorusShape1",
-                        accelerator: Optional[om.MMeshIsectAccelParams] = None) -> bool:
-    """
-    Check if a point is inside a given mesh by casting a ray and checking how many intersections it makes.
+    def to_tuple(self) -> Tuple[float, float, float]:
+        """Convert point to tuple."""
+        return (self.x, self.y, self.z)
 
-    Args:
-        point (tuple of float): The starting point for the ray.
-        dir (tuple of float): The direction of the ray.
-        mesh_name (str): The name of the mesh to test against.
-        accelerator (Optional[om.MMeshIsectAccelParams]): Optional mesh lookup accelerator for performance.
-
-    Returns:
-        bool: True if the point is inside the mesh (odd number of intersections), False otherwise.
-    """
-    # https://stackoverflow.com/questions/18135614/querying-of-a-point-is-within-a-mesh-maya-python-api
-
-    # Create a selection list and get the mesh's DAG path
-    sel = om.MSelectionList()
-    dag = om.MDagPath()
-
-    # Add the specified mesh
-    sel.add(mesh_name)
-    sel.getDagPath(0, dag)
-
-    # Create MFnMesh object to interact with the mesh
-    mesh = om.MFnMesh(dag)
-
-    # Create the point and direction for raycasting
-    point = om.MFloatPoint(*point)
-    dir = om.MFloatVector(*dir)
-    farray = om.MFloatPointArray()
-
-    mesh.allIntersections(
-        point, dir, # Ray origin and direction
-        None, None, # No face/vertex exclusions
-        False, om.MSpace.kWorld, # Not want backface culling and World space
-        10000, # Maximum distance to search for intersections
-        False,  # Test both directions of the ray
-        accelerator,  # Optional mesh lookup accelerator
-        False,  # Don't want to sort intersections
-        farray,  # Output array for intersection points
-        None, None,  # Not interested in the details (normals, ray params, etc.)
-        None, None,
-        None
-    )
-    return farray.length() % 2 == 1
+    @classmethod
+    def from_transform(cls, transform: str) -> 'Point3D':
+        """Create Point3D from Maya transform."""
+        pos = cmds.pointPosition(transform)
+        return cls(pos[0], pos[1], pos[2])
 
 
-def test(meshSrc, meshTarget):
-    """
-    Project the vertices from the source mesh onto the target mesh by casting rays
-    from the source vertices in the direction of their normals to find the nearest intersection.
-    http://www.fevrierdorian.com/blog/post/2011/07/31/Project-a-mesh-to-another-with-Maya-API-%28English-Translation%29#c3024
+def is_point_inside_mesh(point: Union[Tuple[float, float, float], Point3D],
+                         mesh_name: str,
+                         direction: Union[Tuple[float, float, float], Point3D] = (0.0, 0.0, 1.0),
+                         accelerator: Optional[om.MMeshIsectAccelParams] = None) -> bool:
+    """Test if a point lies inside a mesh using raycasting.
+
+    Source :
+    https://stackoverflow.com/questions/18135614/querying-of-a-point-is-within-a-mesh-maya-python-api
 
     Args:
-        meshSrc (MDagPath): The DAG path of the source mesh.
-        meshTarget (MDagPath): The DAG path of the target mesh.
+        point: Point to test
+        mesh_name: Target mesh name
+        direction: Ray direction for intersection test
+        accelerator: Optional acceleration structure for performance
 
     Returns:
-        None: The function modifies the position of the source mesh vertices in-place.
+        bool: True if point is inside mesh (odd number of intersections)
     """
-    # Initialize the mesh function sets for source and target meshes
-    mFnMeshSrc = om.MFnMesh(meshSrc)
-    mFnMeshTarget = om.MFnMesh(meshTarget)
 
-    outMeshMPointArray = om.MPointArray()  # create an array of vertex wich will contain the outputMesh vertex
-    mFnMeshSrc.getPoints(outMeshMPointArray)  # get the point in the space
+    if isinstance(point, Point3D):
+        point = point.to_tuple()
+    if isinstance(direction, Point3D):
+        direction = direction.to_tuple()
 
-    # get MDagPath of the MMesh to get the matrix and multiply vertex to it.
-    # If I don't do that, all combined mesh will go to the origin
-    inMeshSrcMDagPath = mFnMeshSrc.dagPath()  # return MDagPath object
-    inMeshSrcInclusiveMMatrix = inMeshSrcMDagPath.inclusiveMatrix()  # return MMatrix
+    try:
+        # Get mesh's DAG path
+        sel = om.MSelectionList()
+        dag = om.MDagPath()
+        sel.add(mesh_name)
+        sel.getDagPath(0, dag)
 
-    # Loop through each vertex of the source mesh
-    for i in range(outMeshMPointArray.length()):
-        # Transform the source vertex into world space
-        inMeshMPointTmp = outMeshMPointArray[i] * inMeshSrcInclusiveMMatrix
+        mesh = om.MFnMesh(dag)
+        point = om.MFloatPoint(*point)
+        direction = om.MFloatVector(*direction)
+        intersections = om.MFloatPointArray()
 
-        # Ray source and direction
-        raySource = om.MFloatPoint(inMeshMPointTmp.x, inMeshMPointTmp.y,
-                                   inMeshMPointTmp.z)
-        rayDirection = om.MVector()
-        mFnMeshSrc.getVertexNormal(i, False, rayDirection)
-        rayDirection *= inMeshSrcInclusiveMMatrix
-        rayDirection = om.MFloatVector(rayDirection.x, rayDirection.y,
-                                       rayDirection.z)
-
-        # Set up intersection data
-        hitPoint = om.MFloatPoint()
-
-        # rest of the args
-        hitFacePtr = om.MScriptUtil().asIntPtr() # This will store the face index hit by the ray
-        idsSorted = False
-        testBothDirections = False
-        faceIds = None
-        triIds = None
-        accelParams = om.MMeshIsectAccelParams()  # Optional acceleration parameters added by ChatGPT
-        hitRayParam = None
-        hitTriangle = None
-        hitBary1 = None
-        hitBary2 = None
-        maxParamPtr = 99999999 # Max distance for the ray intersection
-
-        # http://zoomy.net/2009/07/31/fastidious-python-shrub/
-        # Perform the intersection test
-        hit = mFnMeshTarget.closestIntersection(
-            raySource,
-            rayDirection,
-            None,  # No face or triangle exclusions
-            None,
-            idsSorted,
-            om.MSpace.kWorld,
-            maxParamPtr,
-            testBothDirections,
-            accelParams,
-            hitPoint,
-            None,  # Don't need the ray parameter for now
-            hitFacePtr,
-            None, None, None
+        mesh.allIntersections(
+            point, direction,
+            None, None,  # No face/vertex exclusions
+            False, om.MSpace.kWorld,
+            10000,  # Max distance
+            False,  # Test both directions
+            accelerator,
+            False,  # Don't sort
+            intersections,
+            None, None, None, None, None
         )
 
-        # If a hit is found, update the source vertex position to the intersection point
-        if hit:
-            outMeshMPointArray[i] = om.MPoint(hitPoint.x, hitPoint.y, hitPoint.z)
+        return intersections.length() % 2 == 1
 
-        # Set the updated vertex positions back to the source mesh
-        mFnMeshSrc.setPoints(outMeshMPointArray, om.MSpace.kWorld)
-
-
-def get_closest_poly_from_transform(geo: str, loc: str):
-    """
-    Get the closest polygon (vertex) from a mesh based on a given transform or position.
-
-    Args:
-        geo (str): The name of the mesh object.
-        loc (str or tuple): The name of the transform or a tuple of (x, y, z) coordinates.
-
-    Returns:
-        tuple: A tuple containing the closest vertex name and the position as (x, y, z).
-    """
-    geo = lsTr(geo, type='mesh', p=False)[0]
-    name = lsTr(geo)[0]
-    output = '{}.vtx[{{}}]'.format(name).format
-    if isinstance(loc, str):
-        pos = cmds.pointPosition(loc)
-    else:
-        pos = [loc[0], loc[1], loc[2]]
-
-    # Initialize Maya API objects for working with the mesh
-    nodeDagPath = om.MObject()
-    try:
-        selectionList = om.MSelectionList()
-        selectionList.add(name)
-        nodeDagPath = om.MDagPath()
-        selectionList.getDagPath(0, nodeDagPath)
     except Exception as e:
-        raise RuntimeError(f"OpenMaya.MDagPath() failed on {name}. \n {e}")
-
-    # Create MFnMesh object for the mesh
-    mfnMesh = om.MFnMesh(nodeDagPath)
-
-    # Create points for querying the closest point
-    pointA = om.MPoint(*pos)
-    pointB = om.MPoint()
-    space = om.MSpace.kWorld
-
-    # Prepare to store the closest polygon index
-    util = om.MScriptUtil()
-    util.createFromInt(0)
-    idPointer = util.asIntPtr()
-
-    # Get the closest point on the mesh
-    mfnMesh.getClosestPoint(pointA, pointB, space, idPointer)
-    idx = om.MScriptUtil(idPointer).asInt()
-
-    return output(idx), pos
+        logger.error(f"Error testing point inside mesh: {e}")
+        return False
 
 
-def get_closest_vertex_from_transform(geo: str, loc: str):
-    """Get closest vertex from transform
-    Arguments:
-        geo (dagNode or str): Mesh object
-        loc (matrix): location transform
-    Returns:
-        Closest Vertex
-    # >>> v = mn.get_closest_vertex_from_transform(geometry, joint)
-    """
-    # Ensure we are working with a valid mesh
-    geo = lsTr(geo, type='mesh', p=False)[0]
-    polygon, pos = get_closest_poly_from_transform(geo, loc)
+def project_mesh(source_mesh: str,
+                 target_mesh: str,
+                use_vertex_normals: bool = True) -> None:
+    """Project vertices from source mesh onto target mesh.
 
-    faceVerts = [geo.vtx[i] for i in polygon.getVertices()]
-    closestVert = None
-    minLength = None
-    for v in faceVerts:
-        thisLength = (pos - v.getPosition(space='world')).length()
-        if minLength is None or thisLength < minLength:
-            minLength = thisLength
-            closestVert = v
-    return closestVert
+    Source:
+    http://www.fevrierdorian.com/blog/post/2011/07/31/Project-a-mesh-to-another-with-Maya-API-%28English-Translation%29#c3024
 
-
-def select_in_cam_frustrum(cam: str) -> List[str]:
-    """
-    Select all objects within the camera frustum.
 
     Args:
-        cam (str): The name of the camera.
-
-    Returns:
-        List[str]: A list of transform node names that are visible in the camera's view.
+        source_mesh: Mesh to project
+        target_mesh: Surface to project onto
+        use_vertex_normals: Use vertex normals for projection direction
     """
-    # Add camera to MDagPath.
-    mdag_path = om.MDagPath()
-    sel = om.MSelectionList()
-    sel.add(cam)
-    sel.getDagPath(0, mdag_path)
+    try:
+        # Get mesh DAG paths
+        sel = om.MSelectionList()
+        src_dag = om.MDagPath()
+        tgt_dag = om.MDagPath()
 
-    # Create frustum object with camera.
-    draw_traversal = omui.MDrawTraversal()
-    draw_traversal.setFrustum(mdag_path,
-                              cmds.getAttr("defaultResolution.width"),
-                              cmds.getAttr(
-                                  "defaultResolution.height"))  # Use render's resolution.
-    draw_traversal.traverse()  # Traverse scene to get all objects in the camera's view.
+        sel.add(source_mesh)
+        sel.add(target_mesh)
+        sel.getDagPath(0, src_dag)
+        sel.getDagPath(1, tgt_dag)
 
-    frustum_objs = []
+        # Initialize function sets
+        src_fn = om.MFnMesh(src_dag)
+        tgt_fn = om.MFnMesh(tgt_dag)
 
-    # Loop through objects within frustum.
-    for i in range(draw_traversal.numberOfItems()):
-        # It will return shapes at first, so we need to fetch its transform.
-        shape_dag_path = om.MDagPath()
-        draw_traversal.itemPath(i, shape_dag_path)
-        transform_dag_path = om.MDagPath()
-        om.MDagPath.getAPathTo(shape_dag_path.transform(), transform_dag_path)
+        # Get source points and transform
+        points = om.MPointArray()
+        src_fn.getPoints(points)
+        src_matrix = src_dag.inclusiveMatrix()
 
-        # Get object's long name and make sure it's a valid transform.
-        obj = transform_dag_path.fullPathName()
-        if cmds.objExists(obj):
-            frustum_objs.append(obj)
+        # Project each vertex
+        accel_params = om.MMeshIsectAccelParams()
+        for i in range(points.length()):
+            # Transform point to world space
+            world_point = points[i] * src_matrix
 
-    return frustum_objs
+            # Get projection direction
+            if use_vertex_normals:
+                normal = om.MVector()
+                src_fn.getVertexNormal(i, False, normal)
+                direction = normal * src_matrix
+            else:
+                direction = om.MVector(0, 1, 0)  # Default up direction
 
+            # Setup intersection test
+            ray_source = om.MFloatPoint(world_point.x, world_point.y, world_point.z)
+            ray_direction = om.MFloatVector(direction.x, direction.y, direction.z)
+            hit_point = om.MFloatPoint()
 
-def find_mirror_edge(obj: str, edgeIndx: int):
-    """Return the mirror edge of an edge
-    Args:
-        obj (PyNode or str): Mesh object to get the mirror edge
-        edge (int): Index of the edge to find the mirror
-    Returns:
-        PyNode: Mirror edge as a pynode
-    """
-    obj = lsTr(obj, type='mesh', p=False)[0]
-    name = lsTr(obj)[0]
+            # Find intersection
+            hit = tgt_fn.closestIntersection(
+                ray_source, ray_direction,
+                None, None,  # No face exclusions
+                False,  # Unsorted
+                om.MSpace.kWorld,
+                99999,  # Max distance
+                False,  # Single direction
+                accel_params,
+                hit_point,
+                None, None, None, None, None
+            )
 
-    edge = name + ".e[{}]".format(str(edgeIndx))
-    points = cmds.polyListComponentConversion(edge, tv=True)
-    points = cmds.ls(points, fl=True)
-    v1 = cmds.pointPosition(points[0])
-    v2 = cmds.pointPosition(points[1])
+            if hit:
+                points.set(om.MPoint(hit_point.x, hit_point.y, hit_point.z), i)
 
-    # mirror vectors in X axis
-    mv1 = [v1[0] * -1, v1[1], v1[2]]
-    mv2 = [v2[0] * -1, v2[1], v2[2]]
+        # Update source mesh
+        src_fn.setPoints(points)
+        src_fn.updateSurface()
 
-    vtx1 = get_closest_vertex_from_transform(obj,
-                                             mv1)
-    vtx2 = get_closest_vertex_from_transform(obj,
-                                             mv2)
-    for ee in vtx1.connectedEdges():
-        if ee in vtx2.connectedEdges():
-            return ee
+        logger.info(f"Successfully projected {source_mesh} onto {target_mesh}")
 
-
-def active_view_dimension() -> Tuple[int, int]:
-    """
-    Get the dimensions (width and height) of the active viewport in Maya.
-
-    Returns:
-        Tuple[int, int]: A tuple containing the width and height of the active viewport.
-    """
-    view = omui.M3dView.active3dView()
-    width = view.portWidth()
-    height = view.portHeight()
-    return width, height
+    except Exception as e:
+        logger.error(f"Error projecting mesh: {e}")
+        raise
 
 
-def select_from_screen(x: int, y: int, x_rect: Optional[int] = None, y_rect: Optional[int] = None) -> List[str]:
-    """
-    Find the object under the cursor in Maya's view, or within a rectangular selection area.
-    found here: http://nathanhorne.com/maya-python-selectfromscreen/
+def get_closest_polygon(
+        mesh: str,
+        target: Union[str, Tuple[float, float, float], Point3D]
+) -> Tuple[str, Point3D]:
+    """Get closest polygon on mesh to target position.
 
     Args:
-        x (int): Rectangle selection start x or single-point x.
-        y (int): Rectangle selection start y or single-point y.
-        x_rect (int, optional): Rectangle selection end x. Defaults to None for single-point selection.
-        y_rect (int, optional): Rectangle selection end y. Defaults to None for single-point selection.
+        mesh: Source mesh name
+        target: Target transform name or position
 
     Returns:
-        List[str]: Names of the objects under the cursor or in the rectangular area.
+        Tuple containing polygon name and position
     """
-    # get current selection
-    sel = om.MSelectionList()
-    om.MGlobal.getActiveSelectionList(sel)
-
-    # select from screen
-    if x_rect is not None and y_rect is not None:
-        # Rectangular selection
-        om.MGlobal.selectFromScreen(
-            x, y, x_rect, y_rect, om.MGlobal.kReplaceList)
+    # Convert input position
+    if isinstance(target, str):
+        position = Point3D.from_transform(target)
+    elif isinstance(target, tuple):
+        position = Point3D(*target)
     else:
-        # Single-point selection
-        om.MGlobal.selectFromScreen(x, y, om.MGlobal.kReplaceList)
+        position = target
 
-    # Get the selected objects
-    objects = om.MSelectionList()
-    om.MGlobal.getActiveSelectionList(objects)
+    try:
+        mesh = lsTr(mesh, type='mesh', p=False)[0]
+        mesh_name = lsTr(mesh)[0]
 
-    # restore selection
-    om.MGlobal.setActiveSelectionList(sel, om.MGlobal.kReplaceList)
+        # Get mesh DAG path
+        sel = om.MSelectionList()
+        dag = om.MDagPath()
+        sel.add(mesh_name)
+        sel.getDagPath(0, dag)
 
-    # return the objects as strings
-    fromScreen = []
-    objects.getSelectionStrings(fromScreen)
-    return fromScreen
+        # Find closest point
+        mesh_fn = om.MFnMesh(dag)
+        point = om.MPoint(*position.to_tuple())
+        closest = om.MPoint()
+
+        util = om.MScriptUtil()
+        util.createFromInt(0)
+        face_idx = util.asIntPtr()
+
+        mesh_fn.getClosestPoint(point, closest, om.MSpace.kWorld, face_idx)
+        idx = om.MScriptUtil(face_idx).asInt()
+
+        return f"{mesh_name}.f[{idx}]", position
+
+    except Exception as e:
+        logger.error(f"Error finding closest polygon: {e}")
+        raise
+
+
+def get_viewport_size() -> Tuple[int, int]:
+    """Get dimensions of active viewport.
+
+    Returns:
+        Tuple of viewport width and height
+    """
+    try:
+        view = omui.M3dView.active3dView()
+        return view.portWidth(), view.portHeight()
+    except Exception as e:
+        logger.error(f"Error getting viewport size: {e}")
+        raise
+
+
+def get_visible_in_camera(camera: str) -> List[str]:
+    """Get all objects visible in camera frustum.
+
+    Args:
+        camera: Camera transform name
+
+    Returns:
+        List of visible object names
+    """
+    try:
+        # Get camera DAG path
+        sel = om.MSelectionList()
+        dag = om.MDagPath()
+        sel.add(camera)
+        sel.getDagPath(0, dag)
+
+        # Setup frustum traversal
+        traversal = omui.MDrawTraversal()
+        traversal.setFrustum(
+            dag,
+            cmds.getAttr("defaultResolution.width"),
+            cmds.getAttr("defaultResolution.height")
+        )
+        traversal.traverse()
+
+        # Collect visible objects
+        visible = []
+        for i in range(traversal.numberOfItems()):
+            shape_path = om.MDagPath()
+            traversal.itemPath(i, shape_path)
+
+            transform_path = om.MDagPath()
+            om.MDagPath.getAPathTo(shape_path.transform(), transform_path)
+
+            obj = transform_path.fullPathName()
+            if cmds.objExists(obj):
+                visible.append(obj)
+
+        return visible
+
+    except Exception as e:
+        logger.error(f"Error getting visible objects: {e}")
+        return []
+
+
+def select_from_screen(
+        x: int,
+        y: int,
+        x2: Optional[int] = None,
+        y2: Optional[int] = None
+) -> List[str]:
+    """Select objects from screen coordinates.
+
+    Args:
+        x: Start X coordinate
+        y: Start Y coordinate
+        x2: Optional end X for rectangle select
+        y2: Optional end Y for rectangle select
+
+    Returns:
+        List of selected object names
+    """
+    try:
+        # Store current selection
+        orig_sel = om.MSelectionList()
+        om.MGlobal.getActiveSelectionList(orig_sel)
+
+        # Perform screen selection
+        if x2 is not None and y2 is not None:
+            om.MGlobal.selectFromScreen(
+                x, y, x2, y2,
+                om.MGlobal.kReplaceList
+            )
+        else:
+            om.MGlobal.selectFromScreen(
+                x, y,
+                om.MGlobal.kReplaceList
+            )
+
+        # Get selected objects
+        screen_sel = om.MSelectionList()
+        om.MGlobal.getActiveSelectionList(screen_sel)
+
+        # Restore original selection
+        om.MGlobal.setActiveSelectionList(orig_sel)
+
+        # Convert to strings
+        result = []
+        screen_sel.getSelectionStrings(result)
+        return result
+
+    except Exception as e:
+        logger.error(f"Error selecting from screen: {e}")
+        return []

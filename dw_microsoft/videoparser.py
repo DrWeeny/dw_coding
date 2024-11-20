@@ -369,7 +369,7 @@ class Parser(plugins.BaseParser):
         def __repr__(self):
             buffer = "MovieHeaderAtom:\n"
             buffer += " %-30s: %s\n" % ("Version", self.version)
-            buffer += " %-30s: %r\n" % ("Flags", self.flags)
+            buffer += " %-30s: %r\n" % ("flags", self.flags)
             buffer += " %-30s: %s\n" % ("Creation time", self.creation_time)
             buffer += " %-30s: %s\n" % ("Modification time", self.modification_time)
             buffer += " %-30s: %s\n" % ("Time scale", self.timescale)
@@ -392,7 +392,7 @@ class Parser(plugins.BaseParser):
         def __repr__(self):
             buffer = "TrackHeaderAtom:\n"
             buffer += " %-30s: %s\n" % ("Version", self.version)
-            buffer += " %-30s: %r\n" % ("Flags", self.flags)
+            buffer += " %-30s: %r\n" % ("flags", self.flags)
             buffer += " %-30s: %s\n" % ("Creation time", self.creation_time)
             buffer += " %-30s: %s\n" % ("Modification time", self.modification_time)
             buffer += " %-30s: %s\n" % ("Track ID", self.track_id)
@@ -413,7 +413,7 @@ class Parser(plugins.BaseParser):
         def __repr__(self):
             buffer = "HandlerReferenceAtom:\n"
             buffer += " %-30s: %s\n" % ("Version", self.version)
-            buffer += " %-30s: %r\n" % ("Flags", self.flags)
+            buffer += " %-30s: %r\n" % ("flags", self.flags)
             buffer += " %-30s: %s\n" % ("Component type", self.type)
             buffer += " %-30s: %s\n" % ("Component subtype", self.subtype)
             buffer += " %-30s: %s\n" % ("Component manufacturer", self.manufacturer)

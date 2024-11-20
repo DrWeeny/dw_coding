@@ -28,7 +28,7 @@ def connectChoice(attr1, attr2, selector=1, **kwargs):
         str: The output attribute of the created `choice` node, if applicable.
     """
     # Extracting flags for node creation
-    flags = dwu.Flags(kwargs, None, 'name', 'n', key='name')
+    flags = dwu.flags(kwargs, None, 'name', 'n', key='name')
 
     # Check if both attributes exist
     if '.' in attr1 and '.' in attr2:

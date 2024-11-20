@@ -1,18 +1,39 @@
-# built-in
-import sys
-import os
+"""Maya Ziva Dynamics utilities for node management and attribute handling.
+
+This module provides utilities for working with Ziva Dynamics nodes in Maya,
+including node type checking, network traversal, and attribute manipulation.
+
+Classes:
+    ZSolver: Wrapper for zSolver nodes with preset and network handling
+
+Functions:
+    is_ziva_loaded(): Check Ziva plugin status
+    get_ziva_types(): Get list of Ziva node types
+    conform_exponential(): Transform exponential attributes
+
+Core Features:
+    - Ziva node type detection and listing
+    - Network topology traversal
+    - Preset management for Ziva attributes
+    - Exponential value conforming
+
+Example:
+    >>> # Check Ziva availability
+    >>> if is_ziva_loaded():
+    >>>     solver = ZSolver('zSolver1')
+    >>>     preset = solver.attrPreset()
+
+    >>> # Conform exponential values
+    >>> conform_exponential()
+
+Author: DrWeeny
+Version: 1.0.0
+"""
+
 import re
 
-# ----- Edit sysPath -----#
-rdPath = 'E:\\dw_coding\\dw_open_tools'
-if rdPath not in sys.path:
-    print(f"Adding {rdPath} to sys.path")
-    sys.path.insert(0, rdPath)
+from maya import cmds
 
-# internal Maya imports
-from maya import cmds, mel
-
-# external imports
 import dw_maya.dw_maya_nodes as dwnn
 import dw_maya.dw_presets_io as dwpreset
 

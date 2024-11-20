@@ -1,27 +1,42 @@
-#!/usr/bin/env python
-# ---------------------------------------------------------------------------- #
-# ---------------------------------- HEADER ---------------------------------- #
+"""Custom Qt widgets and utilities for DCC integration.
 
+This module pop an error window with a gif
+This module provides reusable Qt widgets and utilities that work across multiple
+Digital Content Creation (DCC) applications including Maya, Houdini and standalone.
+
+Features:
+   - DCC window handling for Maya/Houdini
+   - Custom error dialog with image support
+   - Animated hover effects for widgets
+   - Thumbnail widgets with hover animations
+   - Interactive plotting widgets with draggable points/lines
+   - Tree widget utilities
+
+Classes:
+   ErrorWin: Custom error dialog
+   RectangleHoverEffect: Widget hover animation
+   ThumbWidget: Thumbnail with hover effect
+   PlotPoint: Interactive plot point
+   PlotLine: Interactive Bezier curve
+   PlotView: Custom plotting widget
+
+DCC Support:
+   MODE values:
+       0: Standalone Qt
+       1: Maya + PySide6
+       2: Houdini + PySide6
+
+Example:
+   >>> # Create error dialog in Maya
+   >>> error = ErrorWin(parent=get_maya_window())
+   >>> error.show()
+
+   >>> # Add hover effect to widget
+   >>> effect = RectangleHoverEffect(widget, parent)
+
+Author: DrWeeny
+Version: 1.0.0
 """
-@description:
-    Custom widgets and utilities compatible with Houdini, Maya, and PySide6.
-"""
-
-# ---------------------------------------------------------------------------- #
-# -------------------------------- IMPORTS ----------------------------------- #
-
-import sys, os
-from math import hypot
-from functools import partial
-
-# ----- Edit sysPath -----#
-rdPath = 'E:\\dw_coding\\dw_open_tools'
-if not rdPath in sys.path:
-    print(f"Add {rdPath} to sysPath")
-    sys.path.insert(0, rdPath)
-
-import os.path
-
 MODE = 0
 
 try:
@@ -109,12 +124,11 @@ class RectangleHoverEffect(QtCore.QObject):
             raise ValueError("rectangle must have a parent")
 
         self.rectangle = rectangle
-        self.animation = QtCore.QPropertyAnimation(
-            targetObject=rectangle,
-            propertyName=b"pos",
-            duration=300,
-            easingCurve=QtCore.QEasingCurve.OutQuad,
-        )
+        self.animation = QtCore.QPropertyAnimation()
+        self.animation.setTargetObject(rectangle)
+        self.animation.setPropertyName(b"pos")
+        self.animation.setDuration(300)
+        self.animation.setEasingCurve(QtCore.QEasingCurve.OutQuad)
         rectangle.parent().installEventFilter(self)
 
     def eventFilter(self, obj, event):
@@ -130,6 +144,10 @@ class RectangleHoverEffect(QtCore.QObject):
         self.animation.setStartValue(QtCore.QPoint(0, start))
         self.animation.setEndValue(QtCore.QPoint(0, end))
         self.animation.start()
+
+    def __del__(self):
+        self.animation.stop()
+        self.animation.deleteLater()
 
 
 class ThumbWidget(QtWidgets.QFrame):

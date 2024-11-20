@@ -102,15 +102,15 @@ def orient_follicle_driver(surface: str, fols: list, **kwargs) -> list:
     cmds.optionVar(iv=('refLockEditable', True))
 
     # Collect flags from kwargs
-    flags = dwu.Flags(kwargs, 1, 'weight', 'w', dic={})
-    flags = dwu.Flags(kwargs, None, 'name', 'n', dic=flags)
-    flags = dwu.Flags(kwargs, None, 'aimVector', 'aim', dic=flags)
-    flags = dwu.Flags(kwargs, True, 'maintainOffset', 'mo', dic=flags)
+    flags = dwu.flags(kwargs, 1, 'weight', 'w', dic={})
+    flags = dwu.flags(kwargs, None, 'name', 'n', dic=flags)
+    flags = dwu.flags(kwargs, None, 'aimVector', 'aim', dic=flags)
+    flags = dwu.flags(kwargs, True, 'maintainOffset', 'mo', dic=flags)
 
-    # Flags for orient/aim modes and optimization
-    orient_mode = dwu.Flags(kwargs, True, 'orient', 'o')
-    aim_mode = dwu.Flags(kwargs, False, 'aim', 'a')
-    opti_threshold = dwu.Flags(kwargs, 0.05, 'optimise', 'opti')
+    # flags for orient/aim modes and optimization
+    orient_mode = dwu.flags(kwargs, True, 'orient', 'o')
+    aim_mode = dwu.flags(kwargs, False, 'aim', 'a')
+    opti_threshold = dwu.flags(kwargs, 0.05, 'optimise', 'opti')
 
     # Create follicles and map them to the target surface
     fol_and_targ = create_surface_fol_driver(surface, fols, opti_threshold)

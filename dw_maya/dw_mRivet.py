@@ -1,17 +1,3 @@
-import sys, os
-
-# ----- Edit sysPath -----#
-rdPath = 'E:\\dw_coding\\dw_open_tools'
-if not rdPath in sys.path:
-    print(f"Add {rdPath} to sysPath")
-    sys.path.insert(0, rdPath)
-
-import maya.cmds as cmds
-import re
-from dw_maya.dw_decorators import load_plugin
-
-import sys
-import os
 import maya.cmds as cmds
 import re
 from dw_maya.dw_decorators import load_plugin

@@ -1,23 +1,26 @@
-import sys, os
-
-# ----- Edit sysPath -----#
-rdPath = 'E:\\dw_coding\\dw_open_tools'
-if not rdPath in sys.path:
-    print("Add {} to sysPath".format(rdPath))
-    sys.path.insert(0, rdPath)
-
 import maya.cmds as cmds
 
 import importlib
+from dw_logger import get_logger
+
+logger = get_logger()
+
+
+class NodeClassLoadError(Exception):
+    """Custom exception for node class loading failures"""
+    pass
 
 
 def getTypeClass():
     """
     Retrieve a mapping of node types to their corresponding classes.
-    This function can be extended by updating the dictionary or by using dynamic imports.
+    Includes error logging for failed imports.
 
     Returns:
-        dict: A dictionary mapping node types (str) to their corresponding classes.
+        dict: Mapping of node types to their classes
+
+    Raises:
+        NodeClassLoadError: If critical classes fail to load
     """
     type_mapping = {
         'nComponent': 'dw_maya.dw_nucleus_utils.nComponent',
@@ -25,33 +28,51 @@ def getTypeClass():
         'default': 'dw_maya.dw_maya_nodes.MayaNode'
     }
 
-    # Dynamically import classes based on the dictionary values
     node_classes = {}
+    failed_imports = []
+
     for node_type, class_path in type_mapping.items():
-        module_path, class_name = class_path.rsplit(".", 1)
-        module = importlib.import_module(module_path)
-        node_classes[node_type] = getattr(module, class_name)
+        try:
+            module_path, class_name = class_path.rsplit(".", 1)
+            module = importlib.import_module(module_path)
+            node_classes[node_type] = getattr(module, class_name)
+            logger.debug(f"Successfully loaded {class_path} for {node_type}")
+        except ImportError as e:
+            failed_imports.append((node_type, class_path, str(e)))
+            logger.error(f"Failed to import {class_path} for {node_type}: {e}")
+        except AttributeError as e:
+            failed_imports.append((node_type, class_path, str(e)))
+            logger.error(f"Class {class_name} not found in {module_path}: {e}")
+
+    # Check if default class loaded
+    if 'default' not in node_classes:
+        error_msg = f"Failed to load critical default class. Import failures: {failed_imports}"
+        logger.critical(error_msg)
+        raise NodeClassLoadError(error_msg)
 
     return node_classes
 
 
 def lsNode(*args, **kwargs):
     """
-    Custom `ls` function that returns Python objects instead of node names.
+    List Maya nodes as Python objects with error logging.
 
     Args:
-        *args: Arguments to pass to `cmds.ls`.
-        **kwargs: Keyword arguments to pass to `cmds.ls`.
+        *args: Arguments for cmds.ls
+        **kwargs: Keyword arguments for cmds.ls
 
     Returns:
-        list: A list of instantiated objects corresponding to the Maya nodes.
+        list:
     """
     output = []
-    node_classes = getTypeClass()
+    try:
+        node_classes = getTypeClass()
+    except NodeClassLoadError as e:
+        logger.critical(f"Failed to initialize node classes: {e}")
+        return output
 
     # Retrieve nodes using Maya cmds.ls
     nodes = cmds.ls(*args, **kwargs)
-
     if not nodes:
         return output
 

@@ -1,21 +1,23 @@
 import maya.cmds as cmds
 from functools import wraps
+from typing import Callable, Any
 
 
-def singleUndoChunk(func):
+def singleUndoChunk(func: Callable) -> Callable:
     """
-    Decorator to group the wrapped function's operations into a single Maya Undo chunk.
-    This ensures that all operations performed by the function can be undone in a single
-    step in Maya's undo queue.
+    Group operations into a single Maya undo chunk.
 
-    Args:
-        func (function): The function to wrap.
+    Ensures all operations can be undone in a single step.
 
-    Returns:
-        function: The wrapped function that executes within a single undo chunk.
+    Example:
+        @singleUndoChunk
+        def create_complex_setup():
+            cmds.polySphere()
+            cmds.polyCube()
+            # All created objects undo in one step
     """
     @wraps(func)
-    def _undofunc(*args, **kwargs):
+    def wrapper(*args: Any, **kwargs: Any) -> Any:
         try:
             # start an undo chunk
             cmds.undoInfo(openChunk=True)
@@ -24,24 +26,24 @@ def singleUndoChunk(func):
             # after calling the func, end the undo chunk and undo
             cmds.undoInfo(closeChunk=True)
 
-    return _undofunc
-    # return lambda *args, **kwargs: executeDeferred(wrap, *args, **kwargs)
+    return wrapper
 
 
-def repeatable(function):
+def repeatable(func: Callable) -> Callable:
     """
-    A decorator that makes commands repeatable in Maya.
+    Make Maya commands repeatable with 'G' key.
 
     Source: http://blog.3dkris.com/2011/08/python-in-maya-how-to-make-commands.html
 
-    Args:
-        function (function): The function to wrap and make repeatable.
+    Example:
+        @repeatable
+        def create_sphere(radius=1):
+            return cmds.polySphere(r=radius)[0]
 
-    Returns:
-        function: The wrapped function.
+        # Can now press 'G' to repeat with same args
     """
 
-    @wraps(function)
+    @wraps(func)
     def decoratorCode(*args, **kwargs):
         # Generate the argument string for the repeatable command
         arg_list = [repr(arg) for arg in args]
@@ -49,16 +51,16 @@ def repeatable(function):
         argString = ', '.join(arg_list + kwarg_list)
 
         # Construct the command string for repeatLast
-        commandToRepeat = f'python("{__name__}.{function.__name__}({argString})")'
+        commandToRepeat = f'python("{__name__}.{func.__name__}({argString})")'
 
         # Execute the original function
-        functionReturn = function(*args, **kwargs)
+        functionReturn = func(*args, **kwargs)
 
         try:
             # Register the repeatable command in Maya's repeatLast
-            cmds.repeatLast(ac=commandToRepeat, acl=function.__name__)
+            cmds.repeatLast(ac=commandToRepeat, acl=func.__name__)
         except Exception as e:
-            print(f"Error registering command to repeatLast: {e}")
+            print(f"Warning: Could not make {func.__name__} repeatable: {e}")
 
         return functionReturn
 

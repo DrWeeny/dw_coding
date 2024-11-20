@@ -36,7 +36,7 @@ def maya_edit_sets(deformer_name: str, object_list: list, **kwargs):
         object_list (list): List of objects to add or remove.
         **kwargs: Optional flags for Maya's `cmds.sets` function (e.g., 'add', 'remove').
 
-    Valid Flags:
+    Valid flags:
         - add: Adds objects to the set.
         - remove: Removes objects from the set.
         - addElement: Adds a single element to the set.
@@ -81,7 +81,7 @@ def editDeformer(**kwargs):
     Edit a deformer by adding or removing objects from the set it affects.
 
     Args:
-        kwargs: Flags that specify the operation to perform. Accepts:
+        kwargs: flags that specify the operation to perform. Accepts:
             - remove: Removes objects from the set.
             - rm: Alias for remove.
             - add: Adds objects to the set.

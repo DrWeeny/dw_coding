@@ -1,59 +1,124 @@
-import sys, os
-import random
 from functools import wraps
-
-# ----- Edit sysPath -----#
-rdPath = 'E:\\dw_coding\\dw_open_tools'
-if not rdPath in sys.path:
-    print("Add {} to sysPath".format(rdPath))
-    sys.path.insert(0, rdPath)
-
-import maya.mel as mel
+import random
+from pathlib import Path
+from typing import Callable, List, Any
+from dw_logger import get_logger
 from dw_linux.dw_sound import sox_play
 
+logger = get_logger()
 
-def complete_sound(func):
+
+class SoundResourceManager:
+    """Manages sound resources for function completion feedback."""
+
+    def __init__(self):
+        self.success_sounds: List[Path] = []
+        self.failure_sounds: List[Path] = []
+        self._random = random.SystemRandom()
+        self._initialize_sounds()
+
+    def _initialize_sounds(self) -> None:
+        """Initialize sound file paths."""
+        try:
+            # First try to find sounds relative to this file
+            sound_base = self._get_sound_path()
+
+            if not sound_base.exists():
+                logger.warning(f"Sound directory not found at {sound_base}")
+                return
+
+            # Load success sounds
+            success_dir = sound_base / '_happy'
+            if success_dir.exists():
+                self.success_sounds = [
+                    f for f in success_dir.glob('*.wav')
+                ]
+
+            # Load failure sounds
+            failure_dir = sound_base / '_death'
+            if failure_dir.exists():
+                self.failure_sounds = [
+                    f for f in failure_dir.glob('*.wav')
+                ]
+
+            logger.debug(
+                f"Loaded {len(self.success_sounds)} success and "
+                f"{len(self.failure_sounds)} failure sounds"
+            )
+
+        except Exception as e:
+            logger.error(f"Failed to initialize sound resources: {str(e)}")
+
+    @staticmethod
+    def _get_sound_path() -> Path:
+        """Get the base path for sound files."""
+        # Try different potential locations
+        current_file = Path(__file__)
+        potential_paths = [
+            current_file.parent.parent / 'ressources' / 'audio_files' / 'BattleblockTheater',
+            Path('E:/dw_coding/dw_open_tools/ressources/audio_files/BattleblockTheater')
+        ]
+
+        # Return first existing path
+        for path in potential_paths:
+            if path.exists():
+                return path
+
+        # Default to first path if none exist
+        return potential_paths[0]
+
+    def play_success(self) -> None:
+        """Play a random success sound."""
+        if self.success_sounds:
+            try:
+                sound_file = self._random.choice(self.success_sounds)
+                sox_play(str(sound_file))
+            except Exception as e:
+                logger.error(f"Failed to play success sound: {str(e)}")
+
+    def play_failure(self) -> None:
+        """Play a random failure sound."""
+        if self.failure_sounds:
+            try:
+                sound_file = self._random.choice(self.failure_sounds)
+                sox_play(str(sound_file))
+            except Exception as e:
+                logger.error(f"Failed to play failure sound: {str(e)}")
+
+
+# Singleton instance of sound manager
+_sound_manager = SoundResourceManager()
+
+
+def complete_sound(
+        success_only: bool = False,
+        volume: float = 1.0) -> Callable:
     """
-    Decorator that plays a success sound when the wrapped function completes successfully,
-    and plays a failure sound when the function raises an exception.
+    Decorator that plays sounds on function completion or failure.
 
     Args:
-        func (function): The function to wrap.
-
-    Returns:
-        function: The wrapped function with success/failure sound effects.
+        success_only: Only play sound on success, not on failure
+        volume: Volume multiplier (0.0 to 1.0)
     """
-    # Get the directory path where this script is located
-    dir_path = os.path.dirname(os.path.realpath(__file__))
-    _ress_path = os.path.join('ressources', 'audio_files', 'BattleblockTheater')
-    _sound_path = os.path.join(dir_path, '..', _ress_path)
 
-    # Fallback path handling in case the first path is incorrect
-    if not os.path.isdir(_sound_path):
-        _sound_path = os.path.join(rdPath, '..', '..', '..', _ress_path)
+    def decorator(func: Callable) -> Callable:
+        @wraps(func)
+        def wrapper(*args: Any, **kwargs: Any) -> Any:
+            try:
+                result = func(*args, **kwargs)
+                _sound_manager.play_success()
+                return result
+            except Exception as e:
+                if not success_only:
+                    _sound_manager.play_failure()
+                raise
 
-    # Get the success and failure sounds from respective directories
-    try:
-        _success = [os.path.join(_sound_path, '_happy', i) for i in os.listdir(os.path.join(_sound_path, '_happy')) if i.endswith('.wav')]
-        _fail = [os.path.join(_sound_path, '_death', i) for i in os.listdir(os.path.join(_sound_path, '_death')) if i.endswith('.wav')]
-    except FileNotFoundError as e:
-        raise FileNotFoundError(f"Error: Could not find audio files. {e}")
+        return wrapper
 
-    # Randomly select sound files
-    r = random.SystemRandom()
+    # Handle case where decorator is used without parameters
+    if callable(success_only):
+        f = success_only
+        success_only = False
+        return decorator(f)
 
-    @wraps(func)
-    def wrapper(*args, **kwargs):
-        try:
-            # Call the wrapped function
-            result = func(*args, **kwargs)
-
-            # Play a random success sound
-            sox_play(r.choice(_success))
-            return result
-        except Exception as e:
-            # Play a random failure sound in case of an exception
-            sox_play(r.choice(_fail))
-            raise e
-
-    return wrapper
+    return decorator

@@ -28,7 +28,7 @@ def create_follicles(surface, uv_input: list = None, uvthreshold: float = 0.05, 
         raise ValueError("uv_input must be a list with two elements [u, v].")
 
     u, v = uv_input
-    flags = dwu.Flags(kwargs, None, 'name', 'n', dic={})
+    flags = dwu.flags(kwargs, None, 'name', 'n', dic={})
 
     sh = cmds.ls(surface, dag=True, type='shape')
     if not sh:

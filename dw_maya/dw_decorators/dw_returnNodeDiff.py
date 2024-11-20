@@ -1,34 +1,29 @@
 import maya.cmds as cmds
 from functools import wraps
+from typing import Tuple, List, Any
+from dw_logger import get_logger
 
 
 def returnNodeDiff(func):
     """
-    Decorator that tracks the difference in Maya nodes before and after
-    the execution of the wrapped function, returning any newly created nodes.
+    Decorator that returns any new Maya nodes created by the wrapped function.
 
     Args:
-        func (function): The function to wrap.
+        func: The function to wrap
 
     Returns:
-        function: The wrapped function with a list of new nodes created.
+        Tuple containing (original function result, list of new nodes)
     """
-
     @wraps(func)
-    def wrapper(*args, **kwargs):
-        # Get the list of nodes before the function runs
+    def wrapper(*args, **kwargs) -> Tuple[Any, List[str]]:
         nodes_before = set(cmds.ls())
-
-        # Execute the wrapped function
         result = func(*args, **kwargs)
-
-        # Get the list of nodes after the function runs
-        nodes_after = set(cmds.ls())
-
-        # Calculate the difference (new nodes created)
-        node_diff = list(nodes_after - nodes_before)
-
-        # Return both the function result and the list of new nodes
-        return result, node_diff
+        if len(result) < len(nodes_before):
+            nodes_after = list(set(nodes_before-cmds.ls()))
+            logger = get_logger()
+            logger.info(f'# Function "{func.__name__}" has deleted {nodes_after}')
+        else:
+            nodes_after = list(set(cmds.ls()) - nodes_before)
+        return result, nodes_after
 
     return wrapper

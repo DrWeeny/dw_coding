@@ -1,5 +1,44 @@
-__author__ = 'dw'
-__mel_source__= ['getGeometriesToCache.mel',
+"""Maya geometry caching module providing functionality for creating and managing geometry caches.
+
+This module translates Maya's MEL-based geometry caching system into Python, offering
+improved type safety and error handling while maintaining compatibility with Maya's
+caching infrastructure.
+
+Core Functions:
+    doCreateGeometryCache: Main function for creating geometry caches
+    getGeometriesToCache: Get valid geometry objects for caching
+    findExistingCaches: Find caches connected to objects
+
+Cache Management:
+    getCacheDirectory: Handle cache directory creation and conflicts
+    getObjectsByCacheGroup: Group objects by shared caches
+    uniqueName: Generate unique cache names
+
+Utility Functions:
+    objIsDrawn: Check if object is visible
+    objSharesCache: Check cache sharing between objects
+    convertListToMelStr: Convert Python lists to MEL format
+
+Example Usage:
+    >>> # Create cache for selected objects
+    >>> doCreateGeometryCache(timeRange=[1, 100])
+    >>>
+    >>> # Export specific objects with custom settings
+    >>> doCreateGeometryCache(
+    ...     selection=['pCube1', 'pSphere1'],
+    ...     fileName='myCache',
+    ...     format='mcx',
+    ...     perGeometry=1
+    ... )
+Improvements over MEL version:
+- Type hints and validation
+- Proper error handling
+- Directory path handling
+- Cache conflict resolution
+- Progress feedback
+
+MEL Sources:
+                 ['getGeometriesToCache.mel',
                  'doCreateGeometryCache.mel',
                  'getCacheFileCmd.mel',
                  'objectLayer.mel',
@@ -9,26 +48,17 @@ __mel_source__= ['getGeometriesToCache.mel',
                  'getNameForCacheSubDir.mel',
                  'basename.mel']
 
-import sys, os
 
-# ----- Edit sysPath -----#
-rdPath = 'E:\\dw_coding\\dw_open_tools'
-if not rdPath in sys.path:
-    print("Add {} to sysPath".format(rdPath))
-    sys.path.insert(0, rdPath)
+Author: DrWeeny
+Version: 1.0.0
+"""
 
 import maya.cmds as cmds
 import maya.mel as mel
 import os.path
 import re
-from pathlib import Path
-
-
 import dw_maya.dw_decorators as dwdeco
 
-# Try to convert this command to a more pythonic command
-# doCreateGeometryCache 6 { "2", "1010", "1039", "OneFile", "1", "/user_data/test","0","pSphereShape1_blba","0", "export", "0", "1", "1","0","1","mcx","1" } ;
-# doCreateGeometryCache("", "", [1017,1018])
 
 @dwdeco.acceptString("input")
 def convertListToMelStr(input_list=[]):

@@ -1,17 +1,59 @@
-import sys
-import os
+"""
+DW Maya Decorators Package
 
-# ----- Dynamic sys.path Adjustment -----
-rdPath = os.path.join(os.path.dirname(__file__), "..", "dw_open_tools")
-if rdPath not in sys.path:
-    print(f"Add {rdPath} to sysPath")
-    sys.path.insert(0, rdPath)
+A collection of decorators for Maya operations, providing functionality for:
+- Performance optimization (viewport, solver management)
+- Undo management
+- Animation and deformation safety checks
+- Function timing and debugging
+- Sound feedback
+- Plugin management
 
-try:
-    from maya import cmds, mel
-    print("Maya commands loaded successfully in dw_decorators.")
-except ImportError as e:
-    print("Warning: Maya commands not available. Error:", e)
+Example:
+    from dw_decorators import timeIt, singleUndoChunk, viewportOff
+
+    @timeIt
+    @singleUndoChunk
+    @viewportOff
+    def create_complex_setup():
+        # Function executes with:
+        # - Performance timing
+        # - Single undo chunk
+        # - Viewport disabled
+        pass
+"""
+
+from pathlib import Path
+from typing import List
+
+# Version identifier
+__version__ = "1.0.0"
+
+# Module Exports - these will be available when using 'from dw_decorators import *'
+__all__: List[str] = [
+    # Performance decorators
+    "timeIt",
+    "viewportOff",
+    "tmp_disable_solver",
+    "evalManager_DG",
+
+    # Undo management
+    "singleUndoChunk",
+    "repeatable",
+
+    # Safety and validation
+    "vtxAnimDetection",
+    "acceptString",
+    "load_plugin",
+
+    # Utility decorators
+    "returnNodeDiff",
+    "printDate",
+    "complete_sound",
+
+    # Additional utilities
+    "evalManagerState"
+]
 
 # Explicit imports for frequently used decorators
 from .dw_acceptString import acceptString
@@ -24,3 +66,10 @@ from .dw_undo import singleUndoChunk, repeatable
 from .dw_viewportOff import viewportOff
 from .dw_decorators_other import evalManager_DG, evalManagerState
 from .dw_vtxAnimDetection import vtxAnimDetection
+from .dw_is_maya_node import is_maya_node
+
+# Decorator categories for documentation and IDE support
+performance_decorators = [timeIt, viewportOff, tmp_disable_solver, evalManager_DG]
+undo_decorators = [singleUndoChunk, repeatable]
+safety_decorators = [vtxAnimDetection, acceptString, load_plugin, is_maya_node]
+utility_decorators = [returnNodeDiff, printDate, complete_sound]

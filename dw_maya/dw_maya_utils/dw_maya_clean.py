@@ -1,90 +1,113 @@
-#!/usr/bin/env python
-#----------------------------------------------------------------------------#
-#------------------------------------------------------------------ HEADER --#
-
 """
-@author:
-    abtidona
+Maya Scene Cleaning Utilities
 
-@description:
-    this is a description
+Tools for cleaning and maintaining Maya scenes, including:
+- Removing unused nodes
+- Cleaning up unknown/broken nodes
+- Managing render layers
+- Scene optimization
 
-@applications:
-    - groom
-    - cfx
-    - fur
+Common Usage:
+    >>> # Clean all unused nodes
+    >>> clean_unused_nodes()
+
+    >>> # Remove broken nodes
+    >>> delete_unknown_nodes()
+
+    >>> # Clean render layers
+    >>> delete_phantom_render_layers()
 """
 
-#----------------------------------------------------------------------------#
-#----------------------------------------------------------------- IMPORTS --#
-
-# built-in
-import sys, os
-
-# ----- Edit sysPath -----#
-rdPath = 'E:\\dw_coding\\dw_open_tools\\maya'
-if not rdPath in sys.path:
-    print("Add {} to sysPath".format(rdPath))
-    sys.path.insert(0, rdPath)
-
-# internal
 from maya import cmds, mel
-
-# internal
-
-# external
+from typing import List, Optional
+from ..dw_decorators import returnNodeDiff
 
 
-#----------------------------------------------------------------------------#
-#----------------------------------------------------------------- GLOBALS --#
-
-
-def clean_unused_nodes():
+@returnNodeDiff
+def clean_unused_nodes() -> None:
     """
-    Delete unused nodes in the Maya scene (equivalent to 'Delete Unused Nodes' in Hypershade).
+    Delete unused nodes in the Maya scene.
+    Equivalent to 'Delete Unused Nodes' in Hypershade.
+
+    Returns:
+        Tuple[None, List[str]]: (None, list of deleted nodes)
+
+    Example:
+        >>> result, deleted = clean_unused_nodes()
+        >>> print(f"Cleaned {len(deleted)} unused nodes")
     """
     try:
         mel.eval('MLdeleteUnused;')
-        print("Unused nodes deleted successfully.")
-    except RuntimeError as e:
-        print(f"Failed to delete unused nodes: {e}")
+    except Exception as e:
+        raise RuntimeError(f"Failed to delete unused nodes: {str(e)}")
 
 
-def delete_unknown_nodes():
+@returnNodeDiff
+def delete_unknown_nodes(types: Optional[List[str]] = None) -> None:
     """
-    Delete unknown nodes in the Maya scene and log the deleted nodes.
-    Types targeted: 'unknown', 'unknownDag', 'unknownTransform'.
+    Delete unknown/broken nodes in Maya scene.
+
+    Args:
+        types: Node types to delete (default: unknown, unknownDag, unknownTransform)
+
+    Returns:
+        Tuple[None, List[str]]: (None, list of deleted nodes)
+
+    Example:
+        >>> result, deleted = delete_unknown_nodes()
+        >>> print(f"Removed {len(deleted)} unknown nodes")
     """
-    nodeList = cmds.ls(type=["unknown", "unknownDag", "unknownTransform"])
-    try:
-        if nodeList:
-            cmds.delete(nodeList)
-            text = '\n{}'.format(' ' * 32).join(nodeList)
-            print('delete_unknown_nodes has deleted :\n{}'.format(text))
-    except:
-        for n in nodeList:
-            try:
-                cmds.delete(n)
-            except RuntimeError as e:
-                print(f"Error deleting unknown nodes: {n}")
+    # Default unknown types
+    unknown_types = types or ["unknown", "unknownDag", "unknownTransform"]
+
+    # Get unknown nodes
+    unknown_nodes = cmds.ls(type=unknown_types) or []
+
+    if not unknown_nodes:
+        print("No unknown nodes found")
+        return
+
+    # Delete nodes individually for better error handling
+    for node in unknown_nodes:
+        try:
+            cmds.delete(node)
+            print(f"Deleted unknown node: {node}")
+
+        except Exception as e:
+            print(f"Failed to delete {node}: {str(e)}")
 
 
-def del_phantom_rl():
+@returnNodeDiff
+def delete_phantom_render_layers(pattern: str = "defaultRenderLayer*") -> None:
     """
-    Delete phantom render layers that match the pattern 'defaultRenderLayer*'.
+    Delete phantom/duplicate render layers.
+
+    Args:
+        pattern: Name pattern for identifying phantom layers
+
+    Returns:
+        Tuple[None, List[str]]: (None, list of deleted layers)
+
+    Example:
+        >>> result, deleted = delete_phantom_render_layers()
+        >>> print(f"Cleaned {len(deleted)} phantom layers")
     """
-    deleted_count = 0
-    render_layers = cmds.ls("defaultRenderLayer*", r=True, type='renderLayer')
+    # Find render layers matching pattern
+    render_layers = cmds.ls(pattern, r=True, type='renderLayer') or []
 
-    if render_layers:
-        for render_layer in render_layers:
-            try:
-                cmds.delete(render_layer)
-                deleted_count += 1
-            except RuntimeError as e:
-                print(f"Failed to delete render layer {render_layer}: {e}")
+    if not render_layers:
+        print("No phantom render layers found")
+        return
 
-    if deleted_count > 0:
-        print(f"Deleted {deleted_count} phantom render layer(s).")
-    else:
-        print("No phantom render layers found.")
+    # Delete layers individually
+    for layer in render_layers:
+        try:
+            # Skip default render layer
+            if layer == "defaultRenderLayer":
+                continue
+
+            cmds.delete(layer)
+            print(f"Deleted render layer: {layer}")
+
+        except Exception as e:
+            print(f"Failed to delete layer {layer}: {str(e)}")

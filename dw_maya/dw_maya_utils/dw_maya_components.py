@@ -1,91 +1,57 @@
-#!/usr/bin/env python
-#----------------------------------------------------------------------------#
-#------------------------------------------------------------------ HEADER --#
-
-"""
-@author:
-    abtidona
-
-@description:
-    this is a description
-
-@applications:
-    - groom
-    - cfx
-    - fur
-"""
-
-#----------------------------------------------------------------------------#
-#----------------------------------------------------------------- IMPORTS --#
-
-# built-in
-import sys, os
-
-# ----- Edit sysPath -----#
-rdPath = 'E:\\dw_coding\\dw_open_tools\\maya'
-if not rdPath in sys.path:
-    print("Add {} to sysPath".format(rdPath))
-    sys.path.insert(0, rdPath)
-
 import re, itertools, math
-from typing import Iterable, List, Generator, Tuple, Optional
+from typing import Iterable, List, Generator, Tuple, Optional, Union, Set
 
-# internal
-from maya import cmds, mel
+from maya import cmds
 
-# internal
-
-# external
 from dw_maya.dw_decorators import acceptString
 
-#----------------------------------------------------------------------------#
-#--------------------------------------------------------------- FUNCTIONS --#
+# Type aliases for clarity
+Point3D = Tuple[float, float, float]
+MayaComponent = str
+ComponentID = int
+ComponentRange = str
 
-def chunks(l: Iterable, n: int) -> Generator:
+def chunks(iterable: Iterable, size: int) -> Generator[List, None, None]:
     """
-    Yield successive n-sized chunks from the given iterable.
+    Split iterable into fixed-size chunks.
 
     Args:
-        l (Iterable): The iterable (e.g., list, tuple, string) to split into chunks.
-        n (int): The size of each chunk.
+        iterable: Input sequence to chunk
+        size: Size of each chunk
 
     Yields:
-        Generator: n-sized chunks from the iterable.
+        Chunks of specified size
 
     Example:
-        list(chunks([1, 2, 3, 4, 5], 2))
+        >>> list(chunks([1, 2, 3, 4, 5], 2))
         [[1, 2], [3, 4], [5]]
     """
-    # Validate inputs
-    if n <= 0:
-        raise ValueError("Chunk size 'n' must be greater than 0.")
+    if size <= 0:
+        raise ValueError("Chunk size must be positive")
 
-    l = list(l)  # Convert to list if it's an iterable like a string
-    for i in range(0, len(l), n):
-        yield l[i:i + n]
+    items = list(iterable)
+    return (items[i:i + size] for i in range(0, len(items), size))
 
 
-def mag(p1: List[float], p2: List[float]) -> float:
+def mag(p1: Point3D, p2: Point3D) -> float:
     """
-    Calculate the Euclidean distance between two 3D points.
+    Calculate distance between two 3D points.
 
     Args:
-        p1 (list or tuple of floats): A list or tuple of x, y, z positions.
-        p2 (list or tuple of floats): A list or tuple of x, y, z positions.
+        p1: First point (x, y, z)
+        p2: Second point (x, y, z)
 
     Returns:
-        float: The Euclidean distance between the two points.
+        Euclidean distance
 
     Example:
-        mag([1, 2, 3], [4, 5, 6])
+        >>> mag((1, 2, 3), (4, 5, 6))
         5.196152422706632
     """
-    # Validate that both points have 3 coordinates
-    if len(p1) != 3 or len(p2) != 3:
-        raise ValueError("Both p1 and p2 must be 3D points (x, y, z).")
+    if not (len(p1) == len(p2) == 3):
+        raise ValueError("Points must be 3D")
 
-    # Calculate the Euclidean distance
-    return math.sqrt((p1[0] - p2[0]) ** 2 + (p1[1] - p2[1]) ** 2 + (p1[2] - p2[2]) ** 2)
+    return math.sqrt(sum((a - b) ** 2 for a, b in zip(p1, p2)))
 
 
 def get_next_free_multi_index(attr: str, max_index: int = 10000000) -> int:
@@ -99,22 +65,15 @@ def get_next_free_multi_index(attr: str, max_index: int = 10000000) -> int:
     Returns:
         int: The next available index that is unconnected.
     """
-    i = 0
-    # assume a max of 10 million connections
-    p = re.compile('\[\d+]$')
-    attr = p.sub('', attr)
+    # Clean attribute name
+    attr = re.sub(r'\[\d+]$', '', attr)
 
-    # Check each index from 0 up to max_index
+    # Check each index
     for i in range(max_index):
-        # Query the connection status of the current index
-        connection = cmds.connectionInfo(f"{attr}[{i}]", sfd=True)
-
-        # If no connection is found, return the current index
-        if not connection:
+        if not cmds.connectionInfo(f"{attr}[{i}]", sfd=True):
             return i
 
-    # If no free index is found within the range, raise an error
-    raise RuntimeError(f"No free index found in the range 0 to {max_index} for attribute {attr}.")
+    raise RuntimeError(f"No free index found for {attr} up to {max_index}")
 
 
 def get_vtx_pos(mesh: str) -> List[Tuple[float, float, float]]:
@@ -132,10 +91,9 @@ def get_vtx_pos(mesh: str) -> List[Tuple[float, float, float]]:
         get_vtx_pos('pSphere1')
         [(1.0, 2.0, 3.0), (4.0, 5.0, 6.0), ...]
     """
-    xOrig = cmds.xform(f"{mesh}.vtx[*]", q=True, ws=True, t=True)
-    # Group every three values (x, y, z) into tuples using zip
-    origPts = zip(xOrig[0::3], xOrig[1::3], xOrig[2::3])
-    return list(origPts)
+    positions = cmds.xform(f"{mesh}.vtx[*]", q=True, ws=True, t=True)
+    return list(zip(positions[0::3], positions[1::3], positions[2::3]))
+
 
 
 @acceptString('crvs')
@@ -155,69 +113,68 @@ def get_crv_average_bbox(crvs: List[str]) -> float:
     return aver
 
 
-def extract_id(sel: List[str], component: Optional[str] = None) -> List[int]:
+def extract_id(components: List[str],
+               component_type: Optional[str] = None) -> List[int]:
     """
-    Extract the IDs (indices) of the specified component type from a list of selected Maya components.
+    Extract indices from Maya component names, including range notation.
 
     Args:
-        sel (list of str): A list of selected Maya objects with components (e.g., 'pSphere1.vtx[0]').
-        component (str, optional): The component type to extract (e.g., 'vtx', 'e', 'f').
-                                   If not provided, it matches generic components.
+        components: List of component names (e.g., ['pSphere1.vtx[0]', 'pSphere1.vtx[5:9]'])
+        component_type: Optional type filter ('vtx', 'e', 'f')
 
     Returns:
-        list of int: A list of extracted IDs (indices) from the selected components.
+        List of component indices, expanded from ranges
 
-    Example:
-        extract_id(['pSphere1.vtx[0]', 'pSphere1.vtx[1]', 'pSphere1.vtx[2]'], component='vtx')
-        [0, 1, 2]
+    Examples:
+        >>> extract_id(['pSphere1.vtx[0]', 'pSphere1.vtx[5:9]'], 'vtx')
+        [0, 5, 6, 7, 8, 9]
+
+        >>> extract_id(['pSphere1.f[1]', 'pSphere1.f[3:5]'], 'f')
+        [1, 3, 4, 5]
     """
-
-    if not component:
-        pattern = re.compile('\.\w{1,3}\[\d{1,}:?\d{1,}?\]')
+    # Build regex pattern for both single indices and ranges
+    if component_type:
+        pattern = fr'\.{component_type}\[(\d+:?\d*)]'
     else:
-        pattern = '\.{0}\[\d{{1,}}\]'.format(component)
+        pattern = r'\.\w+\[(\d+:?\d*)]'
 
-    p = re.compile(pattern)
+    indices: Set[int] = set()
 
-    # List to store the extracted indices
-    ids = []
+    for comp in components:
+        if match := re.search(pattern, comp):
+            index_str = match.group(1)
 
-    # Iterate over the selection and extract the indices
-    for s in sel:
-        match = p.search(s)
-        if match:
-            # Extract the number inside the brackets
-            ids.append(int(match.group(1)))
+            # Handle range notation
+            if ':' in index_str:
+                start, end = map(int, index_str.split(':'))
+                indices.update(range(start, end + 1))
+            else:
+                indices.add(int(index_str))
 
-    return ids
+    return sorted(indices)
 
 
-def create_maya_ranges(indices: List[int]) -> List[str]:
+def create_maya_ranges(indices: List[ComponentID]) -> List[ComponentRange]:
     """
-    Convert a list of integers into Maya-style range strings.
+    Convert indices to Maya range notation.
 
     Args:
-        indices (list of int): A list of integers to be converted into range strings.
+        indices: List of component indices
 
     Returns:
-        list of str: A list of Maya-style range strings (e.g., ["0:3", "5:7"]).
+        List of range strings
 
     Example:
-        create_maya_ranges([0, 1, 2, 3, 5, 6, 7])
+        >>> create_maya_ranges([0, 1, 2, 3, 5, 6, 7])
         ['0:3', '5:7']
     """
-    output = []
-
-    # Group the indices by consecutive sequences
-    for _, group in itertools.groupby(enumerate(indices), lambda x_y: x_y[1] - x_y[0]):
+    ranges = []
+    for _, group in itertools.groupby(enumerate(sorted(indices)), lambda x: x[1] - x[0]):
         group = list(group)
         start = group[0][1]
         end = group[-1][1]
 
-        # If start == end, just append the single number; otherwise, append a range
-        if start == end:
-            output.append(f"{start}")
-        else:
-            output.append(f"{start}:{end}")
+        ranges.append(
+            f"{start}" if start == end else f"{start}:{end}")
 
-    return output
+    return ranges

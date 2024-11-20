@@ -1,115 +1,130 @@
-#!/usr/bin/env python
-#----------------------------------------------------------------------------#
-#------------------------------------------------------------------ HEADER --#
-
 """
-@author:
-    abtidona
+Maya Data Utilities
 
-@description:
-    this is a description
-
-@applications:
-    - groom
-    - cfx
-    - fur
+Collection of utilities for manipulating and processing data in Maya environments.
+Includes functions for name generation, list flattening, dictionary operations, and flag handling.
 """
-
-#----------------------------------------------------------------------------#
-#----------------------------------------------------------------- IMPORTS --#
-
-# built-in
-import sys, os
-
-# ----- Edit sysPath -----#
-rdPath = 'E:\\dw_coding\\dw_open_tools\\maya'
-if not rdPath in sys.path:
-    print("Add {} to sysPath".format(rdPath))
-    sys.path.insert(0, rdPath)
 
 import re
-
-# internal
-from maya import cmds, mel
+from maya import cmds
+from typing import List, Dict, Any, Union, Optional, Tuple
 import itertools
-import maya.OpenMaya as om
 from dw_maya.dw_decorators import acceptString
 
 
 #----------------------------------------------------------------------------#
 #--------------------------------------------------------------- FUNCTIONS --#
 
-def flattenlist(nested_lists=list):
+
+def flatten_list(nested_lists: List[Any]) -> List[Any]:
+    """
+    Flatten a list of nested lists into a single list.
+
+    Args:
+        nested_lists: List containing other lists
+
+    Returns:
+        Flattened list
+
+    Example:
+        >>> flatten_list([[1, 2], [3, 4]])
+        [1, 2, 3, 4]
+    """
     return list(itertools.chain(*nested_lists))
 
 @acceptString('sel')
-def unique_name(sel=list, prefix='', suffix='', **kwargs):
-    """ used to give a unique name with frame + version
+def unique_name(sel: Union[str, List[str]],
+                prefix: str = '',
+                suffix: str = '',
+                **kwargs) -> List[Tuple[str, str]]:
+    """
+    Generate unique names for Maya objects with frame number and version.
 
     Args:
-        sel: can give unique name on a list of object
-        prefix: can give a prefix
-        suffix: can give a suffix
-        **kwargs: not implemented
+        sel: Object(s) to rename
+        prefix: Optional prefix for new names
+        suffix: Optional suffix for new names
+        **kwargs:
+            pattern: Custom regex pattern for name matching
+            forbiddenName: Additional names to consider taken
 
     Returns:
-        list: nested lists with index 0 = src, index 1 = new_name
+        List of [original_name, new_name] pairs
 
+    Example:
+        >>> unique_name(['pSphere1'], prefix='sim')
+        [['pSphere1', 'sim_pSphere1_001_v1']]
     """
-    output = []
+    output: List[Tuple[str, str]] = []
 
-    frame = '{:03d}'.format(int(cmds.currentTime(q=True)))
+    frame = f"{int(cmds.currentTime(q=True)):03d}"
     dup_pattern = re.compile('_\d{3}_v\d{1,2}$')
-    for s in sel:
-        if kwargs.get('pattern'):
-            pattern = kwargs['pattern']
+
+    for obj in sel:
+        # Handle custom pattern or generate default
+        if pattern := kwargs.get('pattern'):
+            name_pattern = pattern
         else:
-            # name : strip any .attr and any ::namespace
-            name = s.split('.')[0].split(':')[-1]
-            if re.search('_{frame}_v\d{{1}}$'.format(frame=frame), name):
-                name = '_'.join(name.split('_')[:-2])
-            pattern = '^{name}_{frame}_v\d{{1,2}}$'.format(name=name,
-                                                           frame=frame)
+            # Strip namespace and attributes
+            base_name = obj.split('.')[-1].split(':')[-1]
+            if re.search(f'_{frame}_v\\d{{1}}$', base_name):
+                base_name = '_'.join(base_name.split('_')[:-2])
+            name_pattern = f'^{base_name}_{frame}_v\\d{{1,2}}$'
 
-        if not kwargs.get('forbiddenName'):
-            exists = cmds.ls(type='transform')
+        # Get existing objects to check against
+        existing = (kwargs.get('forbiddenName', []) +
+                    cmds.ls(type='transform'))
+
+        # Find highest version number
+        pattern = re.compile(name_pattern)
+        versions = [
+            int(i[-1]) for i in existing
+            if pattern.search(i)
+        ]
+        version = max(versions, default=0) + 1
+
+        # Generate new name
+        if dup_pattern.search(obj.split(':')[-1]):
+            new_name = dup_pattern.sub(
+                f'_{frame}_v{version}',
+                obj.split(':')[-1]
+            )
         else:
-            exists = cmds.ls(type='transform') + kwargs['forbiddenName']
+            new_name = f'{obj.split(":")[-1]}_{frame}_v{version}'
 
-        p = re.compile(pattern)
-        detect = sorted([i[-1] for i in exists if p.search(i)])
-        if detect:
-            _iter = int(detect[-1]) + 1
-        else:
-            _iter = '1'
+        # Add prefix/suffix
+        if prefix:
+            new_name = f'{prefix}_{new_name}'
+        if suffix:
+            new_name = f'{new_name}_{suffix}'
 
-        if dup_pattern.search(s.split(':')[-1]):
-            new = dup_pattern.sub(
-                '_{frame}_v{iter}'.format(frame=frame, iter=_iter),
-                s.split(':')[-1])
-        else:
-            new = '{name}_{frame}_v{iter}'.format(name=s.split(':')[-1],
-                                                  frame=frame,
-                                                  iter=_iter)
-        if prefix != '':
-            new = '{0}_{1}'.format(prefix, new)
-        if suffix != '':
-            new = '{0}_{1}'.format(new, suffix)
+        # Clean up recipe tag if present
+        new_name = new_name.replace('_recipe_', '_')
 
-        recipe = re.compile('_recipe_')
-        new = recipe.sub('_', new)
-
-        output.append([s, new])
+        output.append([obj, new_name])
 
     return output
 
 
-def convert_list_to_mel_str(_input=list):
+def convert_list_to_mel_str(items: List[Any]) -> str:
+    """
+    Convert Python list to MEL array string format.
+
+    Args:
+        items: List of items to convert
+
+    Returns:
+        MEL array string
+
+    Example:
+        >>> convert_to_mel_array([1, "sphere", 2.5])
+        '{1,"sphere",2.5}'
+    """
     output = []
-    for i in _input:
-        if type(i) is float or type(i) is int:
+    for i in items:
+        if isinstance(i, (float, int)):
             output.append(str(i))
-        elif type(i) is list:
+        elif isinstance(i, list):
             # {"sphere", "cube", "torus"}
             '{' + ','.join(['"{0}"'.format(k) for k in i]) + '}'
         else:
@@ -120,9 +135,19 @@ def convert_list_to_mel_str(_input=list):
 
 def merge_two_dicts(x, y):
     """
-    Merges two dictionaries. Uses the more efficient syntax in Python 3.5+.
+    Merge two dictionaries, with dict2 taking precedence.
+
+    Args:
+        dict1: First dictionary
+        dict2: Second dictionary (overrides dict1)
+
+    Returns:
+        Merged dictionary
+
+    Example:
+        >>> merge_dicts({'a': 1}, {'b': 2})
+        {'a': 1, 'b': 2}
     """
-    # Python 3.5+ has the {**x, **y} syntax for merging dicts.
     try:
         return {**x, **y}  # For Python 3.5+
     except TypeError:
@@ -132,104 +157,34 @@ def merge_two_dicts(x, y):
         return z
 
 
-def Flags(kwarg_dic=dict, default_value=None, label_long=str, *args, **kwargs):
+def flags(kwargs: dict,
+          default: Any = None,
+          long_name: str = "",
+          short_name: str = "") -> Any:
     """
-    Function to handle flags and keyword arguments, returning either a dictionary
-    of flags or the value of a specific flag.
+    Get flag value from kwargs, supporting Maya-style short/long flags.
 
     Args:
-        kwarg_dic (dict): The dictionary of keyword arguments to process.
-        default_value: The default value to return if no flag is found.
-        label_long (str): The primary flag label to search for in the dictionary.
-        *args: Additional flag labels to search for in the dictionary.
-        **kwargs: Optional settings for dictionary processing, such as 'key' and 'dic'.
+        kwargs: Keyword arguments dictionary
+        long_name: Long version of flag name
+        short_name: Short version of flag name
+        default: Default value if flag not found
 
     Returns:
-        dict: A dictionary of processed flags or a single flag value.
+        Flag value or default
+
+    Example:
+        >>> flags({'l': True}, 'long', 'l', False)
+        True
     """
-    if kwarg_dic is None:
-        kwarg_dic = {}
+    # Check for long name first
+    if long_name in kwargs:
+        if short_name in kwargs:
+            raise ValueError(f"Flag used twice: {long_name} and {short_name}")
+        return kwargs[long_name]
 
-    used_key = None
-    CURRENT_KEY = None
-    flags = {}
+    # Check short name
+    if short_name in kwargs:
+        return kwargs[short_name]
 
-    # handling the case where only key has been given
-    keyKey = kwargs.get('key') or kwargs.get('k') or None
-    keyDic = kwargs.get('dic') or kwargs.get('dictionnary') or None
-
-    if keyKey and not keyDic:
-        kwargs['dic'] = {}
-
-    # If there is a dic specified in the command, lets sort this out
-    # and output at the end a dicionnary
-    # if there is no label detected to update,
-    # it will create a default entry with the labelLong
-    # We can also update another key by specifying the key
-    if 'dic' in kwargs or 'dictionnary' in kwargs:
-        used_key = 'dic' or 'dictionnary' in kwargs
-        all_labels = [label_long]
-        if args:
-            all_labels += args
-        detected = []
-
-        for lb in all_labels:
-            if lb in kwargs[used_key]:
-                value = kwargs[used_key].get(lb)
-                if 'key' in kwargs or 'k' in kwargs:
-                    KEY = kwargs.get('key') or kwargs.get('k')
-                    CURRENT_KEY = KEY
-                else:
-                    CURRENT_KEY = lb
-                flags[CURRENT_KEY] = value
-                detected.append(lb)
-        if len(detected) > 1:
-            cmds.error('found multiple key to update')
-    if not flags:
-        if 'key' in kwargs or 'k' in kwargs:
-            KEY = kwargs.get('key') or kwargs.get('k')
-            CURRENT_KEY = KEY
-        else:
-            CURRENT_KEY = label_long
-
-    # do the merge if a dictionnary has been input
-    if used_key:
-        if CURRENT_KEY:
-            dic_input = kwargs.get(used_key) or {}
-            flags = merge_two_dicts(dic_input, flags)
-        else:
-            cmds.error('you must specify a key in the command'
-                       ' with kwargs "key" or "k"')
-
-    # Check if argument is not used twice
-    if args:
-        if any(a in kwarg_dic for a in args) and label_long in kwarg_dic:
-            cmds.error("Same flag used two times")
-
-    # check the flags or return the default value
-    # each if return a straight value or a dictionnary
-    # for dictionnary, it will return the key only if there is a value,
-    # False or 0
-    if label_long in kwarg_dic:
-        if used_key:
-            if kwarg_dic.get(label_long) is not None:
-                flags[CURRENT_KEY] = kwarg_dic.get(label_long)
-                return flags
-        else:
-            return kwarg_dic.get(label_long)
-
-    for a in args:
-        if a in kwarg_dic:
-            if not flags and not used_key:
-                return kwarg_dic.get(a)
-            else:
-                if kwarg_dic.get(a) is not None:
-                    flags[CURRENT_KEY] = kwarg_dic.get(a)
-                return flags
-
-    if not flags and not kwargs:
-        return default_value
-    else:
-        if default_value is not None:
-            flags[CURRENT_KEY] = default_value
-        return flags
+    return default

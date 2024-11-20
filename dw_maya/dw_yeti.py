@@ -420,19 +420,19 @@ def addYetiAttrSetCtrl(sets: list, **kwargs):
         curves = cmds.sets(s, q=True)
         curves_sh = dwu.lsTr(curves, type='nurbsCurve', p=False)
 
-        # Define attributes using dwu.Flags
-        attrs = dwu.Flags(kwargs, 3, 'maxNumberOfGuideInfluences', 'mng', dic={})
-        attrs = dwu.Flags(kwargs, 1, 'stepSize', 'stp', dic=attrs)
-        attrs = dwu.Flags(kwargs, 1, 'weight', 'w', dic=attrs)
-        attrs = dwu.Flags(kwargs, 1, 'lengthWeight', 'lw', dic=attrs)
-        attrs = dwu.Flags(kwargs, 0, 'innerRadius', 'ir', dic=attrs)
-        attrs = dwu.Flags(kwargs, 2, 'outerRadius', 'or', dic=attrs)
-        attrs = dwu.Flags(kwargs, 1, 'density', 'd', dic=attrs)
-        attrs = dwu.Flags(kwargs, 1, 'baseAttraction', 'ba', dic=attrs)
-        attrs = dwu.Flags(kwargs, 1, 'tipAttraction', 'ta', dic=attrs)
-        attrs = dwu.Flags(kwargs, 0, 'attractionBias', 'ab', dic=attrs)
-        attrs = dwu.Flags(kwargs, 0, 'randomAttraction', 'ra', dic=attrs)
-        attrs = dwu.Flags(kwargs, 0, 'twist', 'tw', dic=attrs)
+        # Define attributes using dwu.flags
+        attrs = dwu.flags(kwargs, 3, 'maxNumberOfGuideInfluences', 'mng', dic={})
+        attrs = dwu.flags(kwargs, 1, 'stepSize', 'stp', dic=attrs)
+        attrs = dwu.flags(kwargs, 1, 'weight', 'w', dic=attrs)
+        attrs = dwu.flags(kwargs, 1, 'lengthWeight', 'lw', dic=attrs)
+        attrs = dwu.flags(kwargs, 0, 'innerRadius', 'ir', dic=attrs)
+        attrs = dwu.flags(kwargs, 2, 'outerRadius', 'or', dic=attrs)
+        attrs = dwu.flags(kwargs, 1, 'density', 'd', dic=attrs)
+        attrs = dwu.flags(kwargs, 1, 'baseAttraction', 'ba', dic=attrs)
+        attrs = dwu.flags(kwargs, 1, 'tipAttraction', 'ta', dic=attrs)
+        attrs = dwu.flags(kwargs, 0, 'attractionBias', 'ab', dic=attrs)
+        attrs = dwu.flags(kwargs, 0, 'randomAttraction', 'ra', dic=attrs)
+        attrs = dwu.flags(kwargs, 0, 'twist', 'tw', dic=attrs)
 
         # Iterate through the attributes and connect them to the shape nodes
         for a, v in attrs.items():
@@ -454,9 +454,9 @@ def addYetiSetAttr(sets: list, **kwargs):
     # Get list of object sets
     sets_nodes = cmds.ls(sets, type='objectSet')
 
-    # Define attributes using dwu.Flags
-    attrs = dwu.Flags(kwargs, 3, 'maxNumberOfGuideInfluences', 'mng', dic={})
-    attrs = dwu.Flags(kwargs, 1, 'stepSize', 'stp', dic=attrs)
+    # Define attributes using dwu.flags
+    attrs = dwu.flags(kwargs, 3, 'maxNumberOfGuideInfluences', 'mng', dic={})
+    attrs = dwu.flags(kwargs, 1, 'stepSize', 'stp', dic=attrs)
 
     # Add attributes to each set node
     for n in sets_nodes:
@@ -479,7 +479,7 @@ def addYetiCurveAttr(curves: list, **kwargs):
         list: Attribute names if 'query' flag is set.
     """
     # Query attributes if requested
-    query = dwu.Flags(kwargs, 0, 'query', 'q')
+    query = dwu.flags(kwargs, 0, 'query', 'q')
     if query:
         return ['weight', 'lengthWeight', 'innerRadius', 'outerRadius',
                 'density', 'baseAttraction', 'tipAttraction', 'attractionBias',
@@ -489,16 +489,16 @@ def addYetiCurveAttr(curves: list, **kwargs):
     curves_sh = dwu.lsTr(curves, type='nurbsCurve', p=False)
 
     # Define attribute values
-    attrs = dwu.Flags(kwargs, 1, 'weight', 'w', dic={})
-    attrs = dwu.Flags(kwargs, 1, 'lengthWeight', 'lw', dic=attrs)
-    attrs = dwu.Flags(kwargs, 0, 'innerRadius', 'ir', dic=attrs)
-    attrs = dwu.Flags(kwargs, 2, 'outerRadius', 'or', dic=attrs)
-    attrs = dwu.Flags(kwargs, 1, 'density', 'd', dic=attrs)
-    attrs = dwu.Flags(kwargs, 1, 'baseAttraction', 'ba', dic=attrs)
-    attrs = dwu.Flags(kwargs, 1, 'tipAttraction', 'ta', dic=attrs)
-    attrs = dwu.Flags(kwargs, 0, 'attractionBias', 'ab', dic=attrs)
-    attrs = dwu.Flags(kwargs, 0, 'randomAttraction', 'ra', dic=attrs)
-    attrs = dwu.Flags(kwargs, 0, 'twist', 'tw', dic=attrs)
+    attrs = dwu.flags(kwargs, 1, 'weight', 'w', dic={})
+    attrs = dwu.flags(kwargs, 1, 'lengthWeight', 'lw', dic=attrs)
+    attrs = dwu.flags(kwargs, 0, 'innerRadius', 'ir', dic=attrs)
+    attrs = dwu.flags(kwargs, 2, 'outerRadius', 'or', dic=attrs)
+    attrs = dwu.flags(kwargs, 1, 'density', 'd', dic=attrs)
+    attrs = dwu.flags(kwargs, 1, 'baseAttraction', 'ba', dic=attrs)
+    attrs = dwu.flags(kwargs, 1, 'tipAttraction', 'ta', dic=attrs)
+    attrs = dwu.flags(kwargs, 0, 'attractionBias', 'ab', dic=attrs)
+    attrs = dwu.flags(kwargs, 0, 'randomAttraction', 'ra', dic=attrs)
+    attrs = dwu.flags(kwargs, 0, 'twist', 'tw', dic=attrs)
 
     for s in curves_sh:
         # Iterate through the attributes and connect them to the shape nodes

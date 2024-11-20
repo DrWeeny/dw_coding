@@ -1,63 +1,84 @@
-import sys, os
-
-# ----- Edit sysPath -----#
-rdPath = 'E:\\dw_coding\\dw_open_tools'
-if not rdPath in sys.path:
-    print(f"Add {rdPath} to sysPath")
-    sys.path.insert(0, rdPath)
-
 import maya.cmds as cmds
 from functools import wraps
+from typing import Callable, Any, Optional
 
-# THIS IS FEW DECORATORS
-def _maya_version():
+
+def _maya_version() -> int:
+    """Get current Maya version."""
     from dw_maya.dw_maya_utils import maya_version
     return maya_version()
 
 
-def evalManagerState(mode='off'):
-    '''
-    wrapper function for the evalManager so that it's switching is recorded in
-    the undo stack via the Red9.evalManager_switch plugin
-    '''
+def evalManagerState(mode: str = 'off') -> None:
+    """
+    Switch Maya's evaluation manager state with undo support.
 
+    Source: Based on Red9 Studio Pack's implementation
+    Uses evalManager_switch plugin to record switching in undo stack.
+
+    Args:
+        mode: Evaluation mode ('off', 'parallel', etc.)
+    """
     if _maya_version() >= 2016:
+        # Try to load the plugin if needed
         if not cmds.pluginInfo('evalManager_switch', q=True, loaded=True):
             try:
                 cmds.loadPlugin('evalManager_switch')
-            except:
-                cmds.warning('Plugin Failed to load : evalManager_switch')
-        try:
-            # via the plug-in to register the switch to the undoStack
-            cmds.evalManager_switch(mode=mode)
-        except:
-            print('evalManager_switch plugin not found, running native Maya evalManager command')
-            cmds.evaluationManager(mode=mode)  # run the default maya call instead
-        print('EvalManager - switching state : %s' % mode)
-    else:
-        print("evalManager skipped as you're in an older version of Maya")
+            except Exception as e:
+                cmds.warning(f'Plugin Failed to load: evalManager_switch ({e})')
 
-def evalManager_DG(func):
-    '''
-    DECORATOR : simple decorator to call the evalManager_switch plugin
-    and run the enclosed function in DG eval mode NOT parallel.
-    .. note::
-        Parallel EM mode is slow at evaluating time, DG is up to 3 times faster!
-        The plugin call is registered back in the undoStack, cmds.evalmanager call is not
-    '''
-    @wraps(func)
-    def wrapper(*args, **kwargs):
+        # Switch evaluation mode
         try:
-            evalmode = None
-            if _maya_version() >= 2016:
-                evalmode = cmds.evaluationManager(mode=True, q=True)[0]
-                if evalmode == 'parallel':
-                    evalManagerState(mode='off')
-            res = func(*args, **kwargs)
+            cmds.evalManager_switch(mode=mode)  # Plugin version for undo support
         except:
-            print('Failed on evalManager_DG decorator')
+            print('Using native evalManager (no undo support)')
+            cmds.evaluationManager(mode=mode)
+
+        print(f'EvalManager - switching state: {mode}')
+    else:
+        print("evalManager skipped (Maya version < 2016)")
+
+
+def evalManager_DG(func: Callable) -> Callable:
+    """
+    Decorator to temporarily switch to DG evaluation mode.
+
+    Source: Based on Red9 Studio Pack's implementation
+    Ensures function runs in DG mode for better timeline evaluation performance.
+    Restores original mode after execution.
+
+    Example:
+        @evalManager_DG
+        def process_animation():
+            # Runs in DG mode for faster timeline evaluation
+            pass
+    """
+
+    @wraps(func)
+    def wrapper(*args: Any, **kwargs: Any) -> Any:
+        if _maya_version() < 2016:
+            return func(*args, **kwargs)
+
+        # Store original mode
+        try:
+            orig_mode = cmds.evaluationManager(q=True, mode=True)[0]
+        except:
+            orig_mode = None
+
+        try:
+            # Switch to DG if needed
+            if orig_mode == 'parallel':
+                evalManagerState(mode='off')
+
+            return func(*args, **kwargs)
+
+        except Exception as e:
+            print(f'Error in {func.__name__}: {e}')
+            raise
+
         finally:
-            if evalmode:
-                evalManagerState(mode=evalmode)
-        return res
+            # Restore original mode
+            if orig_mode and orig_mode != 'off':
+                evalManagerState(mode=orig_mode)
+
     return wrapper

@@ -1,46 +1,11 @@
-#!/usr/bin/env python
-#----------------------------------------------------------------------------#
-#------------------------------------------------------------------ HEADER --#
-
-"""
-@author:
-    abtidona
-
-@description:
-    this is a description
-
-@applications:
-    - groom
-    - cfx
-    - fur
-"""
-
-#----------------------------------------------------------------------------#
-#----------------------------------------------------------------- IMPORTS --#
-
-# built-in
-import sys, os
-
-# ----- Edit sysPath -----#
-rdPath = 'E:\\dw_coding\\dw_open_tools'
-if not rdPath in sys.path:
-    print("Add {} to sysPath".format(rdPath))
-    sys.path.insert(0, rdPath)
-
-# internal
 from maya import cmds, mel
 import re
 
-# internal
-
-# external
 import dw_maya.dw_alembic_utils as dwabc
 import dw_maya.dw_maya_nodes as dwnn
 from dw_maya.dw_lsNode import lsNode
 import dw_maya.dw_duplication as dwdup
 
-#----------------------------------------------------------------------------#
-#--------------------------------------------------------------- FUNCTIONS --#
 
 def get_nb() -> int:
     """

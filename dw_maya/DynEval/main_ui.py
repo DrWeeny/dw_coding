@@ -3,14 +3,6 @@ from typing import List, Any
 
 from PySide6.QtGui import QStandardItem
 
-#ROOT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
-
-# ----- Edit sysPath -----#
-rdPath = 'E:\\dw_coding\\dw_open_tools'
-if not rdPath in sys.path:
-    print(f"Add {rdPath} to sysPath")
-    sys.path.insert(0, rdPath)
-
 import shutil
 from PySide6 import QtWidgets, QtGui, QtCore  # Use PySide6 for Maya compatibility with Python 3
 from pathlib import Path

@@ -1,94 +1,99 @@
-#!/usr/bin/env python
-#----------------------------------------------------------------------------#
-#------------------------------------------------------------------ HEADER --#
 
-"""
-@author:
-    abtidona
-
-@description:
-    this is a description
-
-@applications:
-    - groom
-    - cfx
-    - fur
-"""
-
-#----------------------------------------------------------------------------#
-#----------------------------------------------------------------- IMPORTS --#
-
-# built-in
-import sys, os
-
-# ----- Edit sysPath -----#
-rdPath = 'E:\\dw_coding\\dw_open_tools\\maya'
-if not rdPath in sys.path:
-    print("Add {} to sysPath".format(rdPath))
-    sys.path.insert(0, rdPath)
-
-import re
-from typing import List
-# internal
-from maya import cmds, mel
-# external
-from .dw_maya_data import Flags
-from dw_maya.dw_decorators import acceptString
+from typing import List, Optional, Set, Union
+from maya import cmds
+from .dw_maya_data import flags
 
 #----------------------------------------------------------------------------#
 #--------------------------------------------------------------- FUNCTIONS --#
 
 def lsTr(*args, **kwargs) -> List[str]:
     """
-    A combination of cmds.ls and cmds.listRelatives
-    flags derived from cmds.ls, This function is used for user interaction because maya
-    process type node which are hidden behind a transform name
-
-    Custom flags:
-        - parent, p (bool): If True, return transforms by default.
-        - unique, u (bool): Remove duplicate names from the result.
+    Enhanced listing of transform nodes combining cmds.ls and cmds.listRelatives.
+    Handles Maya-style flags and provides additional functionality for transform queries.
 
     Args:
-        *args: Arguments to pass to cmds.ls.
-        **kwargs: Keyword arguments, including custom flags.
+        *args: Arguments passed to cmds.ls. Can include:
+            - Node names or wildcards
+            - Lists of nodes
+            - Mix of shapes and transforms
+        **kwargs: Supports both long and short flags:
+            - parent/p (bool): Get parent transforms (default: True)
+            - long/l (bool): Use long names
+            - unique/u (bool): Remove duplicates (default: True)
+            - noIntermediate/ni (bool): Skip intermediate objects (default: True)
+            + Any valid cmds.ls flags
 
     Returns:
-        List[str]: A list of object names that match the criteria.
+        List of transform nodes or their parents
+
+    Example:
+        >>> lsTr(sl=True, type="mesh")  # Selected objects
+        ['pSphere1', 'pCube1']
+
+        >>> lsTr(sl=True, l=True)  # Long names
+        ['|Scene|pSphere1', '|Scene|pCube1']
     """
+    # Process flags
+    parent = flags(kwargs, None, 'parent', 'p')
+    long_name = flags(kwargs, None, 'long', 'l')
+    unique = flags(kwargs, True, 'unique', 'u')
 
-    parent = Flags(kwargs, None, 'parent', 'p')
-    long_name = Flags(kwargs, None, 'long', 'l')
-    unique = Flags(kwargs, True, 'unique', 'u')
-
-    flags = {'parent': parent if parent else True}
-    kwargs.pop('parent', None)
-    kwargs.pop('p', None)
+    relatives_flags = {'parent': parent if parent else True}
+    # Clean up processed flags
+    for flag in ['parent', 'p', 'long', 'l', 'unique', 'u']:
+        kwargs.pop(flag, None)
 
     if long_name:
         # this is only for the corresponding flag of listRelatives
-        flags['f'] = True
+        relatives_flags['f'] = True
 
-    kwargs.pop('unique', None)
-    kwargs.pop('u', None)
-    if 'ni' not in kwargs or 'noIntermediate' not in kwargs:
+    # Default intermediate handling
+    if not any(key in kwargs for key in ['ni', 'noIntermediate']):
         kwargs['ni'] = True
 
-    # If we have a result, process it
-    r = cmds.ls(*args, **kwargs)
-    if r:
-        _type = [cmds.nodeType(i) for i in r]
-        is_tr = list(set(_type))
-        if len(is_tr) == 1 and is_tr[0] == 'transform':
-            if 'parent' in flags:
-                flags['parent'] = False
-    if flags['parent']:
-        if r:
+    def is_shape_transform(node: str) -> bool:
+        """Check if node is a transform with only shape children."""
+        if cmds.nodeType(node) != 'transform':
+            return False
+
+        children = cmds.listRelatives(node, c=True) or []
+        if not children:
+            return False
+
+        # Check if all children are shapes
+        return all(
+            cmds.nodeType(child) != 'transform'
+            for child in children
+        )
+
+    # Get initial nodes based on input method
+    if any(flag in kwargs for flag in ['sl', 'selection']):
+        # Handle selection flag
+        results = cmds.ls(sl=True) or []
+    elif args and isinstance(args[0], (list, tuple)):
+        # Handle list in first argument
+        results = args[0]
+    else:
+        # Standard ls processing
+        results = cmds.ls(*args, **kwargs) or []
+
+    # Process all nodes to ensure they're shape transforms
+    filtered_results = []
+    for node in results:
+        if cmds.nodeType(node) == 'transform':
+            if is_shape_transform(node):
+                filtered_results.append(node)
+        else:
+            # For shapes, get parent transform
             try:
-                r = cmds.listRelatives(r, **flags)
-            except:
-                pass
+                parents = cmds.listRelatives(node, p=True, f=bool(long_name))
+                if parents and is_shape_transform(parents[0]):
+                    filtered_results.extend(parents)
+            except Exception:
+                continue
 
-    if unique and r:
-        r = list(set(r))
+    # Handle unique flag
+    if unique and filtered_results:
+        filtered_results = list(dict.fromkeys(filtered_results))
 
-    return r
+    return filtered_results

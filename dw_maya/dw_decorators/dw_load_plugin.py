@@ -1,40 +1,45 @@
 import maya.cmds as cmds
 from functools import wraps
+from typing import Callable, Any, Optional
+from dw_logger import get_logger
 
-def load_plugin(argument=str):
+
+def load_plugin(plugin_name: str) -> Callable:
     """
-    Decorator to ensure that a specific Maya plugin is loaded before executing the function.
+    Decorator to ensure a Maya plugin is loaded before function execution.
 
     Args:
-        argument (str): The name of the Maya plugin to check and load if necessary.
+        plugin_name: Name of the Maya plugin to load
 
     Returns:
-        function: The wrapped function that ensures the plugin is loaded.
+        Decorated function that ensures plugin availability
+
+    Example:
+        @load_plugin('ziva')
+        def create_tissue():
+            # Plugin is guaranteed to be loaded here
+            pass
     """
 
-    def decorator(function):
-        @wraps(function)
-        def wrapper(*args, **kwargs):
-            # Check if the plugin is already loaded
-            is_loaded = cmds.pluginInfo(argument, query=True, loaded=True)
-
-            # If not loaded, try to load the plugin
-            if not is_loaded:
+    def decorator(func: Callable) -> Callable:
+        @wraps(func)
+        def wrapper(*args: Any, **kwargs: Any) -> Any:
+            logger = get_logger()
+            # Check if plugin is loaded
+            if not cmds.pluginInfo(plugin_name, query=True, loaded=True):
                 try:
-                    cmds.loadPlugin(argument, quiet=True)
-                    is_loaded = cmds.pluginInfo(argument, query=True, loaded=True)
+                    cmds.loadPlugin(plugin_name, quiet=True)
+                    logger.info(f"Loaded plugin: {plugin_name}")
 
-                    # Provide feedback if the plugin failed to load
-                    if not is_loaded:
-                        raise RuntimeError(f"Failed to load plugin: {argument}")
+                    # Verify plugin loaded successfully
+                    if not cmds.pluginInfo(plugin_name, query=True, loaded=True):
+                        raise RuntimeError(f"Failed to load plugin: {plugin_name}")
 
-                except RuntimeError as e:
-                    print(f"Error loading plugin '{argument}': {e}")
-                    cmds.error(f"Could not load required plugin: {argument}")
-                    return None
+                except Exception as e:
+                    logger.error(f"Error loading plugin '{plugin_name}': {str(e)}")
+                    raise RuntimeError(f"Could not load required plugin: {plugin_name}")
 
-            # If the plugin is loaded, proceed with the function
-            return function(*args, **kwargs)
+            return func(*args, **kwargs)
 
         return wrapper
 

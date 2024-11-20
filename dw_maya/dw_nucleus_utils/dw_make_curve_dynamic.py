@@ -197,15 +197,15 @@ def makeCurvesDynamic(curves: list, **kwargs) -> dict:
             - 'debug': List of potential issues (optional).
     """
     # Extract relevant flags from kwargs
-    curves_out = dwu.Flags(kwargs, [], 'curves_out')
-    surface_attach = dwu.Flags(kwargs, [], 'surfaceAttach')
-    snap_to_surface = dwu.Flags(kwargs, 0, 'snapToSurface')
-    match_position = dwu.Flags(kwargs, 1, 'matchPosition')
-    do_output_curves = dwu.Flags(kwargs, 1, 'doOutputCurves')
-    hsys_name = dwu.Flags(kwargs, None, 'hsysName')
-    nucleus = dwu.Flags(kwargs, None, 'nucleus')
-    do_collide_mesh = dwu.Flags(kwargs, True, 'doCollideMesh')
-    uvthreshold = dwu.Flags(kwargs, .05, 'uvthreshold')
+    curves_out = dwu.flags(kwargs, [], 'curves_out')
+    surface_attach = dwu.flags(kwargs, [], 'surfaceAttach')
+    snap_to_surface = dwu.flags(kwargs, 0, 'snapToSurface')
+    match_position = dwu.flags(kwargs, 1, 'matchPosition')
+    do_output_curves = dwu.flags(kwargs, 1, 'doOutputCurves')
+    hsys_name = dwu.flags(kwargs, None, 'hsysName')
+    nucleus = dwu.flags(kwargs, None, 'nucleus')
+    do_collide_mesh = dwu.flags(kwargs, True, 'doCollideMesh')
+    uvthreshold = dwu.flags(kwargs, .05, 'uvthreshold')
 
     # Initialize variables
     follicles, weird, nrigids = [], [], []

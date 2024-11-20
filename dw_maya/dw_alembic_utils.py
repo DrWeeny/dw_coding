@@ -1,32 +1,70 @@
-import sys, os
+"""Maya Alembic import/export utilities with advanced connection handling.
 
-# ----- Edit sysPath -----#
-rdPath = 'E:\\dw_coding\\dw_open_tools'
-if not rdPath in sys.path:
-    print("Add {} to sysPath".format(rdPath))
-    sys.path.insert(0, rdPath)
+This module provides comprehensive functionality for working with Alembic files in Maya,
+including importing, exporting, and managing connections between Alembic nodes and scene objects.
 
+Main Functions:
+    importAbc: Import Alembic file with namespace support
+    exportAbc: Export objects to Alembic with customizable settings
+    importShotAbc: High-level import with connection/attribute management
+
+Connection Management:
+    getAbcConnections: Query Alembic node connections
+    getAbcStatic: Get static attribute values from nodes
+    setAbcConnections: Establish connections between nodes
+    setAbcStatic: Set static attribute values
+    cleanAbcConnections: Remove unwanted connections
+    setBsConnections: Create blendShape connections
+
+Features:
+    - Namespace support for import/export
+    - Static attribute preservation
+    - Connection cleanup and management
+    - BlendShape connection handling
+    - Face set support for Yeti
+    - Detailed debugging options
+    - Customizable frame range and sampling
+
+Example Usage:
+    >>> # Export mesh to Alembic
+    >>> exportAbc("myCache.abc", ["pCube1"], frameRange=[1, 100])
+    >>>
+    >>> # Import with connection handling
+    >>> abc_data = importShotAbc("/path/cache.abc", namespace="shot01")
+"""
 
 import maya.cmds as cmds
 import dw_maya.dw_maya_utils as dwu
-Flags = dwu.Flags
+from dw_maya.dw_maya_utils import flags
 from dw_maya.dw_decorators import acceptString
 import dw_maya.dw_yeti as dwpgy
 from collections import defaultdict
 from itertools import chain
 import os
+from dw_logger import get_logger
 
-def make_dir(path: str):
-    """
-    Create all the directories if they don't exist.
+logger = get_logger()
+
+
+def make_dir(path: str) -> str:
+    """Create directory if it doesn't exist.
+
     Args:
-        path (str): The directory path.
+        path: Directory path to create
+
     Returns:
-        str: The created directory path.
+        Created directory path
+
+    Raises:
+        OSError: If directory creation fails
     """
-    if not os.path.exists(path):
-        os.makedirs(path)
-    return path
+    try:
+        if not os.path.exists(path):
+            os.makedirs(path)
+        return path
+    except OSError as e:
+        logger.error(f"Failed to create directory {path}: {e}")
+        raise
 
 
 def importAbc(path: str, namespace=':', top=True, **kwargs) -> dict:
@@ -93,8 +131,9 @@ def importAbc(path: str, namespace=':', top=True, **kwargs) -> dict:
         AbcImport -ftr -ct "/" -crt -rm "/tmp/test.abc";
         AbcImport -ct "root1 root2 root3 ..." "/tmp/test.abc";
         AbcImport "/tmp/test.abc" "/tmp/justUVs.abc" "/tmp/other.abc"
-    Returns:
 
+    Returns:
+        Dictionary mapping Alembic nodes to imported geometry
     '''
     try:
         result={}
@@ -319,7 +358,7 @@ def exportAbc(file=str, nodes=list, frameRange=None, uvWrite=True, dataFormat='o
     if sn:
         args_list.append("-sn 1")
 
-    attrs = dwu.Flags(kwargs, None, 'userAttrPrefix')
+    attrs = dwu.flags(kwargs, None, 'userAttrPrefix')
     if isinstance(attrs, (list, tuple)):
         for a in attrs:
             r = '-userAttrPrefix {}'.format(a)
@@ -332,7 +371,7 @@ def exportAbc(file=str, nodes=list, frameRange=None, uvWrite=True, dataFormat='o
     SAMPLING_CENTER_ON_FRAME = 0
     SAMPLING_START_ON_FRAME = 1
 
-    samplesPerFrame = dwu.Flags(kwargs, 3, 'samplesPerFrame')
+    samplesPerFrame = dwu.flags(kwargs, 3, 'samplesPerFrame')
     samplingTiming = SAMPLING_START_ON_FRAME
     samplesRange = 1.0
 
@@ -359,8 +398,23 @@ def exportAbc(file=str, nodes=list, frameRange=None, uvWrite=True, dataFormat='o
     cmds.AbcExport(j=args_string)
     print(f'cmds.AbcExport(j={args_string})')
 
+
 # Scene Connectors Methods :
 def getAbcConnections(AbcNode, namespace=':', target_ns=[], filter=[]):
+    """Query connections from an Alembic node to scene objects.
+
+    Args:
+        AbcNode: Name of the Alembic node to query
+        namespace: Current namespace of the Alembic node
+        target_ns: List of target namespaces to search for connections
+        filter: List of attributes to exclude from the search
+
+    Returns:
+        Dictionary mapping source attributes to lists of connected target attributes
+        {
+            'sourceNode.attr': ['targetNode1.attr', 'targetNode2.attr']
+        }
+    """
 
     attr_map = ['outPolyMesh', 'outLoc', 'outSubDMesh', 'outNCurveGrp', 'transOp', 'prop', 'outCamera']
     if filter:
@@ -390,7 +444,23 @@ def getAbcConnections(AbcNode, namespace=':', target_ns=[], filter=[]):
 
     return con_dic
 
+
 def getAbcStatic(topnodes=[], target_ns=None):
+    """Get static transform and visibility values from nodes.
+
+    Args:
+        topnodes: List of top-level nodes to query
+        target_ns: Optional list of target namespaces to format attribute names
+
+    Returns:
+        Dictionary mapping attribute names to their values
+        {
+            'node.translate': [tx, ty, tz],
+            'node.rotate': [rx, ry, rz],
+            'node.scale': [sx, sy, sz],
+            'node.visibility': [bool]
+        }
+    """
     value_dic = defaultdict(list)
 
     # Get all transform nodes under the top nodes
@@ -428,7 +498,20 @@ def getAbcStatic(topnodes=[], target_ns=None):
                     value_dic[key].append(value)
     return value_dic
 
+
 def setAbcStatic(static: dict):
+    """Set static attribute values on nodes.
+
+    Args:
+        static: Dictionary mapping attribute names to values
+            Format matches output from getAbcStatic()
+
+    Raises:
+        RuntimeError: If attribute values cannot be set
+
+    Note:
+        Prints warning if attribute is not settable
+    """
     for k, v in static.items():
         current = cmds.getAttr(k)
         if isinstance(current, list):
@@ -446,14 +529,36 @@ def setAbcStatic(static: dict):
             else:
                 print('{} has been not set to {} because it is not settable'.format(k, v))
 
+
 def setAbcConnections(connections: dict):
+    """Establish connections between source and target attributes.
+
+    Args:
+        connections: Dictionary mapping source attributes to target attributes
+            Format matches output from getAbcConnections()
+
+    Note:
+        - Unlocks locked attributes before connecting
+        - Forces connections with force=True flag
+    """
     for k, v in connections.items():
         for c in v:
             if cmds.getAttr(c, lock=True):
                 cmds.setAttr(c, lock=False)
             cmds.connectAttr(k, c, force=True)
 
+
 def cleanAbcConnections(abc: str, connections: dict):
+    """Remove unwanted connections from an Alembic node.
+
+    Args:
+        abc: Name of the Alembic node to clean
+        connections: Dictionary of connections to preserve
+            Format matches output from getAbcConnections()
+
+    Note:
+        Preserves time1.outTime connection
+    """
     targ_attrs = list(chain(*connections.values()))
     attribute = cmds.listConnections(abc, plugs=True, scn=True)
     for a in attribute:
@@ -465,6 +570,7 @@ def cleanAbcConnections(abc: str, connections: dict):
                     cmds.disconnectAttr(a, destAttr)
                 for srcAttr in sourceAttrs:
                     cmds.disconnectAttr(srcAttr, a)
+
 
 def importShotAbc(path, target_namespace=':', alembic_namespace='anim', **kwargs):
     """
@@ -501,11 +607,11 @@ def importShotAbc(path, target_namespace=':', alembic_namespace='anim', **kwargs
         # Alembic import with debug information and face sets handling:
         debug_info = importShotAbc('/path/to/alembic.abc', face_sets=True, debug=True)
     """
-    face = Flags(kwargs, None, 'face_sets', 'face')
-    top = Flags(kwargs, True, 'top')
-    debug = Flags(kwargs, False, 'debug')
-    delete = Flags(kwargs, True, 'delete')
-    directConnect = Flags(kwargs, 0, 'connectMode')
+    face = flags(kwargs, None, 'face_sets', 'face')
+    top = flags(kwargs, True, 'top')
+    debug = flags(kwargs, False, 'debug')
+    delete = flags(kwargs, True, 'delete')
+    directConnect = flags(kwargs, 0, 'connectMode')
 
     # the name for the abc namespace
     if target_namespace == ':':
@@ -573,17 +679,21 @@ def importShotAbc(path, target_namespace=':', alembic_namespace='anim', **kwargs
     else:
         return abc_geos
 
+
 def setBsConnections(connections=dict):
-    """
-    This function sets blendShape connections for specific Alembic attributes. It creates
-    a blendShape connection between the source and target geometry based on the given connections.
+    """Create blendShape connections between Alembic and target geometry.
 
     Args:
-        connections (dict): A dictionary of Alembic connections.
-                            The key is the source attribute, and the value is a list of target attributes.
+        connections: Dictionary mapping source to target attributes
+            Format matches output from getAbcConnections()
 
     Returns:
-        list: A list of created blendShape node names.
+        List of created blendShape node names
+
+    Note:
+        - Creates blendShape nodes with weight 1.0
+        - Adds 'sim_influence' attribute on target transform
+        - Only processes specific attribute types (outSubDMesh, outPolyMesh, outNCurveGrp)
     """
     bs_list = []
     # Attributes that should trigger blendShape connections
@@ -602,7 +712,7 @@ def setBsConnections(connections=dict):
                                                            name=f'bs_simConnect_{node}')[0]
             # Add custom attribute 'sim_influence' to target transform and connect it to blendShape enable
             targ_tr = cmds.listRelatives(targ_node, p=True)[0]
-            attr = dwu.addAttribute(targ_tr, 'sim_influence', 1)
+            attr = dwu.add_attr(targ_tr, 'sim_influence', 1)
             cmds.connectAttr(attr, f'{bs_name}.en')
             bs_list.append(bs_name)
     return bs_list

@@ -1,21 +1,26 @@
 import maya.mel as mel
 from functools import wraps
+from typing import Callable, Any
 
-def viewportOff(func):
+
+def viewportOff(func: Callable) -> Callable:
     """
-    Decorator to turn off Maya's viewport while the decorated function runs.
-    If the function raises an error, the error is propagated, but the viewport
-    will always be turned back on at the end, ensuring Maya's display is not left off.
+    Decorator to temporarily disable Maya's viewport during function execution.
+    Ensures viewport is re-enabled even if the function raises an error.
 
     Args:
-        func (function): The function to wrap.
+        func: The function to wrap
 
-    Returns:
-        function: The wrapped function with the viewport off during its execution.
+    Example:
+        @viewportOff
+        def create_many_objects():
+            # Viewport updates disabled here
+            for i in range(1000):
+                cmds.polySphere()
     """
 
     @wraps(func)
-    def wrap(*args, **kwargs):
+    def wrapper(*args: Any, **kwargs: Any) -> Any:
         try:
             # Turn the viewport (gMainPane) off
             mel.eval("paneLayout -e -manage false $gMainPane")
@@ -32,4 +37,4 @@ def viewportOff(func):
             # Turn the viewport back on
             mel.eval("paneLayout -e -manage true $gMainPane")
 
-    return wrap
+    return wrapper

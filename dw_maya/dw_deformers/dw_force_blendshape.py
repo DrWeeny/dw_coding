@@ -6,7 +6,7 @@ if not rdPath in sys.path:
     sys.path.insert(0, rdPath)
 
 from maya import cmds, mel
-from dw_maya.dw_maya_utils import Flags, get_type_io
+from dw_maya.dw_maya_utils import flags, get_type_io
 
 
 def createForceBS(_source_msh: str, _target_msh: str, **kwargs) -> list:
@@ -23,7 +23,7 @@ def createForceBS(_source_msh: str, _target_msh: str, **kwargs) -> list:
     """
 
     # Extract prefix from kwargs (default is empty string)
-    _prefix = Flags(kwargs, '', 'prefix')
+    _prefix = flags(kwargs, '', 'prefix')
     if _prefix != '':
         del kwargs['prefix']
 

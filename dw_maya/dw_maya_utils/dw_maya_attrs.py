@@ -1,308 +1,319 @@
-#!/usr/bin/env python
-#----------------------------------------------------------------------------#
-#------------------------------------------------------------------ HEADER --#
-
 """
-@author:
-    Weeny
+Maya Attribute Utilities
 
-@description:
-    this is a description
+A toolkit for managing Maya node attributes with a focus on pipeline integration.
 
-@applications:
-    - groom
-    - cfx
-    - fur
+Main Features:
+    - Node IO Management:
+        * Get input/output attributes
+        * Support for common node types (mesh, nurbs, deformers)
+        * Multi-attribute handling
+        * Index management for array attributes
+
+    - Attribute Creation:
+        * All Maya attribute types supported
+        * Compound attributes
+        * Enum attributes with options
+        * Array attributes with auto-indexing
+        * Default values and ranges
+
+    - Attribute Management:
+        * Locking/Unlocking with states
+        * Keyable state control
+        * Channel box visibility
+        * Batch operations
+
+Functions:
+    get_type_io: Get node's input/output attributes
+    add_attr: Create or modify node attributes
+    lock_attr: Manage attribute states and access
+
+
+Common Usage:
+    >>> # Basic attribute creation
+    >>> add_attr('node', 'attrName', 1.0, keyable=True)
+
+    >>> # Enum attribute with options
+    >>> add_attr('node', 'enumAttr', 0, 'enum',
+    ...          enumName=['Option1', 'Option2'])
+
+    >>> # Get node connections
+    >>> outputs = get_type_io('node', io=1)
+
+    >>> # Lock multiple attributes
+    >>> lock_attr('node', ['tx', 'ty', 'tz'], lock=True)
+
+
+Dependencies:
+    - Maya 2020+ (maya.cmds)
+    - DW Maya Core Toolkit
+
+Author: DrWeeny
+Version: 1.0.0
 """
 
-#----------------------------------------------------------------------------#
-#----------------------------------------------------------------- IMPORTS --#
-
-# built-in
-import sys, os
-
-# ----- Edit sysPath -----#
-rdPath = 'E:\\dw_coding\\dw_open_tools\\maya'
-if not rdPath in sys.path:
-    print("Add {} to sysPath".format(rdPath))
-    sys.path.insert(0, rdPath)
-
-from pprint import pprint
-
-# internal
+from typing import Union, List, Any, Optional, Literal, Dict
 from maya import cmds, mel
-# internal
-
-# external
-from .dw_maya_data import Flags
+from .dw_maya_data import flags
 from .dw_maya_components import get_next_free_multi_index
-from dw_maya.dw_decorators import acceptString
+from ..dw_decorators import acceptString
+from dw_maya.dw_constants.node_attr_mappings import NODE_IO_MAPPING
 
-#----------------------------------------------------------------------------#
-#----------------------------------------------------------------- GLOBALS --#
-
-
-#----------------------------------------------------------------------------#
-#---------------------------------------------------------------   CLASSES --#
+# Type aliases
+NodeName = AttrName = AttrPath = AttrType = str
+AttrValue = Union[str, int, float, bool, List[Any]]
 
 
-#----------------------------------------------------------------------------#
-#--------------------------------------------------------------- FUNCTIONS --#
 
-def get_type_io(mtype=str, **kwargs):
+def get_type_io(node: NodeName, **kwargs) -> Union[str, List[str], None]:
     """
-    this function has been created to return the main inputs or outputs of a node
-
-    Examples:
-        `name = 'pSphere1'
-        attr_in = get_type_io(name, io=0)
-        attr_out = get_type_io(name)`
-
-        `name = 'transformGeometry1',
-        attr_in_transform = get_type_io(name, io=0, sel=0)
-        attr_in_inputGeometry = get_type_io(name, io=0, sel=1)`
-
-        `name = 'wrap1'
-        attr_out_default = get_type_io(name)
-        # Result : wrap1.outputGeometry[0]`
-        attr_out_noIndex = get_type_io(name, id=False)
-        # Result :  wrap1.outputGeometry
-        attr_out_format = get_type_io(name, id=2)
-        # Result :  wrap1.outputGeometry[{}]
-        attr_only = get_type_io(name, id=False, join=False)
-        # Result : outputGeometry
+    Get main input/output attributes of a node.
 
     Args:
-        mtype (str): transform is ignored, it tries by default
-                     the shape of the name provided
-                     if not, it is checking if you have provided
-                     a nodeType string
+        node: Node name or type
+
     Kwargs:
-        io (int) : select input or output, default 1 - output
-        index or id (int) : if the output would be a list,
-        you can select the list index, default None
-        multi or m (bool) : remove the default [0]
-        at the end of certain attributes, default True and has [0]
-        join or j (bool) : return a this '{name}.{attr}', default is True
-        query or q (bool) : print the node accepted,
-        return the list of input/output for the type supported
+        io (int): Input (0) or output (1) selector
+        index/id: Multi attribute index
+        multi/m (bool): Include index notation
+        join/j (bool): Return full attribute path
+        query/q (bool): Print supported node types
 
     Returns:
-        (str) : '{name}.{attr}' or 'attr'
-        Or
-        (list) : values of input/output
+        Attribute name(s) or None
+
+    Examples:
+        >>> get_type_io('pSphere1', io=0)  # Input attr
+        'pSphere1.inMesh'
+
+        >>> get_type_io('wrap1', id=False)  # No index
+        'wrap1.outputGeometry'
     """
-    io = Flags(kwargs, 1, 'io')
-    id = Flags(kwargs, None, 'index', 'id')
-    multi = Flags(kwargs, 1, 'multi', 'm')
-    join = Flags(kwargs, True, 'join', 'j')
-    query = Flags(kwargs, False, 'query', 'q')
-    _mtype = None
+    # Process flags
+    io = flags(kwargs, 1, 'io')
+    index = flags(kwargs, None, 'index', 'id')
+    multi = flags(kwargs, 1, 'multi', 'm')
+    join = flags(kwargs, True, 'join', 'j')
+    query = flags(kwargs, False, 'query', 'q')
 
     # Ignore transforms
-    if mtype == 'transform':
+    if node == 'transform':
         return None
-    # Handle node type checking
-    if mtype not in cmds.ls(nt=True) and cmds.objExists(mtype):
-        short = cmds.ls(mtype, dag=True, type='shape', ni=True)
-        _test = [True for i in cmds.ls(short) if '|' in i]
-        if any(_test):
-            sh = cmds.ls(mtype, dag=True, type='shape', ni=True, l=True)
-        else:
-            sh = short
-        if sh:
-            _mtype = cmds.nodeType(sh)
-        else:
-            _mtype = cmds.nodeType(mtype)
 
-   # Output attribute mappings by node type
-    output = {}
-    output['mesh'] = ['inMesh', 'worldMesh[0]']
-    output['wrap'] = [
-        ['basePoints[0]', 'input[0].inputGeometry', 'driverPoints[0]',
-         'geomMatrix'], 'outputGeometry[0]']
-    # todo  see if we implement worldSpace[0] as output
-    #       and outmesh for mesh
-    output['nurbsCurve'] = ['create', 'local']
-    output['polyUnite'] = ['inputPoly[0]', 'output']
-    output['polySeparate'] = ['inputPoly', 'output[0]']
-    output['eSTmeshDeformer'] = [None, 'outputGeometry[0]']
-    output['cvWrap'] = [['driver'], 'outputGeometry']
-    output['transformGeometry'] = [['transform', 'inputGeometry'],
-                                   'outputGeometry']
-    output['choice'] = ['input[0]', 'output']
-    # TODO make some checks
-    output['locator'] = ['message', ['inverseMatrix[0]', 'worldMatrix[0]',
-                                     'worldPosition[0]']]
-    output['groupParts'] = ['inputGeometry', 'outputGeometry']
-    output['tweak'] = ['input[0]', 'outputGeometry[0]']
-    output['blendShape'] = ['inputTarget[0].inputTargetGroup[0]',
-                            'outputGeometry[0]']
-
-    output['nucleus'] = [['inputCurrent[0]', 'inputStart[0]'],
-                         'outputObjects[0]']
-    output['nComponent'] = ['objectId', 'outComponent']
-    output['dynamicConstraint'] = ['componentIds[0]',
-                                   ['evalCurrent[0]', 'evalStart[0]']]
-    output['nCloth'] = [['inputMesh', 'nextState'], ['outputMesh', 'nucleusId']]
-    output['nRigid'] = [['inputMesh', 'startFrame'],
-                        ['outputMesh', 'nucleusId']]
-    output['hairSystem'] = [['inputHair[0]'],
-                        ['outputHair[0]', 'nucleusId']]
-
-    output['follicle'] = [['startPosition', 'startPositionMatrix', 'inputMesh'],
-                        ['outCurve', 'outHair']]
-
-    # Query mode: return list of attributes for the given node type
-    if query:
-        if _mtype in output:
-            return output[_mtype]
-        else:
-            pprint.pprint(output)
-            cmds.error(f"sorry, this node '{_mtype}' is not implemented")
-
-    # Extract the appropriate attribute based on io and id
-    if id is not None:
-        attr = output[_mtype][io][id]
+    if node not in cmds.ls(nt=True) and cmds.objExists(node):
+        shapes = cmds.ls(
+            node,
+            dag=True,
+            type='shape',
+            ni=True,
+            l=bool('|' in node)
+        )
+        node_type = cmds.nodeType(shapes[0] if shapes else node)
     else:
-        attr = output[_mtype][io]
+        node_type = node
 
-    # Handle multi-index formatting
-    # if attribute is a multi i.e: outputHair[0] and flag is set to multi
-    # we can find the next available and even return a list of multi if there are multiple inputs
+    # Query mode
+    if query:
+        if node_type in NODE_IO_MAPPING:
+            return NODE_IO_MAPPING[node_type]
+        print("Supported node types:")
+        for ntype, attrs in NODE_IO_MAPPING.items():
+            print(f"{ntype}: {attrs}")
+        raise ValueError(f"Node type '{node_type}' not supported")
+
+    # Get attribute(s)
+    try:
+        attrs = NODE_IO_MAPPING[node_type][io]
+    except KeyError:
+        raise ValueError(f"Node type '{node_type}' not supported")
+
+    # Process attributes
+    if isinstance(attrs, list):
+        if index is not None:
+            attrs = attrs[index]
+
+    # Handle multi index
     if not multi:
-        attr = [a.split('[')[0] for a in attr]
-    elif multi:
-        if isinstance(attr, list):
-            attr_nofmt = [a.replace('[0]', '[{}]') for a in attr if
-                          '[' not in a]
-            attr_fmt = [a.replace('[0]', '[{}]') for a in attr if '[' in a]
-            if multi == 2:
-                attr = attr_nofmt + [
-                    fmt.format(get_next_free_multi_index(mtype + '.' + a)) for
-                    fmt, a in zip(attr_fmt, attr)]
-            else:
-                attr = attr_nofmt + [fmt.format(0) for fmt, a in
-                                     zip(attr_fmt, attr)]
+        if isinstance(attrs, list):
+            attrs = [a.split('[')[0] for a in attrs]
         else:
-            if '[' in attr:
-                attr_fmt = attr.replace('[0]', '[{}]')
-                if multi == 2:
-                    attr = attr_fmt.format(
-                        get_next_free_multi_index(mtype + '.' + attr))
-                else:
-                    attr = attr_fmt.format(0)
+            attrs = attrs.split('[')[0]
+    elif '[' in str(attrs):
+        if isinstance(attrs, list):
+            attrs = [
+                a.replace('[0]', f'[{get_next_free_multi_index(node + "." + a)}]')
+                if multi == 2 else a.replace('[0]', '[0]')
+                for a in attrs
+            ]
+        else:
+            if multi == 2:
+                attrs = attrs.replace('[0]',
+                    f'[{get_next_free_multi_index(node + "." + attrs)}]'
+                )
+            else:
+                attrs = attrs.replace('[0]', '[0]')
 
+    # Join with node name
     if join:
-        if isinstance(attr, list):
-            return [f'{mtype}.{j}' for j in attr]
-        return f'{mtype}.{attr}'
-    return attr
+        if isinstance(attrs, list):
+            return [f'{node}.{attr}' for attr in attrs]
+        return f'{node}.{attrs}'
+
+    return attrs
 
 
-def add_attr(node=str,
-             long_name=str,
+# Supported attribute types
+AttrType = Literal[
+    'bool', 'long', 'short', 'byte', 'char',
+    'float', 'double', 'doubleAngle', 'doubleLinear',
+    'string', 'enum', 'message',
+    'time', 'matrix', 'fltMatrix', 'reflectanceRGB', 'spectrumRGB',
+    'float2', 'float3', 'double2', 'double3', 'long2', 'long3',
+    'short2', 'short3']
+
+
+def add_attr(node: NodeName,
+             long_name: AttrName,
              value=None,
-             attr_type='long',
-             **kwargs) -> str:
-    """Add attribute to a node
-    Arguments:
-        node (str): The object (dagNode) to add the new attribute.
-        long_name (str): The attribute name.
-        attr_type (str): The attribute type (e.g., 'string', 'bool', 'long').
-        value (float or int): The default value.
+             attr_type: AttrType ='long',
+             **kwargs) -> AttrPath:
+    """
+    Add or set attribute on Maya node.
 
-    Additional optional arguments :
-        niceName (str): The attribute nice name.
-        shortName (str): The attribute short name.
-        minValue (float or int): minimum value.
-        maxValue (float or int): maximum value.
-        keyable (bool): Set if the attribute is keyable or not.
-        readable (bool): Set if the attribute is readable or not
-        storable (bool): Set if the attribute is storable or not.
-        writable (bool): Set if the attribute is writable or not.
-        channelBox (bool): Set if the attribute is in the channelBox or not,
-            when the attribute is not keyable.
+    Args:
+        node: Target node name
+        long_name: Attribute long name
+        value: Default value
+        attr_type: Attribute data type
+
+    Kwargs:
+        shortName/sn (str): Attribute short name
+        niceName/nn (str): Attribute nice name
+        enumName/en (Union[str, List[str]]): Enum values
+        minValue/min: Minimum value
+        maxValue/max: Maximum value
+        keyable/k (bool): Is keyable
+        readable/r (bool): Is readable
+        storable/s (bool): Is storable
+        writable/w (bool): Is writable
+        channelBox (bool): Show in channel box
+
     Returns:
-        str: The full name of the new attribute (e.g., 'node.attributeName').
+        Full attribute path (node.attr)
+
+    Examples:
+        >>> add_attr('pSphere1', 'testFloat', 1.0)
+        'pSphere1.testFloat'
+
+        >>> add_attr('pSphere1', 'testEnum', 0, 'enum',
+        ...          enumName=['A', 'B', 'C'])
+        'pSphere1.testEnum'
     """
 
-    # Check if the attribute already exists on the node
+    attr_path = f'{node}.{long_name}'
+
+    attr_path = f'{node}.{long_name}'
+
+    # Check if attribute already exists
     if not cmds.attributeQuery(long_name, node=node, exists=True):
-        data = Flags(kwargs, None, 'shortName', 'sn', dic={})
-        data = Flags(kwargs, None, 'niceName', 'nn', key='shortName', dic=data)
+        # Initialize attribute data
+        attr_data: Dict[str, Any] = {}
 
-        # Handling different attribute types
+        # Process basic flags
+        for long, short in [
+            ('shortName', 'sn'),
+            ('niceName', 'nn'),
+            ('minValue', 'min'),
+            ('maxValue', 'max'),
+            ('keyable', 'k'),
+            ('readable', 'r'),
+            ('storable', 's'),
+            ('writable', 'w')
+        ]:
+            if value := flags(kwargs, None, long, short):
+                attr_data[long] = value
+
+        # Handle attribute type specific setup
         if attr_type == "string":
-            data["dataType"] = attr_type
-        elif attr_type == 'enum':
-            data["attributeType"] = 'enum'
-            enum = Flags(kwargs, None, 'enumName', 'en')
-            if not enum:
-                cmds.error('Please use enumName or en flags to specify a list of items')
+            attr_data["dataType"] = attr_type
 
-            # Handle enum as list or string
-            if isinstance(enum, (list, tuple)):
-                data["enumName"] = ':'.join(enum) + ':'
-            elif isinstance(enum, str):
-                if ':' in enum:
-                    if enum.endswith(':'):
-                        enum = enum[:-1]
-                    data["enumName"] = enum.split(':') + ['']
-                    data["enumName"] = ':'.join(data["enumName"])
-                else:
-                    cmds.error(
-                        'enumName or en must be a list or join string list of `:`')
+        elif attr_type == "enum":
+            attr_data["attributeType"] = attr_type
+            enum_value = flags(kwargs, None, 'enumName', 'en')
+
+            if not enum_value:
+                raise ValueError(
+                    "Enum attributes require 'enumName' or 'en' flag"
+                )
+
+            # Process enum names
+            if isinstance(enum_value, (list, tuple)):
+                enum_str = ':'.join(map(str, enum_value)) + ':'
+            elif isinstance(enum_value, str):
+                if ':' not in enum_value:
+                    raise ValueError(
+                        "Enum string must be colon-separated values"
+                    )
+                enum_str = enum_value.rstrip(':') + ':'
             else:
-                cmds.error(
-                    'enumName or en must be a list or join string list of `:`')
+                raise ValueError(
+                    "enumName must be list or colon-separated string"
+                )
+
+            attr_data["enumName"] = enum_str
+
         else:
-            data["attributeType"] = attr_type
+            attr_data["attributeType"] = attr_type
 
-        # Handling default value
-        if not 'defaultValue' in kwargs and attr_type not in [
-            "string"]:
-            data["defaultValue"] = value
-        elif 'defaultValue' in kwargs and attr_type not in ["string"]:
-            data = Flags(kwargs, None, 'defaultValue', 'dv', dic=data)
+        # Handle default value
+        if value is not None and attr_type != "string":
+            attr_data["defaultValue"] = value
 
-        # Handle min and max values
-        data = Flags(kwargs, None, 'minValue', 'min', dic=data)
-        data = Flags(kwargs, None, 'maxValue', 'max', dic=data)
+        # Create the attribute
+        try:
+            cmds.addAttr(node, longName=long_name, **attr_data)
 
-        # Handle attribute flags: keyable, readable, storable, writable
-        data = Flags(kwargs, True, 'keyable', 'k', dic=data)
-        data = Flags(kwargs, True, 'readable', 'r', dic=data)
-        data = Flags(kwargs, True, 'storable', 's', dic=data)
-        data = Flags(kwargs, True, 'writable', 'w', dic=data)
+            # Handle channelBox for non-keyable attrs
+            if (
+                    not attr_data.get('keyable', True) and
+                    flags(kwargs, False, 'channelBox')
+            ):
+                cmds.setAttr(
+                    attr_path,
+                    channelBox=True
+                )
 
-        # Clean up default value if it's None
-        if 'defaultValue' in data:
-            if data['defaultValue'] == None:
-                del data['defaultValue']
+        except Exception as e:
+            raise RuntimeError(
+                f"Failed to add attribute {long_name} to {node}: {str(e)}"
+            )
 
-        # Add the attribute to the node
-        print(data)
-        cmds.addAttr(node, longName=long_name, **data)
-
-        # Handle channelBox flag for non-keyable attributes
-        chbox = Flags(kwargs, True, 'channelBox', key='keyable', dic={})
-        if chbox:
-            cmds.setAttr(f'{node}.{long_name}', e=True, **chbox)
+    # Set value on existing attribute
     else:
-        # Set the attribute's value if it already exists
-        if attr_type != 'string':
-            if not isinstance(value, (list, tuple)):
-                value = [value]
-            cmds.setAttr(f'{node}.{long_name}', *value)
-        else:
-            cmds.setAttr(f'{node}.{long_name}', value, type='string')
+        try:
+            if attr_type == "string":
+                cmds.setAttr(attr_path, value, type='string')
+            else:
+                if not isinstance(value, (list, tuple)):
+                    value = [value]
+                cmds.setAttr(attr_path, *value)
 
-    return f'{node}.{long_name}'
+        except Exception as e:
+            raise RuntimeError(
+                f"Failed to set value on {attr_path}: {str(e)}"
+            )
+
+    return attr_path
 
 
 @acceptString('attributes')
-def lock_attr(node=str, attributes=list, lock=bool, keyable=bool):
+def lock_attr(
+    node: str,
+    attributes: Union[str, List[str]],
+    lock: bool = True,
+    keyable: bool = False,
+    channel_box: Optional[bool] = None
+) -> None:
     """
     Lock or unlock attributes of a Maya Class Node.
 
@@ -320,8 +331,71 @@ def lock_attr(node=str, attributes=list, lock=bool, keyable=bool):
         for attr_name in attributes:
             attr_full = f"{node}.{attr_name}"
             if cmds.objExists(attr_full):
-                cmds.setAttr(attr_full, lock=lock, keyable=keyable)
+                # Set lock state first
+                cmds.setAttr(attr_full, lock=lock)
+
+                # Handle keyable/channelBox states when unlocked
+                if not lock:
+                    # Set keyable state
+                    cmds.setAttr(attr_full, keyable=keyable)
+
+                    # Handle channel box visibility
+                    if channel_box is not None:
+                        cmds.setAttr(attr_full, channelBox=channel_box)
             else:
                 cmds.warning(f"Attribute {attr_full} does not exist on node {node}.")
 
 
+if __name__ == "__main__":
+    """
+    Test Module Usage:
+        This section contains test functions that run when the module
+        is executed directly. Use these for:
+        - Development testing
+        - Function verification
+        - Example demonstrations
+
+    Run tests from Maya:
+        import dw_maya.dw_maya_utils.dw_maya_attrs as attrs
+        reload(attrs)  # Run tests
+    """
+    def run_tests():
+        """Test function to verify module functionality."""
+        try:
+            # Create test node
+            node = cmds.createNode('transform', name='test_node')
+
+            # Test cases
+            test_cases = [
+                # (test_name, function, args, expected_result)
+                (
+                    "Float attr",
+                    add_attr,
+                    (node, 'testFloat', 1.0),
+                    f"{node}.testFloat"
+                ),
+                (
+                    "Enum attr",
+                    add_attr,
+                    (node, 'testEnum', 0, 'enum'),
+                    f"{node}.testEnum"
+                )
+            ]
+
+            for test_name, func, args, expected in test_cases:
+                try:
+                    result = func(*args)
+                    assert result == expected, f"Expected {expected}, got {result}"
+                    print(f"✓ {test_name} passed")
+                except Exception as e:
+                    print(f"✗ {test_name} failed: {str(e)}")
+
+        finally:
+            # Cleanup
+            if cmds.objExists(node):
+                cmds.delete(node)
+
+
+    # Only runs when file is executed directly
+    print("Running tests for dw_maya_attrs.py")
+    run_tests()
