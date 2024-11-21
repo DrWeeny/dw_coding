@@ -1,0 +1,48 @@
+├── DynEval/
+│   ├── __init__.py
+│   ├── launch.py
+│   ├── main_ui.py
+│   ├── sim_widget/
+│   │   ├── __init__.py
+│   │   ├── wgt_cache_tree.py
+│   │   ├── wgt_colortextbutton.py
+│   │   ├── wgt_commentary.py
+│   │   ├── wgt_mapedit.py
+│   │   ├── wgt_maps_tree.py
+│   │   ├── wgt_paint_map.py
+│   │   ├── wgt_treewidget_toggle.py
+│   ├── sim_cmds/
+│   │   ├── __init__.py
+│   │   ├── cache_management.py
+│   │   ├── info_management.py
+│   │   ├── preset_management.py
+│   │   ├── vtx_management.py
+│   │   ├── ziva_cmds.py
+│   ├── dendrology/
+│   │   ├── __init__.py
+│   │   ├── ziva_leaf.py
+│   │   ├── cache_leaf.py
+│   │   ├── tree_toggle_button.py
+│   │   ├── nucleus_leaf/
+│   │       ├── __init__.py
+│   │       ├── base_standarditem.py
+│   │       ├── cloth_standard_item.py
+│   │       ├── hair_standard_item.py
+│   │       ├── map_standarditem.py
+│   │       ├── nrigid_standarditem.py
+│   │       ├── nucleus_standarditem.py
+│   │       ├── nucleus_standarditem.py
+│   │       ├── nucleus_standarditem.py
+
+main_ui.py is the main tool pyside module
+launch.py is used to launch the ui inside maya with a shelf button
+sim_widget/ is a package with all individual widgets used in main_ui so it is more modular and can be extracted in popup or other tool
+sim_cmds/ is a package which are all functions called by widgets and ui elements, there are using all dw_modules backend and maya.cmds
+dendrology/ is used for the pyside tree related items
+dendrology/nucleus_leaf/ is used to store all standarditem, treewidgetitem....etc related to nucleus solver
+cache_leaf.py is another tree which display nucleus cloth maps, cache list, but can be adapted to other displayed items in cunjunction with treeview (like deformer maps)
+tree_toggle_button.py is a friendly user display button which is red or green to represent the toggle state of simulation elements, user doesn't like the default toggle coded in treeitems
+ziva_leaf.py is the standard item to represent the ziva simulation items
+
+
+what elements do you prefer to review first ?

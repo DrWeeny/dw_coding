@@ -1,0 +1,140 @@
+Hi, we're working on refactoring my Maya Python library dw_coding.
+
+Current directory structure:
+dw_coding/
+├── .files
+├── apps_programs/
+│   ├── ffmpeg/
+│   ├── quicktime/
+│   └── uncompyle2_python27/
+├── dw_houdini/
+├── dw_linux/
+├── dw_maya/
+│   ├── __init__.py
+│   ├── dw_alembic_delay.py
+│   ├── dw_alembic_utils.py
+│   ├── dw_channelbox_utils.py
+│   ├── dw_create.py
+│   ├── dw_doCreateGeometryCache.py
+│   ├── dw_feathers_utils.py
+│   ├── dw_lsNode.py
+│   ├── dw_mRivet.py
+│   ├── dw_widgets.py
+│   ├── dw_xgen.py
+│   ├── dw_yeti.py
+│   ├── dw_ziva_utils.py
+│   ├── mj_melToPymel.py
+│   ├── AttrPresetDiff/
+│   ├── DynEval/
+│   ├── PkF/
+│   ├── PresetTool/
+│   ├── SpanSmooth/
+│   ├── dw_deformers/
+│   │   ├── __init__.py
+│   │   ├── dw_create_wrap.py
+│   │   ├── dw_cvWrap.py
+│   │   ├── dw_est_meshdeformer.py
+│   │   ├── dw_forceblenshape.py
+│   │   ├── dw_shrinkwrap.py
+│   │   ├── dw_softsel.py
+│   │   ├── dw_stickies.py
+│   │   ├── dw_utils.py
+│   ├── dw_duplication/
+│   │   ├── __init__.py
+│   │   ├── dw_clean_duplication.py
+│   │   ├── dw_dup_abc.py
+│   │   ├── dw_dup_bake.py
+│   │   ├── dw_dup_change_pivot.py
+│   │   ├── dw_dup_mesh.py
+│   │   ├── dw_fresh_dup.py
+│   │   ├── dw_instance.py
+│   │   ├── dw_outmesh.py
+│   │   ├── dw_with_cache.py
+│   ├── dw_constants/
+│   │   ├── __init__.py
+│   │   ├── node_attr_mappings.py
+│   │   ├── node_re_mappings.py
+│   │   ├── preset_maya_attrs.py
+│   ├── dw_decorators/
+│   │   ├── __init__.py
+│   │   ├── dw_acceptString.py
+│   │   ├── dw_is_maya_node.py
+│   │   ├── dw_benchmark.py
+│   │   ├── dw_complete_sound.py
+│   │   ├── dw_decorators_other.py
+│   │   ├── dw_disable_solvers.py
+│   │   ├── dw_load_plugin.py
+│   │   ├── dw_returnNodeDiff.py
+│   │   ├── dw_undo.py
+│   │   ├── dw_viewportOff.py
+│   │   └── dw_vtxAnimDetection.py
+│   ├── dw_maya_utils/
+│   │   ├── __init__.py
+│   │   ├── dw_maya_data.py
+│   │   ├── dw_maya_components.py
+│   │   ├── dw_maya_lsTr.py
+│   │   ├── dw_maya_attrs.py
+│   │   ├── dw_maya_flush.py
+│   │   ├── dw_maya_layer.py
+│   │   ├── dw_maya_message.py
+│   │   ├── dw_maya_prefs.py
+│   │   ├── dw_maya_raycast.py
+│   │   ├── dw_maya_time.py
+│   │   ├── dw_mesh_utils.py
+│   │   ├── dw_uv.py
+│   │   ├── dw_vtx.py
+│   ├── dw_maya_nodes/
+│   │   ├── __init__.py
+│   │   ├── attr.py
+│   │   ├── maya_node.py
+│   │   ├── obj_pointer.py
+│   ├── dw_presets_io/
+│   │   ├── __init__.py
+│   │   ├── dw_deformer_json.py
+│   │   ├── dw_json.py
+│   │   ├── dw_folder.py
+│   │   ├── dw_preset.py
+│   ├── shelf/
+│   └── test/
+├── dw_microsoft/
+├── dw_nuke/
+├── dw_rv/
+└── ressources/
+    ├── audio_files/
+    ├── font_files/
+    ├── houdini_files/
+    ├── knotes/
+    ├── pic_files/
+    └── stylesheet_files/
+
+Completed modules:
+1. dw_decorators/
+2. dw_maya_utils/
+3. dw_constants/
+4. dw_deformers/
+5. dw_duplication/
+6. dw_maya_nodes/
+7. dw_presets_io/
+8. dw_pyqt_utils/
+9. dw_alembic_delay
+10. dw_alembic_utils
+11. dw_channelbox_utils
+12. dw_create
+13. dw_doCreateGeometryCache
+14. dw_feathers_utils
+15. dw_lsNode
+16. dw_mRivet
+17. dw_widgets
+18. dw_xgen
+19. dw_yeti/
+20. dw_ziva_utils
+
+Key improvements made:
+- Added type hints
+- Better error handling
+- Added logging
+- Improved documentation
+- Added test functions
+- Better organization with constants
+
+Could you help me continue refactoring the remaining packages dw_nucleus_utils and DynEval/ ?

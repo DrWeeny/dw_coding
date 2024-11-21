@@ -1,0 +1,69 @@
+Python and threading
+The Python language comes with built-in threading support. This functionality is available within Maya, but there are some significant constraints that Python developers need to be aware of.
+
+Maya API and Maya Command architectures are not thread-safe. Maya commands throw an exception if they are called outside the main thread, and use of the OpenMaya API from threads other than the main one has unforeseen side effects.
+
+Despite restrictions, there are many potential uses for threading in Python within the context of Maya; for example, spawning a thread to watch a socket for input. To make the use of Python threads more practical, we have provided a way for other threads to execute code in the main thread and wait upon the result.
+
+The maya.utils.executeInMainThreadWithResult() function takes either a string containing Python code or a Python callable object such as a function. In the latter case, executeInMainThreadWithResult() also accepts both regular and keyword arguments that are passed on to the callable object when it is run.
+
+The script or callable object is executed in the main thread during the next idle event. The thread calling executeInMainThreadWithResult() blocks until the main thread becomes idle and runs the code. Once the main thread is done executing the code, executeInMainThreadWithResult() returns the result. If executeInMainThreadWithResult() is called from the main thread, then it simply runs the code immediately and returns the result.
+
+Because idle events are being used to implement executeInMainThreadWithResult(), it is not available in batch mode.
+
+import maya.utils import maya.cmds
+def doSphere( radius ):
+	maya.cmds.sphere( radius=radius )
+maya.utils.executeInMainThreadWithResult( doSphere, 5.0 )
+maya.utils
+The maya.utils package is where utility routines that are not specific to either the API or Commands are stored. This module will likely expand in future versions.
+
+Currently, the maya.utils package contains three routines relevant to threading (see the previous section for details on executeInMainThreadWithResult).
+
+There are two other routines in maya.utils:
+
+maya.utils.processIdleEvents(). It is mostly useful for testing: it forces the processing of any queued up idle events.
+maya.utils.executeDeferred().
+(Similar to maya.utils.executeInMainThreadWithResult() except that it does not wait for the return value.) It delays the execution of the given script or function until Maya is idle. This function runs code using the idle event loop. This means that the main thread must become idle before this Python code is executed.
+
+There are two different ways to call this function. The first is to supply a single string argument which contains the Python code to execute. In that case the code is interpreted. The second way to call this routine is to pass it a callable object. When that is the case, then the remaining regular arguments and keyword arguments are passed to the callable object.
+
+
+--------------------------------------------
+
+
+Threading and Maya API
+Plug-ins can utilize threaded code if certain guidelines are followed. Below are some notes that provide guidance for this issue:
+
+Maya uses the following types of threads:
+
+Linux - pthreads
+Mac OS X - pthreads
+Windows - Native Windows API threads
+The components of Maya that are available in the API are single threaded. It is always best to call into the Maya API from the main Maya thread. It is acceptable to thread your code as long as it is independent of calls to the Maya API. The exception to this rule is MPxNode::compute() can have threaded calls for software shaders. But this depends on the setup of the node and the software renderer.
+
+Although some operations in Maya have been threaded, they are not exposed in the API.
+
+It is possible to call into Maya from an secondary thread using the MGlobal::executeCommandOnIdle() method. In Python, the equivalent MGlobal::executePythonCommandOnIdle() method would be used. The command will not execute immediately; instead, the command will be added to the idle event queue and executed as idle processing allows. The result of the command will not be returned to the caller. This call can be useful for updating items such as the progress bar from another thread.
+
+There are four C++ API classes for threading:
+
+MThreadPool
+MThreadAsync
+MSpinLock
+MMutexLock
+These classes can be used to implement threaded algorithms for non-Maya API functionality. Several examples that utilize these classes can be found in the developer kit. (These classes are not available in the Maya Python API.)
+
+MThreadPool gives access to a pool of threads to which tasks can be assigned. The number of tasks does not have to equal the number of threads, in fact for load balancing it is usually better if the number of tasks exceeds the number of threads. Maya will internally balance the work among the threads for optimal efficiency. The number of threads in the pool is equal to the number of logical processors. It is not necessary to delete the thread pool after each usage, and for performance reasons it is better not to do so, since the threads will be put to sleep when a parallel region finishes, which means they can be restarted quickly.
+
+MThreadAsync allows the creation of one of more threads that can run for a long time. They are not drawn from the thread pool created and managed by MThreadPool, but are independent threads. These threads can be used for longer running tasks. Since they are not created from the thread pool, the number and workload of such threads should be managed carefully to avoid oversubscription issues, where the number of busy threads exceeds the hardware resources available.
+
+MMutexLock is a locking primitive that can be used with both MThreadPool and MThreadAsync threads. It allows standard mutex locking of threads.
+
+MSpinLock is a lock that spin-waits, so can be more efficient than a mutex lock in situations where the lock is likely to be held for a very short time. However since the lock spin waits, it is a heavy CPU consumer, and should not be used when locks are likely to be held for a long time.
+
+Threading with Python is possible with the built-in thread module. The thread module can be used to implement threaded algorithms for non-Maya API functionality. Please see the Python and threading section of the Python Guide for more details.
+
+The following example demonstrates how to find primes using a serial and a threaded approach. The threaded approach uses the MThreadPool class.
+
+

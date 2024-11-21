@@ -1,278 +1,458 @@
-#!/usr/bin/env python
-#----------------------------------------------------------------------------#
-#------------------------------------------------------------------ HEADER --#
-
-"""
-@author:
-    abtidona
-
-@description:
-    this is a description
-
-@applications:
-    - groom
-    - cfx
-    - fur
-"""
-
-#----------------------------------------------------------------------------#
-#----------------------------------------------------------------- IMPORTS --#
-
-# built-in
-import sys, os
+from dataclasses import dataclass
+from typing import Optional, List, Dict, Union, Any
+from enum import Enum
+from PySide6 import QtWidgets, QtGui, QtCore
+from pathlib import Path
+import maya.cmds as cmds
+from dw_logger import get_logger
+from ..dendrology.cache_leaf import CacheItem
 import re
-# ----- Edit sysPath -----#
-rdPath = 'E:\\dw_coding\\dw_open_tools'
-if not rdPath in sys.path:
-    print(f"Add {rdPath} to sysPath")
-    sys.path.insert(0, rdPath)
+from .wgt_cache_operation import CacheOperationManager, OperationResult, CacheOperationStatus
 
-MODE = 0
+logger = get_logger()
 
-# internal
-try:
-    import hou
-    from PySide6 import QtWidgets, QtGui, QtCore
+class PresetType(Enum):
+    NUCLEUS = "nucleus"
+    NCLOTH = "nCloth"
+    NHAIR = "hairSystem"
+    NRIGID = "nRigid"
+    ZIVA = "zSolver"
 
-    MODE = 2
-except:
-    pass
+@dataclass
+class PresetInfo:
+    """Data container for simulation presets."""
+    name: str
+    node_type: PresetType
+    attributes: Dict[str, Any]
+    version: str
+    cache_name: Optional[str] = None
+    solver: Optional[str] = None
 
-if not MODE > 0:
-    try:
-        import maya.cmds as cmds
-        from PySide6 import QtWidgets, QtGui, QtCore
-        from dw_maya.DynEval.dendrology.cache_leaf import CacheItem
-        from  dw_maya.DynEval import sim_cmds
-        from dw_maya.DynEval.sim_cmds import ziva_cmds
-
-        import dw_maya.dw_presets_io as dw_json
-        MODE = 1
-    except:
-        pass
-
-# external
-if MODE == 0:
-    from PySide6 import QtWidgets, QtCore
+class CacheType(Enum):
+    NCACHE = "nCache"
+    GEOCACHE = "geoCache"
+    ALEMBIC = "alembic"
 
 
-def get_all_treeitems(qtreewidget):
-    """Get all QTreeWidgetItem of given QTreeWidget
-
-    Args:
-        qtreewidget(class): QTreeWidget object
-
-    Returns:
-        list: QTreeWidgetItem
-    """
-
-    items = []
-    iterator = QtWidgets.QTreeWidgetItemIterator.All
-    all_items = QtWidgets.QTreeWidgetItemIterator(qtreewidget,
-                                                 iterator) or None
-    if all_items is not None:
-        while all_items.value():
-            item = all_items.value()
-            items.append(item)
-            all_items += 1
-    return items
+@dataclass
+class CacheInfo:
+    """Data container for cache information."""
+    name: str
+    path: Path
+    node: str
+    version: int
+    cache_type: CacheType
+    is_valid: bool = True
+    is_attached: bool = False
+    mesh: Optional[str] = None
 
 
-class CacheTree(QtWidgets.QWidget):
+class CacheColors:
+    """Color definitions for different cache types."""
+    MAYA_BLUE = QtGui.QColor(68, 78, 88)
+    GEO_RED = QtGui.QColor(128, 18, 18)
+    NCLOTH_GREEN = QtGui.QColor(29, 128, 18)
+    ABC_PURPLE = QtGui.QColor(104, 66, 129)
+
+    @classmethod
+    def get_color(cls, cache_type: CacheType) -> QtGui.QColor:
+        return {
+            CacheType.NCACHE: cls.NCLOTH_GREEN,
+            CacheType.GEOCACHE: cls.GEO_RED,
+            CacheType.ALEMBIC: cls.ABC_PURPLE
+        }.get(cache_type, cls.MAYA_BLUE)
+
+
+class CacheTreeWidget(QtWidgets.QWidget):
+    """Enhanced widget for managing simulation caches."""
+
+    cache_selected = QtCore.Signal(CacheInfo)  # Emitted when cache is selected
+    cache_attached = QtCore.Signal(CacheInfo)  # Emitted when cache is attached
+    cache_detached = QtCore.Signal(CacheInfo)  # Emitted when cache is detached
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self.node = None
+        self.cache_manager = CacheOperationManager(self)
+        self._setup_ui()
+        self._connect_signals()
 
-        # UI Setup
+    def _setup_ui(self):
+        """Initialize UI components."""
+        layout = QtWidgets.QVBoxLayout(self)
+
+        # Filter/Search
+        self.filter_box = QtWidgets.QLineEdit()
+        self.filter_box.setPlaceholderText("Filter caches...")
+        layout.addWidget(self.filter_box)
+
+        # Cache Tree
         self.cache_tree = QtWidgets.QTreeWidget()
-        self.setup_ui()
+        self.cache_tree.setColumnCount(2)
+        self.cache_tree.setHeaderLabels(["Cache", "Version"])
+        self.cache_tree.setSelectionMode(QtWidgets.QAbstractItemView.ExtendedSelection)
+        self.cache_tree.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
 
-        # Layout Setup
-        main_layout = QtWidgets.QVBoxLayout(self)
-        main_layout.addWidget(self.cache_tree)
-
-    def setup_ui(self):
+        # Configure tree appearance
+        self.cache_tree.setIndentation(0)
         self.cache_tree.setMinimumWidth(280)
         self.cache_tree.setMaximumWidth(280)
-        self.cache_tree.setColumnCount(1)
-        self.cache_tree.setColumnWidth(0, 170)
-        self.cache_tree.setIndentation(0)
-        self.cache_tree.setItemsExpandable(False)
-        self.cache_tree.setExpandsOnDoubleClick(False)
-        self.cache_tree.setHeaderLabels([""])
-        self.cache_tree.header().setDefaultAlignment(QtCore.Qt.AlignCenter)
-        self.cache_tree.setSelectionMode(QtWidgets.QAbstractItemView.ExtendedSelection)
+        self.cache_tree.setColumnWidth(0, 200)
+        self.cache_tree.setColumnWidth(1, 80)
 
-        # Context menu setup
-        self.cache_tree.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
-        self.cache_tree.customContextMenuRequested.connect(self.context_cache)
+        layout.addWidget(self.cache_tree)
 
-    def selected(self):
-        return self.cache_tree.currentItem()
+        # Actions toolbar
+        action_layout = QtWidgets.QHBoxLayout()
 
-    def select(self, item_id=0):
-        if self.cache_tree.topLevelItem(item_id):
-            self.cache_tree.topLevelItem(item_id).setSelected(True)
+        self.attach_btn = QtWidgets.QPushButton("Attach")
+        self.detach_btn = QtWidgets.QPushButton("Detach")
+        self.materialize_btn = QtWidgets.QPushButton("Materialize")
 
-    def set_node(self, treenode):
-        self.node = treenode
+        for btn in (self.attach_btn, self.detach_btn, self.materialize_btn):
+            btn.setEnabled(False)
+            action_layout.addWidget(btn)
+
+        layout.addLayout(action_layout)
+
+    def _connect_signals(self):
+        """Connect widget signals."""
+        self.filter_box.textChanged.connect(self._filter_caches)
+        self.cache_tree.customContextMenuRequested.connect(self._show_context_menu)
+        self.cache_tree.itemSelectionChanged.connect(self._handle_selection)
+
+        # Button connections
+        self.attach_btn.clicked.connect(self._attach_selected)
+        self.detach_btn.clicked.connect(self._detach_selected)
+        self.materialize_btn.clicked.connect(self._materialize_selected)
+
+    def set_node(self, node):
+        """Set the current simulation node and update cache list."""
+        self.node = node
         self.build_cache_list()
 
-    def add_menu_action(menu: QtWidgets.QMenu, title: str, handler: callable):
-        action = QtWidgets.QAction(title, menu)
-        action.triggered.connect(handler)
-        menu.addAction(action)
-
-    def context_cache(self, position: QtCore.QPoint):
-        """Creates a context menu for cache items in the tree."""
-        menu = QtWidgets.QMenu(self)
-        add_menu_action(menu, 'Attach Cache', self.attach_selected_cache)
-
-        node_types = [node.node_type for node in self.node]
-        if 'nCloth' in node_types or 'zSolverTransform' in node_types:
-            add_menu_action(menu, 'Materialize', self.materialize)
-
-        add_menu_action(menu, 'Restore Settings', self.restore)
-        menu.exec(self.cache_tree.viewport().mapToGlobal(position))
-
-    def materialize(self):
-        """Materializes the selected caches by duplicating the cloth mesh and assigning the selected cache."""
-        selected_caches = self.cache_tree.selectedItems()
-        if not selected_caches:
-            return
-
-        for cache_node in selected_caches:
-            if self.node.node_type == 'zSolverTransform':
-                ziva_cmds.materialize(cache_node.path)
-            else:
-                sim_cmds.materialize(cache_node.mesh, cache_node.path)
-
-    def restore(self):
-        dyn_item = self.node
-        if isinstance(dyn_item, list):
-            dyn_item = dyn_item[0]
-        sel_caches = self.cache_tree.selectedItems()
-
-        if not sel_caches:
-            return
-
-        for cache_item in sel_caches:
-            name = cache_item.text(0)
-            p = re.compile('v([0-9]{3})')
-            _iter = str(int(p.search(name).group(0)[1:]))
-            solver = dyn_item.solver_name
-            metadata = dyn_item.metadata()
-
-            if os.path.isfile(metadata):
-                print('try loading {} - {}'.format(solver, _iter))
-                data = dw_json.loadJson(metadata)
-                if not solver in data['preset']:
-                    return
-                if not _iter in data['preset'][solver]:
-                    return
-                preset = data['preset'][solver][_iter]
-                ziva_cmds.load_preset(solver,
-                                      preset=preset,
-                                      blend=1)
-                print('loaded : {} - {}'.format(solver, _iter))
-
-    def attach_selected_cache(self):
-
-        sel_caches = self.cache_tree.selectedItems()
-        for cache_node in sel_caches:
-
-            _type = cache_node.cache_type
-
-            if _type == 'nCloth':
-                cmds.waitCursor(state=1)
-                sim_cmds.delete_caches(cache_node.node)
-                cmds.waitCursor(state=0)
-                sim_cmds.attach_ncache(cache_node.path, cache_node.node)
-
-            if _type == 'alembic':
-                # attach cache for ziva
-                for dyn_item in self.node:
-                    suffix = ''
-                    abc = dyn_item.alembic_target() + '.filename'
-                    cmds.setAttr(abc,
-                                 cache_node.cache_file(0, suffix),
-                                 type='string')
-
-            for item in get_all_treeitems(self.cache_tree):
-                if item.is_attached:
-                    item.set_color()
-            cache_node.set_attached()
-
-    def detach_selected_cache(self):
-        sel_caches = self.cache_tree.selectedItems()
-        for cache_node in sel_caches:
-            _type = cache_node.cache_type
-            if _type == 'nCloth':
-                cmds.waitCursor(state=1)
-                sim_cmds.delete_caches(cache_node.node)
-                cmds.waitCursor(state=0)
-            cache_node.set_color()
-
     def build_cache_list(self):
-        """Builds the cache list based on the provided simulation node."""
+        """Build the cache list for the current node."""
         self.cache_tree.clear()
-        caches_tree = []
+        if not self.node:
+            return
 
-        for dyn_item in self.node:
-            if dyn_item.node_type in ['nCloth', 'hairSystem']:
-                cache_items = self._build_cache_items(dyn_item, 'nCache', 'xml')
-            elif dyn_item.node_type == 'zSolverTransform':
-                cache_items = self._build_cache_items(dyn_item, 'alembic', 'abc')
+        try:
+            cache_items = []
+
+            # Get caches based on node type
+            if isinstance(self.node, list):
+                for dyn_item in self.node:
+                    cache_items.extend(self._get_cache_items(dyn_item))
             else:
-                continue
+                cache_items.extend(self._get_cache_items(self.node))
 
-            caches_tree.extend(cache_items)
-            self.cache_tree.setHeaderLabels([str(dyn_item.short_name)])
+            # Sort by version (descending) and add to tree
+            cache_items.sort(key=lambda x: x.cache_info.version, reverse=True)
+            self.cache_tree.addTopLevelItems(cache_items)
 
-        self._populate_cache_tree(caches_tree)
+            # Update header
+            node_name = self.node[0].short_name if isinstance(self.node, list) else self.node.short_name
+            self.cache_tree.setHeaderLabels([node_name, "Version"])
 
-    def _build_cache_items(self, dyn_item, cache_type: str, file_extension: str) -> list:
-        """Helper function to build cache items for a given dynamic item."""
-        caches = dyn_item.get_cache_list()
-        cachedir = dyn_item.cache_dir()
-        json_metadata = dyn_item.metadata()
-        node = dyn_item.node
+        except Exception as e:
+            logger.error(f"Failed to build cache list: {e}")
+
+    def _get_cache_items(self, dyn_item) -> List[CacheItem]:
+        """Get cache items for a dynamic item."""
         cache_items = []
 
-        if caches:
+        try:
+            # Determine cache type based on node type
+            cache_type = self._get_cache_type(dyn_item.node_type)
+            if not cache_type:
+                return []
+
+            # Get cache list and create items
+            caches = dyn_item.get_cache_list()
             for cache_name in caches:
-                isvalid, attach = self._cache_metadata(json_metadata, cache_name, dyn_item, file_extension)
-                cache_path = os.path.join(cachedir, f"{cache_name}.{file_extension}")
-                cache_item = CacheItem(name=cache_name, cache_node=node, path=cache_path, isvalid=isvalid,
-                                       attached=attach, _type=cache_type)
-                cache_item.setText(0, cache_name)
-                cache_items.append(cache_item)
+                cache_info = self._create_cache_info(
+                    dyn_item, cache_name, cache_type
+                )
+                if cache_info:
+                    cache_items.append(CacheItem(cache_info))
+
+        except Exception as e:
+            logger.error(f"Failed to get cache items for {dyn_item.node}: {e}")
 
         return cache_items
 
-    def _cache_metadata(self, json_metadata: str, cache_name: str, dyn_item, file_extension: str) -> tuple:
-        """Retrieve cache validity and attachment status from metadata."""
-        isvalid = False
-        attach = False
+    def _get_cache_type(self, node_type: str) -> Optional[CacheType]:
+        """Determine cache type based on node type."""
+        if node_type in ['nCloth', 'hairSystem']:
+            return CacheType.NCACHE
+        elif node_type == 'zSolverTransform':
+            return CacheType.ALEMBIC
+        return None
 
-        if os.path.isfile(json_metadata):
-            data = dw_json.loadJson(json_metadata)
-            isvalid = 'isvalid' in data and cache_name in data['isvalid']
+    def _create_cache_info(self, dyn_item, cache_name: str, cache_type: CacheType) -> Optional[CacheInfo]:
+        """Create cache info object."""
+        try:
+            # Get cache path and metadata
+            cache_dir = Path(dyn_item.cache_dir())
+            extension = 'abc' if cache_type == CacheType.ALEMBIC else 'xml'
+            cache_path = cache_dir / f"{cache_name}.{extension}"
 
-        if dyn_item.node_type == 'nCloth':
-            attach = sim_cmds.cache_is_attached(dyn_item.node, cache_name)
-        elif dyn_item.node_type == 'zSolverTransform':
-            attach = ziva_cmds.cache_is_attached(dyn_item.alembic_target(), cache_name)
+            # Get version from cache name
+            version_match = re.search(r'v(\d{3})', cache_name)
+            version = int(version_match.group(1)) if version_match else 0
 
-        return isvalid, attach
+            # Check validity and attachment
+            metadata = Path(dyn_item.metadata())
+            is_valid = self._check_cache_validity(metadata, cache_name)
+            is_attached = self._check_cache_attachment(dyn_item, cache_name)
 
+            return CacheInfo(
+                name=cache_name,
+                path=cache_path,
+                node=dyn_item.node,
+                version=version,
+                cache_type=cache_type,
+                is_valid=is_valid,
+                is_attached=is_attached,
+                mesh=getattr(dyn_item, 'mesh_transform', None)
+            )
 
-    def _populate_cache_tree(self, caches_tree: list):
-        """Sorts and populates cache items into the QTreeWidget."""
+        except Exception as e:
+            logger.error(f"Failed to create cache info for {cache_name}: {e}")
+            return None
 
-        # Get the version information for sorting, assuming the version is encoded as 'v###'
-        sorted_caches = sorted(caches_tree, key=lambda item: item.version, reverse=True)
+    def _attach_selected(self):
+        """Handle attach operation for selected caches."""
+        selected_items = self.cache_tree.selectedItems()
+        if not selected_items:
+            return
 
-        # Add sorted items to the cache tree
-        self.cache_tree.addTopLevelItems(sorted_caches)
+        cache_infos = [item.cache_info for item in selected_items]
+        results = self.cache_manager.attach_caches(cache_infos)
+
+        self._handle_operation_results(results, "Attach Operation")
+        self.build_cache_list()  # Refresh the list
+
+    def _detach_selected(self):
+        """Handle detach operation for selected caches."""
+        selected_items = self.cache_tree.selectedItems()
+        if not selected_items:
+            return
+
+        cache_infos = [item.cache_info for item in selected_items]
+        results = self.cache_manager.detach_caches(cache_infos)
+
+        self._handle_operation_results(results, "Detach Operation")
+        self.build_cache_list()  # Refresh the list
+
+    def _materialize_selected(self):
+        """Handle materialize operation for selected caches."""
+        selected_items = self.cache_tree.selectedItems()
+        if not selected_items:
+            return
+
+        cache_infos = [item.cache_info for item in selected_items]
+        results = self.cache_manager.materialize_caches(cache_infos)
+
+        self._handle_operation_results(results, "Materialize Operation")
+
+    def _handle_operation_results(self, results: List[OperationResult], operation_name: str):
+        """Display results of cache operations."""
+        failed_ops = [r for r in results if r.status == CacheOperationStatus.FAILED]
+
+        if failed_ops:
+            message = f"\n".join([
+                f"• {r.message}: {str(r.error)}"
+                for r in failed_ops
+            ])
+
+    def _filter_caches(self, filter_text: str):
+        """Filter cache items based on search text."""
+        for i in range(self.cache_tree.topLevelItemCount()):
+            item = self.cache_tree.topLevelItem(i)
+            should_show = (
+                    filter_text.lower() in item.cache_info.name.lower() or
+                    f"v{item.cache_info.version:03d}".lower() in filter_text.lower()
+            )
+            item.setHidden(not should_show)
+
+    def _show_context_menu(self, position: QtCore.QPoint):
+        """Show context menu for cache operations."""
+        menu = QtWidgets.QMenu(self)
+        selected_items = self.cache_tree.selectedItems()
+
+        if not selected_items:
+            return
+
+        # Add basic operations
+        attach_action = menu.addAction("Attach Cache")
+        detach_action = menu.addAction("Detach Cache")
+        menu.addSeparator()
+        materialize_action = menu.addAction("Materialize")
+
+        # Add validation section if cache has validation issues
+        if any(not item.cache_info.is_valid for item in selected_items):
+            menu.addSeparator()
+            validate_action = menu.addAction("Validate Cache")
+
+        # Enable/disable actions based on selection state
+        attach_action.setEnabled(not all(item.cache_info.is_attached for item in selected_items))
+        detach_action.setEnabled(any(item.cache_info.is_attached for item in selected_items))
+
+        # Handle action triggers
+        action = menu.exec_(self.cache_tree.viewport().mapToGlobal(position))
+        if action == attach_action:
+            self._attach_selected()
+        elif action == detach_action:
+            self._detach_selected()
+        elif action == materialize_action:
+            self._materialize_selected()
+        elif action == validate_action:
+            self._validate_selected()
+
+    def _handle_selection(self):
+        """Update UI elements based on selection."""
+        selected_items = self.cache_tree.selectedItems()
+
+        # Update button states
+        self.attach_btn.setEnabled(
+            bool(selected_items) and
+            not all(item.cache_info.is_attached for item in selected_items)
+        )
+        self.detach_btn.setEnabled(
+            bool(selected_items) and
+            any(item.cache_info.is_attached for item in selected_items)
+        )
+        self.materialize_btn.setEnabled(bool(selected_items))
+
+        # Emit selection signal for the first selected item
+        if selected_items:
+            self.cache_selected.emit(selected_items[0].cache_info)
+
+    def _check_cache_validity(self, metadata_path: Path, cache_name: str) -> bool:
+        """Check if cache is valid based on metadata."""
+        try:
+            if not metadata_path.exists():
+                return False
+
+            import json
+            with metadata_path.open('r') as f:
+                metadata = json.load(f)
+
+            # Check if cache is marked as valid in metadata
+            return (
+                    'isvalid' in metadata and
+                    cache_name in metadata['isvalid'] and
+                    metadata['isvalid'][cache_name]
+            )
+        except Exception as e:
+            logger.warning(f"Failed to check cache validity for {cache_name}: {e}")
+            return False
+
+    def _check_cache_attachment(self, dyn_item, cache_name: str) -> bool:
+        """Check if cache is currently attached to the dynamic item."""
+        try:
+            from . import cache_management
+
+            if dyn_item.node_type == 'zSolverTransform':
+                # Check Alembic attachment
+                abc_target = dyn_item.alembic_target()
+                if not abc_target:
+                    return False
+
+                filename_attr = f"{abc_target}.filename"
+                current_cache = cmds.getAttr(filename_attr) or ""
+                return cache_name in current_cache
+
+            else:
+                # Check nCache attachment
+                return cache_management.cache_is_attached(dyn_item.node, cache_name)
+
+        except Exception as e:
+            logger.warning(f"Failed to check cache attachment for {cache_name}: {e}")
+            return False
+
+    def _validate_selected(self):
+        """Validate selected cache files."""
+        selected_items = self.cache_tree.selectedItems()
+        if not selected_items:
+            return
+
+        self.progress = QtWidgets.QProgressDialog(
+            "Validating caches...", "Cancel", 0, len(selected_items), self
+        )
+        self.progress.setWindowModality(QtCore.Qt.WindowModal)
+
+        invalid_caches = []
+        for i, item in enumerate(selected_items):
+            if self.progress.wasCanceled():
+                break
+
+            self.progress.setValue(i)
+            cache_info = item.cache_info
+
+            # Check file existence and basic validation
+            if not self._validate_cache_file(cache_info):
+                invalid_caches.append(cache_info.name)
+
+        self.progress.setValue(len(selected_items))
+
+        if invalid_caches:
+            QtWidgets.QMessageBox.warning(
+                self,
+                "Cache Validation",
+                f"The following caches have validation issues:\n\n" +
+                "\n".join(f"• {name}" for name in invalid_caches)
+            )
+        else:
+            QtWidgets.QMessageBox.information(
+                self,
+                "Cache Validation",
+                "All selected caches are valid."
+            )
+
+    def _validate_cache_file(self, cache_info: CacheInfo) -> bool:
+        """Perform basic validation on cache file."""
+        try:
+            # Check file existence
+            if not cache_info.path.exists():
+                return False
+
+            # Check file size
+            if cache_info.path.stat().st_size == 0:
+                return False
+
+            # Perform format-specific validation
+            if cache_info.cache_type == CacheType.ALEMBIC:
+                return self._validate_abc_cache(cache_info.path)
+            else:
+                return self._validate_ncache(cache_info.path)
+
+        except Exception as e:
+            logger.error(f"Cache validation failed for {cache_info.name}: {e}")
+            return False
+
+    def _validate_abc_cache(self, path: Path) -> bool:
+        """Validate Alembic cache file."""
+        try:
+            # Basic ABC validation (could be expanded)
+            with path.open('rb') as f:
+                header = f.read(8)
+                # Check ABC magic number
+                return header.startswith(b'HDF')
+        except Exception:
+            return False
+
+    def _validate_ncache(self, path: Path) -> bool:
+        """Validate nCache file."""
+        try:
+            # Basic XML validation for nCache
+            with path.open('r') as f:
+                content = f.read(1024)  # Read first 1KB
+                return (
+                        '<?xml' in content and
+                        'cacheVersion' in content
+                )
+        except Exception:
+            return False

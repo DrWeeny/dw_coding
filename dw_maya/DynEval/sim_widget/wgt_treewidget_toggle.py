@@ -1,63 +1,90 @@
 from PySide6 import QtCore, QtGui, QtWidgets
-from dw_maya.DynEval.dendrology.nucleus_leaf.tree_togglebutton import ToggleButtonDelegate
+from typing import Optional, Dict, Any
+from ..dendrology.nucleus_leaf.base_standarditem import BaseSimulationItem
+from dw_maya.DynEval.dendrology.tree_togglebutton import ToggleButtonDelegate
+from dw_logger import get_logger
 
-class TreeViewWithToggle(QtWidgets.QWidget):
-    def __init__(self):
-        super(TreeViewWithToggle, self).__init__()
+logger = get_logger()
 
-        # Create the QTreeView
-        self.tree_view = QtWidgets.QTreeView(self)
-        self.tree_view.setHeaderHidden(False)
-        self.tree_view.setMaximumWidth(280)
-        self.tree_view.setMaximumHeight(300)
-        self.tree_view.setExpandsOnDoubleClick(False)
-        self.tree_view.setAlternatingRowColors(True)
-        self.tree_view.setColumnWidth(0, 250)
-        self.tree_view.setColumnWidth(1, 25)
 
-        # Create the model
-        self.model = QtGui.QStandardItemModel()
-        self.model.setHorizontalHeaderLabels(["Name", "State"])
+class SimulationTreeModel(QtGui.QStandardItemModel):
+    """Custom model for simulation nodes with toggle state handling."""
 
-        header = self.tree_view.header()
-        header.setStretchLastSection(False)
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._toggle_column = 1  # Column for toggle buttons
 
-        # Set the model to the tree view
-        self.tree_view.setModel(self.model)
+    def data(self, index: QtCore.QModelIndex, role: int = QtCore.Qt.DisplayRole) -> Any:
+        """Override data method to handle toggle state."""
+        if not index.isValid():
+            return None
 
-        # Add example rows
-        self.add_row("Item 1", True)
-        self.add_row("Item 2", False)
+        if role == QtCore.Qt.UserRole + 3:  # Toggle state
+            return super().data(index, role) or False
 
-        # Create and set the toggle button delegate
-        toggle_delegate = ToggleButtonDelegate()
-        toggle_delegate.toggled.connect(self.on_toggled)
-        self.tree_view.setItemDelegateForColumn(1, toggle_delegate)
+        return super().data(index, role)
 
-        # Layout
-        layout = QtWidgets.QVBoxLayout(self)
-        layout.addWidget(self.tree_view)
-        self.setLayout(layout)
+    def setData(self, index: QtCore.QModelIndex, value: Any, role: int = QtCore.Qt.EditRole) -> bool:
+        """Override setData to handle toggle state changes."""
+        if not index.isValid():
+            return False
 
-    def add_row(self, name, state):
-        # Create the name item
-        name_item = QtGui.QStandardItem(name)
+        if role == QtCore.Qt.UserRole + 3:
+            # Update toggle state
+            success = super().setData(index, value, role)
+            if success:
+                # Update Maya node state if needed
+                item = self.itemFromIndex(index)
+                if hasattr(item, 'set_state'):
+                    try:
+                        item.set_state(value)
+                    except Exception as e:
+                        logger.error(f"Failed to update Maya node state: {e}")
+                        return False
+                self.dataChanged.emit(index, index, [role])
+            return success
 
-        # Create the toggle item
-        toggle_item = QtGui.QStandardItem()
-        toggle_item.setData(state, QtCore.Qt.UserRole + 3)  # Store toggle state in UserRole + 3
+        return super().setData(index, value, role)
 
-        # Add the items to the model
-        self.model.appendRow([name_item, toggle_item])
 
-    def on_toggled(self, index, new_state):
-        print(f"Toggled {index.row()} to {'On' if new_state else 'Off'}")
+class SimulationTreeView(QtWidgets.QTreeView):
+    """Custom tree view for simulation nodes with toggle support."""
 
-    def selectedItems(self):
-        return self.selectedItems()
+    def __init__(self, parent=None):
+        super().__init__(parent)
 
-    def currentItem(self):
-        return self.currentItem()
+        # Setup delegate
+        self.toggle_delegate = ToggleButtonDelegate(self)
+        self.setItemDelegateForColumn(1, self.toggle_delegate)
 
-    def setCurrentItem(self, item):
-        self.setCurrentItem(item)
+        # Configure view
+        self.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
+        self.setAlternatingRowColors(True)
+        self.setAnimated(True)
+        self.setIndentation(20)
+        self.setSortingEnabled(True)
+
+        self.setModel(SimulationTreeModel())
+
+        # Connect toggle signal to handle batch operations
+        self.toggle_delegate.toggled.connect(self._handle_toggle)
+
+    def _handle_toggle(self, index: QtCore.QModelIndex, state: bool):
+        """Handle toggle events with support for batch operations."""
+        selected_indexes = self.selectedIndexes()
+
+        # If multiple items are selected, toggle them all
+        if len(selected_indexes) > 1 and index in selected_indexes:
+            items = [
+                self.model().itemFromIndex(idx)
+                for idx in selected_indexes
+                if isinstance(self.model().itemFromIndex(idx), BaseSimulationItem)
+            ]
+            # Use the first item to handle batch toggle
+            if items:
+                items[0].batch_toggle(items, state)
+        else:
+            # Single item toggle
+            item = self.model().itemFromIndex(index)
+            if isinstance(item, BaseSimulationItem):
+                item.set_state(state)

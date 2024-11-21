@@ -1,8 +1,5 @@
 import sys
-from typing import List, Any
-
-from PySide6.QtGui import QStandardItem
-
+from typing import List, Any, Dict, Set
 import shutil
 from PySide6 import QtWidgets, QtGui, QtCore  # Use PySide6 for Maya compatibility with Python 3
 from pathlib import Path
@@ -11,6 +8,9 @@ import mmap
 
 # External module imports (always required)
 import dw_maya.dw_presets_io as dw_json
+from dw_logger import get_logger
+
+logger = get_logger()
 
 # Application mode variables
 MODE = 0
@@ -30,7 +30,7 @@ try:
     from .dendrology.nucleus_leaf import *
     from .dendrology.ziva_leaf import ZSolverTreeItem, FasciaTreeItem, SkinTreeItem
     from .dendrology.cache_leaf import CacheItem
-    from .sim_widget import CacheTree, CommentEditor, MapTree, TreeViewWithToggle
+    from .sim_widget import StateManager, SimulationTreeView, PresetManager, CacheTreeWidget, MapTreeWidget, PresetWidget, CommentEditor, TreeBuildProgress
     MODE = 1
 except ImportError:
     pass
@@ -146,162 +146,413 @@ class DynEvalUI(QtWidgets.QMainWindow):
     save_preset = True
 
     def __init__(self, parent=None):
-        super(DynEvalUI, self).__init__(parent)
-        self.setGeometry(867, 546, 900, 400)
-        self.setWindowTitle('UI for Dynamic Systems')
-        self.edit_mode = 'cache'
-        self.cache_mode = 'override' or 'increment'
+        super().__init__(parent)
 
+        # Core managers
+        self.state_manager = StateManager()
+        self.preset_manager = PresetManager()
+
+        # UI Setup
+        self.setGeometry(867, 546, 1200, 600)  # Wider to accommodate new features
+        self.setWindowTitle('Dynamic Systems Manager')
+
+        # Track if mouse is over the window
+        self.setMouseTracking(True)
+        self._mouse_over = False
+
+        # Setup central widget and layout
         self.central_widget = QtWidgets.QWidget(self)
         self.setCentralWidget(self.central_widget)
 
-        self.init_ui()
+        # Initialize UI
+        self._setup_ui()
+        self._setup_shortcuts()
 
+    def _setup_ui(self):
+        """Initialize the main UI layout."""
 
-    def init_ui(self):
-
-        """
-        There is a tree node representing the solver
-        A middle widget with maps, cache list or deformer stack
-        A third widget with all the tabs and tools
-
-        Returns:
-
-        """
         main_layout = QtWidgets.QHBoxLayout()
 
+        # ====================================================================
+        # LEFT PANEL
+        # ====================================================================
+        left_panel = QtWidgets.QVBoxLayout()
+
         # Set up the main tree model
-        self.dyn_eval_tree = TreeViewWithToggle()
-        self.dyn_eval_tree.tree_view.setSelectionMode(QtWidgets.QAbstractItemView.ExtendedSelection)
+        self.dyn_eval_tree = SimulationTreeView()
 
         # Create a contextual menu
         self.dyn_eval_tree.installEventFilter(self)
         self.dyn_eval_tree.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
-        self.dyn_eval_tree.customContextMenuRequested.connect(self.context_main)
+        self.dyn_eval_tree.customContextMenuRequested.connect(self._show_tree_context_menu)
 
+        # Add status label beneath tree
+        self.status_layout = QtWidgets.QVBoxLayout()
+        self.status_label = QtWidgets.QLabel()
+        self.status_label.setAlignment(QtCore.Qt.AlignLeft)
+        self.status_label.hide()
 
+        # Add loading indicator
+        self.loading_movie = QtGui.QMovie(":/icons/loading.gif")
+        self.loading_label = QtWidgets.QLabel()
+        self.loading_label.setMovie(self.loading_movie)
+        self.loading_label.hide()
+
+        status_wrapper = QtWidgets.QHBoxLayout()
+        status_wrapper.addWidget(self.loading_label)
+        status_wrapper.addWidget(self.status_label, stretch=1)
+        self.status_layout.addLayout(status_wrapper)
+
+        left_panel.addLayout(self.status_layout)
+
+        main_layout.addLayout(left_panel)
+
+        # ====================================================================
+        # MIDDLE PANEL
+        # ====================================================================
+        middle_panel = QtWidgets.QVBoxLayout()
         # Set up the cache and maps area
         self.cb_mode_picker = QtWidgets.QComboBox()
         # todo : deformer list
-        self.cb_mode_picker.addItems(["Cache List", "Map List"])
-        self.cache_tree = CacheTree()
-        self.maps_tree = MapTree()
-        self.maps_tree.hide()
+        self.mode_selector.addItems(["Cache", "Maps", "Presets"])
+        middle_panel.addWidget(self.mode_selector)
 
-        # Layout for Cache/Map
-        vl_cachemap = QtWidgets.QVBoxLayout()
-        vl_cachemap.addWidget(self.cb_mode_picker)
-        vl_cachemap.addWidget(self.cache_tree)
-        vl_cachemap.addWidget(self.maps_tree)
-        vl_cachemap.setStretch(0)
+        # Stacked widget for different views
+        self.stack_widget = QtWidgets.QStackedWidget()
 
-        # Tab setup
-        self.tabs = QtWidgets.QTabWidget()
-        self.tab1_comment = CommentEditor()
-        self.tabs.addTab(self.tab1_comment, "comments")
-        # TODO : add other tabs: paint presets attributes wedging sim rig utils
-        self.tabs.resize(200, 500)
+        # Cache view
+        self.cache_tree = CacheTreeWidget()
+        self.stack_widget.addWidget(self.cache_tree)
 
+        # Maps view
+        self.maps_tree = MapTreeWidget()
+        self.stack_widget.addWidget(self.maps_tree)
 
-        # Add layouts to main layout
-        main_layout.addWidget(self.dyn_eval_tree)
-        main_layout.addLayout(vl_cachemap)
-        main_layout.addWidget(self.tabs)
+        # Preset view
+        self.preset_widget = PresetWidget()
+        self.stack_widget.addWidget(self.preset_widget)
+        middle_panel.addWidget(self.stack_widget)
+        main_layout.addLayout(middle_panel)
 
-        # Connections
-        self.cb_mode_picker.currentIndexChanged.connect(self.cache_map_on_change)
-        self.dyn_eval_tree.tree_view.selectionModel().selectionChanged.connect(self.cache_map_sel)
-        self.tab1_comment.save.connect(self.save_comment)
-        # Handle toggle actions with itemChanged signal
-        self.dyn_eval_tree.model.itemChanged.connect(self.on_toggle)
+        # ====================================================================
+        # RIGHT PANEL
+        # ====================================================================
+        self.details_panel = QtWidgets.QTabWidget()
+        self.details_panel.setMinimumWidth(300)
 
-        self.build_tree()
+        # Comments tab
+        self.comments_tab = CommentEditor()
+        self.details_panel.addTab(self.comments_tab, "Comments")
 
+        # Info tab (for showing node/cache/map details)
+        self.info_tab = QtWidgets.QTextEdit()
+        self.info_tab.setReadOnly(True)
+        self.details_panel.addTab(self.info_tab, "Info")
+
+        main_layout.addWidget(self.details_panel)
+
+        # Connect signals
+        self._connect_signals()
+
+    def _connect_signals(self):
+        """Connect all UI signals."""
+        # Mode selector
+        self.mode_selector.currentIndexChanged.connect(self._handle_mode_change)
+
+        # Tree view signals
+        self.dyn_eval_tree.selectionModel().selectionChanged.connect(
+            self._handle_tree_selection
+        )
+
+        # Cache signals
+        self.cache_tree.cache_selected.connect(self._handle_cache_selection)
+        self.cache_tree.cache_attached.connect(self._handle_cache_attached)
+
+        # Maps signals
+        self.maps_tree.map_edited.connect(self._handle_map_edited)
+
+        # Preset signals
+        self.preset_widget.preset_applied.connect(self._handle_preset_applied)
+
+        # Comment signals
+        self.comments_tab.save_requested.connect(self._handle_comment_save)
+
+    def _handle_mode_change(self, index: int):
+        """Handle switching between cache/maps/preset modes."""
+        self.stack_widget.setCurrentIndex(index)
+        current_item = self.get_selected_tree_item()
+
+        if current_item:
+            if index == 0:  # Cache mode
+                self.cache_tree.set_node(current_item)
+            elif index == 1:  # Maps mode
+                self.maps_tree.set_node(current_item)
+            else:  # Preset mode
+                self.preset_widget.set_node(current_item)
+
+    def _handle_tree_selection(self):
+        """Handle selection changes in main tree."""
+        current_item = self.get_selected_tree_item()
+        if not current_item:
+            return
+
+        # Update current view based on mode
+        current_mode = self.mode_selector.currentIndex()
+        self._handle_mode_change(current_mode)
+
+        # Update info panel
+        self._update_info_panel(current_item)
+
+    def _update_info_panel(self, item):
+        """Update info panel with current item details."""
+        info_text = []
+        info_text.append(f"Node: {item.node}")
+        info_text.append(f"Type: {item.node_type}")
+
+        if hasattr(item, 'solver_name'):
+            info_text.append(f"Solver: {item.solver_name}")
+
+        if hasattr(item, 'mesh_transform'):
+            info_text.append(f"Mesh: {item.mesh_transform}")
+
+        self.info_tab.setText("\n".join(info_text))
+
+    def _show_tree_context_menu(self, position: QtCore.QPoint):
+        """Show context menu for tree items."""
+        menu = QtWidgets.QMenu(self)
+        current_item = self.get_selected_tree_item()
+
+        if current_item:
+            # Basic operations
+            menu.addAction("Select in Maya", self._select_in_maya)
+            menu.addSeparator()
+
+            # Add type-specific operations
+            if current_item.node_type in ['nCloth', 'hairSystem']:
+                cache_menu = menu.addMenu("Cache")
+                cache_menu.addAction("Create nCache", self._create_ncache)
+
+            elif current_item.node_type == 'zSolverTransform':
+                cache_menu = menu.addMenu("Cache")
+                cache_menu.addAction("Create Alembic", self._create_abc_cache)
+
+        menu.exec_(self.dyn_eval_tree.viewport().mapToGlobal(position))
 
     # ====================================================================
     # TREE BUILDING METHODS
     # ====================================================================
     def build_tree(self):
-        """
-        Populates the model with items representing nucleus-based and Ziva elements.
-        Clears the current model contents before rebuilding.
-        """
-        # Clear existing items to rebuild the tree
-        self.dyn_eval_tree.model.clear()
+        """Build the complete simulation hierarchy tree."""
+        try:
+            self._show_status("Initializing...", True)
+            self.dyn_eval_tree.model.clear()
 
-        # Populate nucleus and ziva trees separately
-        self._build_nucleus_tree()
-        self._build_ziva_tree()
+            # Get data (safely in main thread)
+            self._show_status("Loading Nucleus systems...", True)
+            nucleus_data = mu.executeInMainThreadWithResult(self._get_nucleus_data)
 
-    def _build_nucleus_tree(self):
-        """
-        Helper to populate the tree with nucleus-based elements.
-        This includes characters, solvers, and dynamic elements like nCloth and nHair.
-        """
-        # Retrieve the system hierarchy for nucleus items
-        system_hierarchy = sim_cmds.dw_get_hierarchy()
+            self._show_status("Loading Ziva systems...", True)
+            ziva_data = mu.executeInMainThreadWithResult(self._get_ziva_data)
 
-        # Loop through each character to build the tree
-        for character, solvers in system_hierarchy.items():
-            char_item = CharacterTreeItem(character)  # Create the character item
+            # Build trees
+            if nucleus_data:
+                self._show_status("Building Nucleus tree...", True)
+                self._build_nucleus_tree(nucleus_data)
 
-            # Sort solvers and loop through each one, attaching dynamic elements
-            for solver in sim_cmds.sort_list_by_outliner(solvers):
-                solver_item = NucleusStandardItem(solver)
-                char_item.appendRow(solver_item)
-                elements = solvers[solver]
+            if ziva_data:
+                self._show_status("Building Ziva tree...", True)
+                self._build_ziva_tree(ziva_data)
 
-                # Populate cloth, hair, and rigid items
-                self._populate_elements(elements, solver_item)
+            # Expand items
+            self._show_status("Finalizing...", True)
+            for i in range(self.dyn_eval_tree.model.rowCount()):
+                index = self.dyn_eval_tree.model.index(i, 0)
+                self.dyn_eval_tree.expand(index)
 
-            # Add the character item to the main model
-            self.dyn_eval_tree.model.appendRow(char_item)
+            self._hide_status()
 
-    def _build_ziva_tree(self):
-        """
-        Helper to populate the tree with Ziva simulation elements.
-        This includes characters, muscles, and skin nodes.
-        """
-        # Retrieve the Ziva system hierarchy
-        ziva_hierarchy = ziva_cmds.ziva_sys()
+        except Exception as e:
+            logger.error(f"Failed to build tree: {e}")
 
-        # Loop through each character to build Ziva-related elements
-        for character, node_types in ziva_hierarchy.items():
-            char_item = CharacterTreeItem(character)
+    def _show_status(self, message: str, loading: bool = False):
+        """Show status message with optional loading animation."""
+        self.status_label.setText(message)
+        self.status_label.show()
 
-            # Populate muscles and skins under the character item
-            self._populate_items(node_types.get('muscle', []), FasciaTreeItem, char_item)
-            self._populate_items(node_types.get('skin', []), SkinTreeItem, char_item)
+        if loading:
+            self.loading_movie.start()
+            self.loading_label.show()
+        else:
+            self.loading_movie.stop()
+            self.loading_label.hide()
 
-            # Add the character item to the main model
-            self.dyn_eval_model.appendRow(char_item)
+    def _hide_status(self):
+        """Hide status indicators."""
+        self.loading_movie.stop()
+        self.loading_label.hide()
+        self.status_label.hide()
 
-    def _populate_elements(self, elements, parent_item):
-        """
-        Populates dynamic elements such as nCloth, hairSystem, and nRigid under a parent item.
+    def _get_nucleus_data(self) -> Dict[str, Any]:
+        """Gather nucleus system data safely."""
+        try:
+            return sim_cmds.dw_get_hierarchy()
+        except Exception as e:
+            logger.error(f"Failed to get nucleus data: {e}")
+            return {}
 
-        Args:
-            elements (dict): Dictionary with element types as keys (e.g., 'nCloth') and nodes as values.
-            parent_item (QtGui.QStandardItem): The parent tree item to attach elements to.
-        """
-        # Populate each element type
-        self._populate_items(elements.get('nCloth', []), ClothTreeItem, parent_item)
-        self._populate_items(elements.get('hairSystem', []), HairTreeItem, parent_item)
-        self._populate_items(elements.get('nRigid', []), NRigidTreeItem, parent_item)
+    def _get_ziva_data(self) -> Dict[str, Any]:
+        """Gather Ziva system data safely."""
+        try:
+            return ziva_cmds.ziva_sys()
+        except Exception as e:
+            logger.error(f"Failed to get Ziva data: {e}")
+            return {}
 
-    def _populate_items(self, nodes, item_class, parent_item):
-        """
-        Helper function to populate items of a specific type under a given parent item.
+    def _build_nucleus_tree(self, system_hierarchy: Dict[str, Any]):
+        """Build nucleus system hierarchy with improved organization.
 
         Args:
-            nodes (list): List of node names to add as items.
-            item_class (type): The class used to create items (e.g., ClothTreeItem).
-            parent_item (QtGui.QStandardItem): The parent item to append nodes to.
+            system_hierarchy: Dictionary of nucleus systems
         """
-        # Sort and add each node to the parent item
-        for node in sim_cmds.sort_list_by_outliner(nodes):
-            item = item_class(node)
-            parent_item.appendRow(item)
+        try:
+            for character, solvers in system_hierarchy.items():
+                # Create character group
+                char_item = CharacterTreeItem(character)
+
+                # Sort and add solvers
+                sorted_solvers = sim_cmds.sort_list_by_outliner(solvers.keys())
+                for solver in sorted_solvers:
+                    # Create solver item
+                    solver_item = NucleusStandardItem(solver)
+
+                    # Add dynamic elements to solver
+                    elements = solvers[solver]
+                    if any(elements.get(key) for key in ['nCloth', 'hairSystem', 'nRigid']):
+                        self._add_dynamic_elements(elements, solver_item)
+
+                    char_item.appendRow(solver_item)
+
+                self.dyn_eval_tree.model.appendRow(char_item)
+
+        except Exception as e:
+            logger.error(f"Failed to build nucleus tree: {e}")
+
+    def _build_ziva_tree(self, ziva_hierarchy: Dict[str, Any]):
+        """Build Ziva system hierarchy with improved organization.
+
+        Args:
+            ziva_hierarchy: Dictionary of Ziva systems
+        """
+        try:
+            for character, node_types in ziva_hierarchy.items():
+                # Create character group
+                char_item = CharacterTreeItem(character)
+
+                # Add solver if present
+                solver = node_types.get('solver')
+                if solver:
+                    solver_item = ZSolverTreeItem(solver)
+                    char_item.appendRow(solver_item)
+
+                # Add muscles and skins with proper ordering
+                for node_type in ['muscle', 'skin']:
+                    nodes = node_types.get(node_type, [])
+                    if nodes:
+                        item_class = FasciaTreeItem if node_type == 'muscle' else SkinTreeItem
+                        self._add_ordered_items(nodes, item_class, char_item)
+
+                self.dyn_eval_tree.model.appendRow(char_item)
+
+        except Exception as e:
+            logger.error(f"Failed to build Ziva tree: {e}")
+
+    def _add_dynamic_elements(self, elements: Dict[str, List[str]], parent_item: QtGui.QStandardItem):
+        """Add dynamic elements to parent item with proper organization.
+
+        Args:
+            elements: Dictionary of element types and their nodes
+            parent_item: Parent item to add elements to
+        """
+        # Define element types and their corresponding item classes
+        element_types = [
+            ('nCloth', ClothTreeItem),
+            ('hairSystem', HairTreeItem),
+            ('nRigid', NRigidTreeItem)
+        ]
+
+        for element_type, item_class in element_types:
+            nodes = elements.get(element_type, [])
+            if nodes:
+                self._add_ordered_items(nodes, item_class, parent_item)
+
+    def _add_ordered_items(self, nodes: List[str], item_class: type, parent_item: QtGui.QStandardItem):
+        """Add items in proper outliner order with error handling.
+
+        Args:
+            nodes: List of node names to add
+            item_class: Class to use for creating items
+            parent_item: Parent item to add to
+        """
+        try:
+            sorted_nodes = sim_cmds.sort_list_by_outliner(nodes)
+            for node in sorted_nodes:
+                try:
+                    item = item_class(node)
+                    parent_item.appendRow(item)
+                except Exception as e:
+                    logger.warning(f"Failed to create item for {node}: {e}")
+
+        except Exception as e:
+            logger.error(f"Failed to add ordered items: {e}")
+
+    def refresh_tree(self):
+        """Refresh the tree while maintaining expansion state."""
+        # Store expansion state
+        expanded_items = self._get_expanded_items()
+
+        # Rebuild tree
+        self.build_tree()
+
+        # Restore expansion state
+        self._restore_expanded_items(expanded_items)
+
+    def _get_expanded_items(self) -> Set[str]:
+        """Get set of expanded item paths."""
+        expanded = set()
+
+        def collect_expanded(parent_index):
+            if self.dyn_eval_tree.isExpanded(parent_index):
+                item = self.dyn_eval_tree.model.itemFromIndex(parent_index)
+                expanded.add(self._get_item_path(item))
+
+            for row in range(self.dyn_eval_tree.model.rowCount(parent_index)):
+                child_index = self.dyn_eval_tree.model.index(row, 0, parent_index)
+                collect_expanded(child_index)
+
+        collect_expanded(QtCore.QModelIndex())
+        return expanded
+
+    def _restore_expanded_items(self, expanded_paths: Set[str]):
+        """Restore expansion state from paths."""
+
+        def expand_matched(parent_index):
+            item = self.dyn_eval_tree.model.itemFromIndex(parent_index)
+            if self._get_item_path(item) in expanded_paths:
+                self.dyn_eval_tree.expand(parent_index)
+
+            for row in range(self.dyn_eval_tree.model.rowCount(parent_index)):
+                child_index = self.dyn_eval_tree.model.index(row, 0, parent_index)
+                expand_matched(child_index)
+
+        expand_matched(QtCore.QModelIndex())
+
+    def _get_item_path(self, item: QtGui.QStandardItem) -> str:
+        """Get unique path for tree item."""
+        path = []
+        while item:
+            path.append(item.text())
+            item = item.parent()
+        return '/'.join(reversed(path))
 
     # ====================================================================
     # SELECTION HELPERS
@@ -314,7 +565,7 @@ class DynEvalUI(QtWidgets.QMainWindow):
         Returns:
             QtGui.QStandardItem: The first selected item, if any.
         """
-        indexes = self.dyn_eval_tree.tree_view.selectionModel().selectedRows()
+        indexes = self.dyn_eval_tree.selectionModel().selectedRows()
         if indexes:
             if multiple_selection:
                 return [self.dyn_eval_tree.model.itemFromIndex(index) for index in indexes]
@@ -339,46 +590,6 @@ class DynEvalUI(QtWidgets.QMainWindow):
     # CONTEXT MENU AND ACTIONS
     # ====================================================================
 
-    def context_main(self, position):
-
-        '''
-        Contextual menu, for all the items in the main tree :
-        # Refresh
-        # Create Cache : nCache, Abc, Geometry
-        # Advanced Option for Cache : cacheable attributes, sim rate, x
-        # Save Preset
-        # Restore Preset
-        # Show nRigid show NConstraint
-        # Find Documentation by Characters
-        # smart activation
-        # select Rest Mesh select Input Mesh
-
-        :param position: <<QPos>>
-        '''
-
-        items = self.dyn_eval_tree.selectedItems()
-        menu = QtWidgets.QMenu(self)
-
-        # Open Documentation
-        docu = QtWidgets.QMenu('documentation', self)
-        char = QtWidgets.QAction(self)
-        char.setText('Character PlaceHolder')
-        docu.addAction(char)
-        menu.addMenu(docu)
-
-        # Contextual Menu depending of selection
-        if not items:
-            menu.exec_(self.dyn_eval_tree.tree_view.viewport().mapToGlobal(position))
-            return
-
-        # see what type of Item we had : nCloth, Nucleus, nHairSystem, Ziva...
-        # Check if items are all of the same type
-        unique_types = {i.node_type for i in items}
-        if len(unique_types) == 1:
-            node_type = unique_types.pop() # Get the single unique node type
-            self._context_add_cache_options(menu, node_type)
-
-        menu.exec_(self.dyn_eval_tree.tree_view.viewport().mapToGlobal(position))
 
     def _context_add_cache_options(self, menu, node_type):
         """
@@ -426,44 +637,64 @@ class DynEvalUI(QtWidgets.QMainWindow):
     # ====================================================================
 
     def createZAbcCache(self):
-        """
-        Creates an Alembic cache for selected items and updates metadata.
-        This function supports multiple selections, typically for muscle and skin elements.
-        """
+        """Creates Alembic cache for selected Ziva items."""
         dyn_items = self.dyn_eval_tree.selectedItems()
         if not dyn_items:
             cmds.warning("No items selected for Alembic caching.")
             return
-        current_iter, futurdir, meshes = self._prepare_cache_items(dyn_items)
 
-        # even if an abc cache of one item, it should have only one abc
-        # we support multiple selection if we cache muscle + skin
-        print(futurdir)
-        caches = ziva_cmds.create_cache(futurdir[0], meshes)
-        if len(futurdir) > 1:
-            for file in futurdir:
-                copy_files_safely(caches, file)
+        self._show_status("Preparing Alembic cache...", True)
 
-        # ===============================================================
-        # Comment + preset:
-        comment = self.tab1_comment.getComment() or None
-        preset = ziva_cmds.get_preset(dyn_items[0].solver_name) if self.save_preset else None
-        if comment or preset:
-            self._update_cache_metadata(dyn_items[0],
-                                        {},
-                                        current_iter,
-                                        comment=comment,
-                                        preset=preset)
+        try:
+            current_iter, futurdir, meshes = self._prepare_cache_items(dyn_items)
+
+            # Create Alembic cache
+            self._show_status("Creating Alembic cache...", True)
+            caches = mu.executeInMainThreadWithResult(
+                ziva_cmds.create_cache, futurdir[0], meshes
+            )
+
+            # Handle multiple caches
+            if len(futurdir) > 1:
+                self._show_status("Copying cache files...", True)
+                for file in futurdir:
+                    copy_files_safely(caches, file)
 
         # ===============================================================
-        # attach cache
-        for i in dyn_items:
-            abc = i.alembic_target() + '.filename'
-            cmds.setAttr(abc, i.cache_file(0, suffix=""), type='string')
+            # Update metadata
+            comment = self.comments_tab.getComment()
+            preset = None
+            if self.save_preset:
+                preset = mu.executeInMainThreadWithResult(
+                    ziva_cmds.get_preset, dyn_items[0].solver_name
+                )
+
+            if comment or preset:
+                self._update_cache_metadata(
+                    dyn_items[0], {}, current_iter,
+                    comment=comment, preset=preset)
 
         # ===============================================================
-        if self.edit_mode == 'cache':
-            mu.executeDeferred(self.cache_tree.build_cache_list)
+
+            # Attach caches
+            self._show_status("Attaching caches...", True)
+            for item in dyn_items:
+                abc_attr = f"{item.alembic_target()}.filename"
+                mu.executeInMainThreadWithResult(
+                    cmds.setAttr,
+                    abc_attr, item.cache_file(0, ""),
+                    type='string'
+                )
+
+            # Refresh view
+            if self.mode_selector.currentIndex() == 0:
+                mu.executeDeferred(self.cache_tree.build_cache_list)
+
+            self._hide_status()
+
+        except Exception as e:
+            self._show_status(f"Error creating Alembic cache: {str(e)}", False)
+            logger.error(f"Alembic cache creation failed: {e}")
 
 
     def createCache(self):
@@ -477,33 +708,43 @@ class DynEvalUI(QtWidgets.QMainWindow):
             cmds.warning("No items selected for nCache creation.")
             return
 
-        current_iter, futurdir, ncloth = self._prepare_cache_items(dyn_items, is_abc=False)
-        tmpdir = dyn_items[0].cache_dir(0) if dyn_items else ''
+        self._show_status("Preparing cache creation...", True)
 
-        # Ensure target directories exist
-        for path in futurdir:
-            Path(path).parent.mkdir(parents=True, exist_ok=True)
+        try:
+            current_iter, futurdir, ncloth = self._prepare_cache_items(dyn_items, is_abc=False)
+            tmpdir = dyn_items[0].cache_dir(0) if dyn_items else ''
 
-        # Delete existing caches and create new ones
-        cmds.waitCursor(state=1)
-        sim_cmds.delete_caches(ncloth)
-        cmds.waitCursor(state=0)
-        caches = sim_cmds.create_cache(ncloth, tmpdir)
+            # Create directories
+            for path in futurdir:
+                Path(path).parent.mkdir(parents=True, exist_ok=True)
 
-        # ===============================================================
-        # Update metadata with comments and presets if applicable
-        comment = self.tab1_comment.getComment() or None
-        preset = None  # Add logic to set preset if needed
-        if comment or preset:
-            self._update_cache_metadata(dyn_items[0], {}, current_iter, comment=comment, preset=preset)
+            # Clear existing caches
+            cmds.waitCursor(state=1)
+            self._show_status("Removing existing caches...", True)
+            mu.executeInMainThreadWithResult(sim_cmds.delete_caches, ncloth)
+            cmds.waitCursor(state=0)
 
-        # Attach cache to nCloth nodes
-        self._attach_ncache(caches, futurdir, ncloth, tmpdir)
+            # Create new caches
+            self._show_status("Creating caches...", True)
+            caches = mu.executeInMainThreadWithResult(sim_cmds.create_cache, ncloth, tmpdir)
 
-        # Refresh cache list in edit mode
-        if self.edit_mode == 'cache':
-            mu.executeDeferred(self.cache_tree.build_cache_list)
+            # Handle metadata
+            if comment := self.comments_tab.getComment():
+                self._update_cache_metadata(dyn_items[0], {}, current_iter, comment=comment)
 
+            # Attach caches
+            self._show_status("Attaching caches...", True)
+            self._attach_ncache(caches, futurdir, ncloth, tmpdir)
+
+            # Refresh view
+            if self.mode_selector.currentIndex() == 0:  # Cache mode
+                mu.executeDeferred(self.cache_tree.build_cache_list)
+
+            self._hide_status()
+
+        except Exception as e:
+            self._show_status(f"Error creating cache: {str(e)}", False)
+            logger.error(f"Cache creation failed: {e}")
     # ====================================================================
     # CACHE ITEM PREPARATION AND ATTACHMENT HELPERS
     # ====================================================================
@@ -583,15 +824,20 @@ class DynEvalUI(QtWidgets.QMainWindow):
         file_list = [p.name for p in Path(tmpdir).iterdir()]
 
         for cache_name, target_dir, ncloth_node in zip(caches, futurdir, ncloth):
-            # Collect cache files to be moved
-            cache_files = [f for f in file_list if f.startswith(cache_name)]
-            for file_name in cache_files:
-                src = Path(tmpdir) / file_name
-                extension = src.suffix.lstrip('.')
-                dst = Path(target_dir).with_suffix(f'.{extension}')
+            try:
+                src_path = Path(tmpdir)
+                cache_files = [f for f in src_path.iterdir() if f.name.startswith(cache_name)]
 
-                # Defer both moving and attaching in a single operation
-                mu.executeDeferred(self._move_and_attach_cache, str(src), str(dst), target_dir, ncloth_node)
+                for src in cache_files:
+                    dst = Path(target_dir).with_suffix(src.suffix)
+                    mu.executeDeferred(
+                        self._move_and_attach_cache,
+                        str(src), str(dst),
+                        target_dir, ncloth_node
+                    )
+
+            except Exception as e:
+                logger.error(f"Failed to attach cache {cache_name}: {e}")
 
     def _move_and_attach_cache(self, src, dst, target_dir, ncloth_node):
         """
@@ -624,23 +870,23 @@ class DynEvalUI(QtWidgets.QMainWindow):
             dyn_item: The dynamic item selected in the main tree view.
         """
         if not dyn_item or dyn_item.node_type not in ['zSolverTransform', 'nCloth', 'hairSystem']:
-            self.tab1_comment.setTitle(None)
-            self.tab1_comment.setComment(None)
+            self.comments_tab.setTitle(None)
+            self.comments_tab.setComment(None)
             return
 
         cache_item = self.cache_tree.selected()
         if cache_item:
             metadata = dyn_item.metadata()
             metadata_path = Path(metadata)
-            self.tab1_comment.setTitle(dyn_item.short_name)
+            self.comments_tab.setTitle(dyn_item.short_name)
             if metadata_path.exists():
                 # Load and set the comment if metadata exists
                 data = dw_json.load_json(metadata)
                 comment = data.get('comment', {}).get(dyn_item.solver_name, {}).get(cache_item.version, "")
-                self.tab1_comment.setComment(comment)
+                self.comments_tab.setComment(comment)
             else:
                 # Clear comment if no cache item is selected or metadata is missing
-                self.tab1_comment.setComment(None)
+                self.comments_tab.setComment(None)
 
     def save_comment(self, comment):
         """
@@ -741,7 +987,7 @@ class DynEvalUI(QtWidgets.QMainWindow):
         """
 
         selected = None
-        all_items = get_all_treeitems(self.dyn_eval_tree.tree_view)
+        all_items = get_all_treeitems(self.dyn_eval_tree)
         selected = self._get_selected_node(_type, sel_input)
 
         if selected:
@@ -816,6 +1062,39 @@ class DynEvalUI(QtWidgets.QMainWindow):
         # Connect the new handler if provided
         if newhandler is not None:
             signal.connect(newhandler)
+
+    def _setup_shortcuts(self):
+        """Setup keyboard shortcuts."""
+        self.undo_shortcut = QtWidgets.QShortcut(self)
+        self.redo_shortcut = QtWidgets.QShortcut(self)
+
+        # Connect shortcuts
+        self.undo_shortcut.activated.connect(self._handle_undo)
+        self.redo_shortcut.activated.connect(self._handle_redo)
+
+        # Initial state
+        self._update_shortcuts_state(False)
+
+    def enterEvent(self, event):
+        """Handle mouse entering window."""
+        super().enterEvent(event)
+        self._mouse_over = True
+        self._update_shortcuts_state(True)
+
+    def leaveEvent(self, event):
+        """Handle mouse leaving window."""
+        super().leaveEvent(event)
+        self._mouse_over = False
+        self._update_shortcuts_state(False)
+
+    def _update_shortcuts_state(self, enabled: bool):
+        """Update shortcut states based on mouse position."""
+        if enabled:
+            self.undo_shortcut.setKey(QtGui.QKeySequence.Undo)
+            self.redo_shortcut.setKey(QtGui.QKeySequence.Redo)
+        else:
+            self.undo_shortcut.setKey(QtGui.QKeySequence())
+            self.redo_shortcut.setKey(QtGui.QKeySequence())
 
 
 def show_ui():

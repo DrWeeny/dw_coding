@@ -1,101 +1,86 @@
-import sys, os
-# ----- Edit sysPath -----#
-import re
-
-# ----- Edit sysPath -----#
-rdPath = 'E:\\dw_coding\\dw_open_tools'
-if not rdPath in sys.path:
-    print(f"Add {rdPath} to sysPath")
-    sys.path.insert(0, rdPath)
-
+from dataclasses import dataclass
+from typing import Optional, List, Dict, Union
+from enum import Enum
 from PySide6 import QtWidgets, QtGui, QtCore
-from dw_maya.DynEval import sim_cmds
+from pathlib import Path
+import maya.cmds as cmds
+from dw_logger import get_logger
+
+logger = get_logger()
+
+
+class CacheType(Enum):
+    NCACHE = "nCache"
+    GEOCACHE = "geoCache"
+    ALEMBIC = "alembic"
+
+
+@dataclass
+class CacheInfo:
+    """Data container for cache information."""
+    name: str
+    path: Path
+    node: str
+    version: int
+    cache_type: CacheType
+    is_valid: bool = True
+    is_attached: bool = False
+    mesh: Optional[str] = None
+
+
+class CacheColors:
+    """Color definitions for different cache types."""
+    MAYA_BLUE = QtGui.QColor(68, 78, 88)
+    GEO_RED = QtGui.QColor(128, 18, 18)
+    NCLOTH_GREEN = QtGui.QColor(29, 128, 18)
+    ABC_PURPLE = QtGui.QColor(104, 66, 129)
+
+    @classmethod
+    def get_color(cls, cache_type: CacheType) -> QtGui.QColor:
+        return {
+            CacheType.NCACHE: cls.NCLOTH_GREEN,
+            CacheType.GEOCACHE: cls.GEO_RED,
+            CacheType.ALEMBIC: cls.ABC_PURPLE
+        }.get(cache_type, cls.MAYA_BLUE)
 
 
 class CacheItem(QtWidgets.QTreeWidgetItem):
-    '''
-    Custom QTreeWidgetItem with Widgets
-    '''
+    """Enhanced tree widget item for caches."""
 
-    color_maya_blue = QtGui.QColor(68, 78, 88)
-    dark_geo_red = QtGui.QColor(128, 18, 18)
-    dark_ncloth_green = QtGui.QColor(29, 128, 18)
-    dark_abc_purple = QtGui.QColor(104, 66, 129)
+    def __init__(self, cache_info: CacheInfo):
+        super().__init__()
+        self.cache_info = cache_info
+        self._setup_display()
 
-    def __init__(self, name, cache_node, path, attached=False,
-                       isvalid=True, _type='nCache', parent=None):
-        '''
-        parent (QTreeWidget) : Item's QTreeWidget parent.
-        name   (str)         : Item's name. just an example.
-        '''
+    def _setup_display(self):
+        """Configure item display properties."""
+        self.setText(0, self.cache_info.name)
+        self.setText(1, f"v{self.cache_info.version:03d}")
 
-        ## Init super class ( QtGui.QTreeWidgetItem )
-        QtWidgets.QTreeWidgetItem.__init__(self, parent)
+        # Set background color based on type and state
+        color = CacheColors.get_color(self.cache_info.cache_type)
+        if self.cache_info.is_attached:
+            color = CacheColors.MAYA_BLUE
 
-        self.setText(0, name)
-        self.is_attached = attached
-
-        # COLOR SETUP :
-        if _type == 'nCache':
-            self.color = self.dark_ncloth_green
-        elif _type == 'geoCache':
-            self.color = self.dark_geo_red
-        elif _type == 'alembic':
-            self.color = self.dark_abc_purple
-        else:
-            self.color = self.color_maya_blue
-
-        self.cache_type = _type
-
-        gradient = QtGui.QLinearGradient(0, 0, 0, 200)
-        gradient.setColorAt(0.0, self.color)
-        gradient.setColorAt(.2, QtGui.QColor(50, 50, 50, 0))
-
-        if attached:
-            self.set_attached()
-        else:
-            self.set_color()
-
-        if isvalid:
-            imgpath = rdPath + '../../ressources/pic_files'
-            icon = QtGui.QIcon(os.path.join(imgpath, 'cache_approved.png'))
-            self.setIcon(0, icon)
-
-
-        self.path = path
-        self.node = cache_node
-        self.comment = ''
-
-        if sim_cmds.cmds.nodeType(self.node) in ['zSolver',
-                                                   'zSolverTransform']:
-            self.mesh = None
-        elif sim_cmds.cmds.nodeType(self.node) != 'hairSystem':
-            self.mesh = sim_cmds.get_ncloth_mesh(cache_node)
-
-    def set_attached(self):
-        brush = QtGui.QBrush(self.color_maya_blue)
+        brush = QtGui.QBrush(color)
         brush.setStyle(QtCore.Qt.SolidPattern)
         self.setBackground(0, brush)
-        self.is_attached = True
+        self.setBackground(1, brush)
 
+        # Set font based on state
         font = QtGui.QFont()
-        font.setPointSize(10)
+        font.setPointSize(10 if self.cache_info.is_attached else 8)
         self.setFont(0, font)
+        self.setFont(1, font)
 
-    def set_color(self):
-        brush = QtGui.QBrush(self.color)
-        brush.setStyle(QtCore.Qt.SolidPattern)
-        self.setBackground(0, brush)
-        self.is_attached = False
+        # Set validity icon
+        if self.cache_info.is_valid:
+            self.setIcon(0, self._get_validity_icon())
 
-        font = QtGui.QFont()
-        font.setPointSize(8)
-        self.setFont(0, font)
+    def _get_validity_icon(self) -> QtGui.QIcon:
+        """Get the appropriate icon for cache validity."""
+        return QtGui.QIcon(str(Path(__file__).parent / "icons" / "cache_approved.png"))
 
     @property
-    def version(self):
-        _file = self.path.split('/')[-1]
-        p = re.compile('_v(\d{3})\.')
-        r = p.search(_file)
-        if r:
-            return int(r.group(1))
+    def cache_path(self) -> Path:
+        return self.cache_info.path
