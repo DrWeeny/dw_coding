@@ -3,6 +3,8 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Optional, List, Dict, Any
 import maya.cmds as cmds
+import maya.utils as mu
+
 from dw_logger import get_logger
 
 logger = get_logger()
@@ -182,6 +184,11 @@ class MapTreeWidget(QtWidgets.QWidget):
         # Connect signals
         self._connect_signals()
 
+    def set_node(self, node):
+        """Set the current simulation node and update cache list."""
+        self.node = node
+        self.populate_maps()
+
     def _connect_signals(self):
         """Connect widget signals."""
         self.search_box.textChanged.connect(self._filter_maps)
@@ -216,3 +223,99 @@ class MapTreeWidget(QtWidgets.QWidget):
             values,
             refresh=True
         )
+
+    def populate_maps(self):
+        """Populate tree with maps from current node."""
+        self.maps_tree.clear()
+        if not self.node or self.node.node_type not in ['nCloth', 'nRigid']:
+            return
+
+        try:
+            for map_name, map_mode in zip(self.node.get_maps(), self.node.get_maps_mode()):
+                item = QtWidgets.QTreeWidgetItem(self.maps_tree)
+                item.setText(0, map_name)
+                item.setText(1, map_mode)
+
+                # Store map info
+                map_info = MapInfo(
+                    name=map_name,
+                    mode=map_mode,
+                    mesh=self.node.mesh_transform,
+                    solver=self.node.solver_name
+                )
+                item.setData(0, QtCore.Qt.UserRole, map_info)
+
+        except Exception as e:
+            logger.error(f"Failed to populate maps: {e}")
+
+    def _filter_maps(self, filter_text: str = ""):
+        """Filter visible maps based on search text and type."""
+        filter_text = self.search_box.text().lower()
+        type_filter = self.type_combo.currentText()
+
+        for i in range(self.maps_tree.topLevelItemCount()):
+            item = self.maps_tree.topLevelItem(i)
+            map_info = item.data(0, QtCore.Qt.UserRole)
+
+            # Check type filter
+            show_item = True
+            if type_filter != "All Types":
+                show_item = (
+                        (type_filter == "Vertex" and "PerVertex" in map_info.mode) or
+                        (type_filter == "Texture" and "Map" in map_info.mode)
+                )
+
+            # Check text filter
+            if show_item and filter_text:
+                show_item = filter_text in map_info.name.lower()
+
+            item.setHidden(not show_item)
+
+    def _on_selection_changed(self):
+        """Handle map selection change."""
+        items = self.maps_tree.selectedItems()
+        if not items:
+            return
+
+        map_info = items[0].data(0, QtCore.Qt.UserRole)
+        self.map_editor.set_map(map_info)
+        self.map_selected.emit(map_info)
+
+        # Update button states
+        self.paint_btn.setEnabled("PerVertex" in map_info.mode)
+        self.reset_btn.setEnabled(True)
+
+    def _on_paint_clicked(self):
+        """Handle paint button click."""
+        items = self.maps_tree.selectedItems()
+        if not items:
+            return
+
+        map_info = items[0].data(0, QtCore.Qt.UserRole)
+        if "PerVertex" not in map_info.mode:
+            return
+
+        try:
+            from ..sim_cmds import vtx_map_management
+            mu.executeInMainThreadWithResult(
+                vtx_map_management.paint_vtx_map,
+                f"{self.node.node}.{map_info.name}",
+                map_info.mesh,
+                map_info.solver
+            )
+        except Exception as e:
+            logger.error(f"Failed to start paint tool: {e}")
+
+    def _on_reset_clicked(self):
+        """Handle reset button click."""
+        items = self.maps_tree.selectedItems()
+        if not items:
+            return
+
+        try:
+            for item in items:
+                map_info = item.data(0, QtCore.Qt.UserRole)
+                values = [0.0] * self._get_vertex_count()
+                self._set_map_values(map_info.name, values)
+        except Exception as e:
+            logger.error(f"Failed to reset map values: {e}")

@@ -1,43 +1,4 @@
-#!/usr/bin/env python
-#----------------------------------------------------------------------------#
-#------------------------------------------------------------------ HEADER --#
-
-"""
-@author:
-    abtidona
-
-@description:
-    this is a description
-
-@applications:
-    - groom
-    - cfx
-    - fur
-"""
-
-#----------------------------------------------------------------------------#
-#----------------------------------------------------------------- IMPORTS --#
-
-# built-in
-import sys, os
-# ----- Edit sysPath -----#
-rdPath = 'E:\\dw_coding\\dw_open_tools'
-if not rdPath in sys.path:
-    print(f"Add {rdPath} to sysPath")
-    sys.path.insert(0, rdPath)
-
-import re
-from . import ncloth_cmds
-
-
-# internal
 from PySide6 import QtCore, QtGui, QtWidgets
-import maya.cmds as cmds
-
-# external
-
-#----------------------------------------------------------------------------#
-#---------------------------------------------------------------   CLASSES --#
 
 
 class CharacterData:

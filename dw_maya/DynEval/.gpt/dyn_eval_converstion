@@ -4,10 +4,13 @@
 │   ├── main_ui.py
 │   ├── sim_widget/
 │   │   ├── __init__.py
+│   │   ├── wgt_cache_operation.py
+│   │   ├── wgt_preset_manager.py
 │   │   ├── wgt_cache_tree.py
+│   │   ├── wgt_state_recovery.py
+│   │   ├── wgt_tree_progress.py
 │   │   ├── wgt_colortextbutton.py
 │   │   ├── wgt_commentary.py
-│   │   ├── wgt_mapedit.py
 │   │   ├── wgt_maps_tree.py
 │   │   ├── wgt_paint_map.py
 │   │   ├── wgt_treewidget_toggle.py
@@ -31,8 +34,7 @@
 │   │       ├── map_standarditem.py
 │   │       ├── nrigid_standarditem.py
 │   │       ├── nucleus_standarditem.py
-│   │       ├── nucleus_standarditem.py
-│   │       ├── nucleus_standarditem.py
+│   │       ├── rig_treeitem.py
 
 main_ui.py is the main tool pyside module
 launch.py is used to launch the ui inside maya with a shelf button
@@ -45,4 +47,5 @@ tree_toggle_button.py is a friendly user display button which is red or green to
 ziva_leaf.py is the standard item to represent the ziva simulation items
 
 
-what elements do you prefer to review first ?
+what elements do you prefer to review first ? we were previously trying to have a main_ui.py which is usable in maya
+so we can proceed on implementing and testing features

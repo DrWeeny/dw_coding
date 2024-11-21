@@ -1,39 +1,31 @@
-import sys
-from typing import List, Any, Dict, Set
-import shutil
-from PySide6 import QtWidgets, QtGui, QtCore  # Use PySide6 for Maya compatibility with Python 3
+from dataclasses import dataclass
+from enum import Enum, auto
 from pathlib import Path
+from typing import Optional, List, Dict, Any, Union, Set
+from PySide6 import QtWidgets, QtGui, QtCore
+import maya.cmds as cmds
 import maya.utils as mu
+from shiboken6 import wrapInstance
+import maya.OpenMayaUI as omui
+import shutil
 import mmap
 
-# External module imports (always required)
-import dw_maya.dw_presets_io as dw_json
+from dw_maya.dw_presets_io import dw_preset, dw_json, dw_folder
 from dw_logger import get_logger
+from .sim_cmds import ziva_cmds, cache_management, vtx_map_management, info_management
+from .dendrology.nucleus_leaf import (
+    CharacterTreeItem, NucleusStandardItem, ClothTreeItem,
+    HairTreeItem, NRigidTreeItem
+)
+from .dendrology.ziva_leaf import ZSolverTreeItem, FasciaTreeItem, SkinTreeItem
+from .sim_widget import (
+    StateManager, SimulationTreeView, PresetManager,
+    CacheTreeWidget, MapTreeWidget, PresetWidget,
+    CommentEditor,
+    CacheInfo, MapInfo, PresetInfo, CacheType, PresetType, MapType
+)
 
 logger = get_logger()
-
-# Application mode variables
-MODE = 0
-
-try:
-    import hou
-    MODE=2
-except ImportError:
-    pass
-
-try:
-    import maya.cmds as cmds
-    import maya.OpenMayaUI as omui
-    from shiboken6 import wrapInstance  # Maya now uses shiboken6 with PySide6
-    from . import sim_cmds
-    from .sim_cmds import ziva_cmds
-    from .dendrology.nucleus_leaf import *
-    from .dendrology.ziva_leaf import ZSolverTreeItem, FasciaTreeItem, SkinTreeItem
-    from .dendrology.cache_leaf import CacheItem
-    from .sim_widget import StateManager, SimulationTreeView, PresetManager, CacheTreeWidget, MapTreeWidget, PresetWidget, CommentEditor, TreeBuildProgress
-    MODE = 1
-except ImportError:
-    pass
 
 # ====================================================================
 # GENERAL FUNCTIONS
@@ -112,8 +104,12 @@ def get_houdini_window():
     Returns:
         QWidget: The main Houdini window.
     """
-    win = hou.ui.mainQtWindow()
-    return win
+    try:
+        import hou
+        win = hou.ui.mainQtWindow()
+        return win
+    except:
+        pass
 
 
 def get_all_treeitems(model, item_type=None):
@@ -137,6 +133,38 @@ def get_all_treeitems(model, item_type=None):
     root_item = model.invisibleRootItem()
     yield from recurse(root_item)
 
+
+class UIMode(Enum):
+    STANDALONE = auto()
+    MAYA = auto()
+    HOUDINI = auto()
+
+def determine_mode() -> UIMode:
+    """Determine which mode to run in based on available imports.
+
+    Returns:
+        UIMode: The detected operating mode
+    """
+    try:
+        # Try to import Maya modules
+        import maya.cmds
+        return UIMode.MAYA
+    except ImportError:
+        try:
+            # If Maya not found, try Houdini
+            import hou
+            return UIMode.HOUDINI
+        except ImportError:
+            # If neither found, run in standalone mode
+            return UIMode.STANDALONE
+
+@dataclass
+class UIState:
+    """Contains UI state information."""
+    current_mode: UIMode
+    save_preset: bool = True
+    mouse_over: bool = False
+    current_node: Optional[str] = None
 
 class DynEvalUI(QtWidgets.QMainWindow):
 
@@ -193,7 +221,7 @@ class DynEvalUI(QtWidgets.QMainWindow):
         self.status_label.hide()
 
         # Add loading indicator
-        self.loading_movie = QtGui.QMovie(":/icons/loading.gif")
+        self.loading_movie = QtGui.QMovie(".icons/loading.gif")
         self.loading_label = QtWidgets.QLabel()
         self.loading_label.setMovie(self.loading_movie)
         self.loading_label.hide()
@@ -212,7 +240,7 @@ class DynEvalUI(QtWidgets.QMainWindow):
         # ====================================================================
         middle_panel = QtWidgets.QVBoxLayout()
         # Set up the cache and maps area
-        self.cb_mode_picker = QtWidgets.QComboBox()
+        self.mode_selector = QtWidgets.QComboBox()
         # todo : deformer list
         self.mode_selector.addItems(["Cache", "Maps", "Presets"])
         middle_panel.addWidget(self.mode_selector)
@@ -280,28 +308,21 @@ class DynEvalUI(QtWidgets.QMainWindow):
     def _handle_mode_change(self, index: int):
         """Handle switching between cache/maps/preset modes."""
         self.stack_widget.setCurrentIndex(index)
-        current_item = self.get_selected_tree_item()
-
-        if current_item:
-            if index == 0:  # Cache mode
-                self.cache_tree.set_node(current_item)
-            elif index == 1:  # Maps mode
-                self.maps_tree.set_node(current_item)
-            else:  # Preset mode
-                self.preset_widget.set_node(current_item)
+        if current_item := self.get_selected_tree_item():
+            match index:
+                case 0:
+                    self.cache_tree.set_node(current_item)
+                case 1:
+                    self.maps_tree.set_node(current_item)
+                case 2:
+                    self.preset_widget.set_node(current_item)
 
     def _handle_tree_selection(self):
         """Handle selection changes in main tree."""
-        current_item = self.get_selected_tree_item()
-        if not current_item:
-            return
-
-        # Update current view based on mode
-        current_mode = self.mode_selector.currentIndex()
-        self._handle_mode_change(current_mode)
-
-        # Update info panel
-        self._update_info_panel(current_item)
+        if current_item := self.get_selected_tree_item():
+            mode = self.mode_selector.currentIndex()
+            self._handle_mode_change(mode)
+            self._update_info_panel(current_item)
 
     def _update_info_panel(self, item):
         """Update info panel with current item details."""
@@ -324,19 +345,120 @@ class DynEvalUI(QtWidgets.QMainWindow):
 
         if current_item:
             # Basic operations
-            menu.addAction("Select in Maya", self._select_in_maya)
+            menu.addAction("Select in Maya", self.select)
             menu.addSeparator()
 
             # Add type-specific operations
             if current_item.node_type in ['nCloth', 'hairSystem']:
                 cache_menu = menu.addMenu("Cache")
-                cache_menu.addAction("Create nCache", self._create_ncache)
+                cache_menu.addAction("Create nCache", self.createCache())
 
             elif current_item.node_type == 'zSolverTransform':
                 cache_menu = menu.addMenu("Cache")
                 cache_menu.addAction("Create Alembic", self._create_abc_cache)
 
         menu.exec_(self.dyn_eval_tree.viewport().mapToGlobal(position))
+
+    def _handle_cache_selection(self, cache_info: CacheInfo):
+        """Handle cache selection event."""
+        try:
+            if current_item := self.get_selected_tree_item():
+                self.comments_tab.setTitle(current_item.short_name)
+                metadata = current_item.metadata()
+
+                if Path(metadata).exists():
+                    data = dw_json.load_json(metadata)
+                    comment = data.get('comment', {}).get(
+                        current_item.solver_name, {}
+                    ).get(cache_info.version, "")
+                    self.comments_tab.setComment(comment)
+
+        except Exception as e:
+            logger.error(f"Failed to handle cache selection: {e}")
+
+    def _handle_cache_attached(self, cache_info: CacheInfo):
+        """Handle cache attachment event."""
+        try:
+            if cache_info.cache_type == CacheType.ALEMBIC:
+                self._attach_abc_cache(cache_info)
+            else:
+                self._attach_ncache(
+                    [cache_info.name],
+                    [cache_info.path],
+                    [cache_info.node],
+                    cache_info.path.parent
+                )
+        except Exception as e:
+            logger.error(f"Failed to handle cache attachment: {e}")
+            cmds.warning(str(e))
+
+    def _handle_map_edited(self, map_info: MapInfo, min_val: float, max_val: float):
+        """Handle map value edit event."""
+        try:
+            if current_item := self.get_selected_tree_item():
+                vertex_count = mu.executeInMainThreadWithResult(
+                    cmds.polyEvaluate,
+                    current_item.mesh_transform,
+                    vertex=True
+                )
+                values = [min_val] * vertex_count
+
+                mu.executeInMainThreadWithResult(
+                    vtx_map_management.set_vtx_map_data,
+                    current_item.node,
+                    f"{map_info.name}PerVertex",
+                    values,
+                    True
+                )
+        except Exception as e:
+            logger.error(f"Failed to update map values: {e}")
+
+    def _handle_preset_applied(self, preset_info):
+        """Handle preset application event."""
+        try:
+            current_item = self.get_selected_tree_item()
+            if not current_item:
+                return
+
+            success = self.preset_manager.load_preset(
+                preset_info,
+                [current_item.node],
+                blend=1.0
+            )
+
+            if not success:
+                cmds.warning(f"Failed to apply preset {preset_info.name}")
+
+        except Exception as e:
+            logger.error(f"Failed to apply preset: {e}")
+
+    def _handle_comment_save(self, comment: str):
+        """Handle comment save event."""
+        try:
+            current_item = self.get_selected_tree_item()
+            if not current_item:
+                cmds.warning("No item selected.")
+                return
+
+            selected_caches = self.cache_tree.cache_tree.selectedItems()
+            if not selected_caches:
+                return
+
+            metadata = current_item.metadata()
+            metadata_path = Path(metadata)
+            solver = current_item.solver_name
+
+            recap_dic = {'comment': {solver: {}}}
+            for cache in selected_caches:
+                recap_dic['comment'][solver][cache.version] = comment
+
+            if metadata_path.exists():
+                dw_json.merge_json(metadata, recap_dic, defer=True)
+            else:
+                dw_json.save_json(metadata, recap_dic, defer=True)
+
+        except Exception as e:
+            logger.error(f"Failed to save comment: {e}")
 
     # ====================================================================
     # TREE BUILDING METHODS
@@ -395,7 +517,7 @@ class DynEvalUI(QtWidgets.QMainWindow):
     def _get_nucleus_data(self) -> Dict[str, Any]:
         """Gather nucleus system data safely."""
         try:
-            return sim_cmds.dw_get_hierarchy()
+            return info_management.dw_get_hierarchy()
         except Exception as e:
             logger.error(f"Failed to get nucleus data: {e}")
             return {}
@@ -420,7 +542,7 @@ class DynEvalUI(QtWidgets.QMainWindow):
                 char_item = CharacterTreeItem(character)
 
                 # Sort and add solvers
-                sorted_solvers = sim_cmds.sort_list_by_outliner(solvers.keys())
+                sorted_solvers = info_management.sort_list_by_outliner(solvers.keys())
                 for solver in sorted_solvers:
                     # Create solver item
                     solver_item = NucleusStandardItem(solver)
@@ -494,7 +616,7 @@ class DynEvalUI(QtWidgets.QMainWindow):
             parent_item: Parent item to add to
         """
         try:
-            sorted_nodes = sim_cmds.sort_list_by_outliner(nodes)
+            sorted_nodes = info_management.sort_list_by_outliner(nodes)
             for node in sorted_nodes:
                 try:
                     item = item_class(node)
@@ -572,50 +694,6 @@ class DynEvalUI(QtWidgets.QMainWindow):
             return self.dyn_eval_tree.model.itemFromIndex(indexes[0])
         return None
 
-    # ====================================================================
-    # TOGGLE AND STATE MANAGEMENT
-    # ====================================================================
-
-    def on_toggle(self, index, state):
-        """Slot to handle toggling of dynamic state from delegate."""
-        item = self.dyn_eval_tree.model.itemFromIndex(index)
-        item.setData(state, QtCore.Qt.UserRole + 3)  # Update model data if needed
-        # Apply state change to the node in Maya
-        try:
-            cmds.setAttr(f"{item.node}.{item.state_attr}", int(state))
-        except Exception as e:
-            cmds.warning(f"Failed to toggle state for {item.node}: {e}")
-
-    # ====================================================================
-    # CONTEXT MENU AND ACTIONS
-    # ====================================================================
-
-
-    def _context_add_cache_options(self, menu, node_type):
-        """
-        Adds cache creation options to the context menu based on the node type.
-
-        Args:
-            menu (QtWidgets.QMenu): The context menu to add cache options to.
-            node_type (str): The type of the selected node to determine applicable options.
-        """
-        # Add a label for the cache options section
-        cache_label = QtWidgets.QWidgetAction(self)
-        cache_label.setDefaultWidget(QtWidgets.QLabel(' '*7+'Cache Methods :'))
-        menu.addAction(cache_label)
-
-        # Add specific cache options based on the node type
-        if node_type in ['nCloth', 'hairSystem']:
-            menu.addAction(self._context_create_action('Create nCache for Selected', self.createCache))
-            menu.addSeparator()
-
-        if node_type in ['nCloth', 'nRigid']:
-            menu.addAction(self._context_create_action('Create GeoCache for Selected', self.createGeoCache))
-            menu.addSeparator()
-
-        if node_type == 'zSolverTransform':
-            menu.addAction(self._context_create_action('Create Alembic Cache', self.createZAbcCache))
-            menu.addSeparator()
 
     def _context_create_action(self, text, handler):
         """
@@ -721,12 +799,12 @@ class DynEvalUI(QtWidgets.QMainWindow):
             # Clear existing caches
             cmds.waitCursor(state=1)
             self._show_status("Removing existing caches...", True)
-            mu.executeInMainThreadWithResult(sim_cmds.delete_caches, ncloth)
+            mu.executeInMainThreadWithResult(cache_management.delete_caches, ncloth)
             cmds.waitCursor(state=0)
 
             # Create new caches
             self._show_status("Creating caches...", True)
-            caches = mu.executeInMainThreadWithResult(sim_cmds.create_cache, ncloth, tmpdir)
+            caches = mu.executeInMainThreadWithResult(cache_management.create_cache, ncloth, tmpdir)
 
             # Handle metadata
             if comment := self.comments_tab.getComment():
@@ -853,7 +931,7 @@ class DynEvalUI(QtWidgets.QMainWindow):
             # Move the file
             shutil.move(src, dst)
             # Attach the cache to the nCloth node
-            sim_cmds.attach_ncache(target_dir, ncloth_node)
+            cache_management.attach_ncache(target_dir, ncloth_node)
             print(f"Successfully moved {src} to {dst} and attached to {ncloth_node}")
         except Exception as e:
             cmds.warning(f"Failed to move {src} to {dst} or attach to {ncloth_node}. Error: {e}")
@@ -1016,7 +1094,7 @@ class DynEvalUI(QtWidgets.QMainWindow):
             return sel_input
         elif type in ['nCloth', 'hairSystem']:
             # Retrieve nucleus shape node for both 'nCloth' and 'hairSystem'
-            return sim_cmds.get_nucleus_sh_from_sel()
+            return info_management.get_nucleus_sh_from_sel()
         return None
 
     def _expand_parents(self, item):
@@ -1065,15 +1143,34 @@ class DynEvalUI(QtWidgets.QMainWindow):
 
     def _setup_shortcuts(self):
         """Setup keyboard shortcuts."""
-        self.undo_shortcut = QtWidgets.QShortcut(self)
-        self.redo_shortcut = QtWidgets.QShortcut(self)
+        self.undo_shortcut = QtGui.QKeySequence(QtGui.QKeySequence.Undo)
+        self.redo_shortcut = QtGui.QKeySequence(QtGui.QKeySequence.Redo)
 
-        # Connect shortcuts
-        self.undo_shortcut.activated.connect(self._handle_undo)
-        self.redo_shortcut.activated.connect(self._handle_redo)
+        # Create actions for shortcuts
+        self.undo_action = QtWidgets.QAction(self)
+        self.undo_action.setShortcut(self.undo_shortcut)
+        self.undo_action.triggered.connect(self._handle_undo)
+
+        self.redo_action = QtWidgets.QAction(self)
+        self.redo_action.setShortcut(self.redo_shortcut)
+        self.redo_action.triggered.connect(self._handle_redo)
+
+        # Add actions to window
+        self.addAction(self.undo_action)
+        self.addAction(self.redo_action)
 
         # Initial state
         self._update_shortcuts_state(False)
+
+    def _handle_undo(self):
+        """Handle undo operation."""
+        cmds.undo()
+        self.refresh_tree()
+
+    def _handle_redo(self):
+        """Handle redo operation."""
+        cmds.redo()
+        self.refresh_tree()
 
     def enterEvent(self, event):
         """Handle mouse entering window."""
@@ -1089,12 +1186,8 @@ class DynEvalUI(QtWidgets.QMainWindow):
 
     def _update_shortcuts_state(self, enabled: bool):
         """Update shortcut states based on mouse position."""
-        if enabled:
-            self.undo_shortcut.setKey(QtGui.QKeySequence.Undo)
-            self.redo_shortcut.setKey(QtGui.QKeySequence.Redo)
-        else:
-            self.undo_shortcut.setKey(QtGui.QKeySequence())
-            self.redo_shortcut.setKey(QtGui.QKeySequence())
+        self.undo_action.setEnabled(enabled)
+        self.redo_action.setEnabled(enabled)
 
 
 def show_ui():

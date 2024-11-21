@@ -1,4 +1,4 @@
-import maya.cmds as cmds, mel
+from maya import cmds, mel
 import os
 from dw_maya.dw_decorators import acceptString
 from pathlib import Path

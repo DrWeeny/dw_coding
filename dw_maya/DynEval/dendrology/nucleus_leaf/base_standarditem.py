@@ -1,5 +1,5 @@
 from __future__ import annotations
-from PySide6 import QtCore, QtGui, QtWidget
+from PySide6 import QtCore, QtGui, QtWidgets
 from typing import Optional, List, Dict, Any, Union
 import maya.cmds as cmds
 from pathlib import Path
