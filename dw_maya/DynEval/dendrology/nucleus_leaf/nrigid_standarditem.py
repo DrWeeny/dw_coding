@@ -1,32 +1,5 @@
-#!/usr/bin/env python
-#----------------------------------------------------------------------------#
-#------------------------------------------------------------------ HEADER --#
-
-"""
-@author:
-    abtidona
-
-@description:
-    this is a description
-
-@applications:
-    - groom
-    - cfx
-    - fur
-"""
-
-#----------------------------------------------------------------------------#
-#----------------------------------------------------------------- IMPORTS --#
-
-# built-in
-import sys, os
-# ----- Edit sysPath -----#
-rdPath = 'E:\\dw_coding\\dw_open_tools'
-if not rdPath in sys.path:
-    print(f"Add {rdPath} to sysPath")
-    sys.path.insert(0, rdPath)
 import re
-
+import os
 # internal
 from PySide6 import QtCore, QtGui, QtWidgets
 import maya.cmds as cmds
@@ -35,6 +8,9 @@ import maya.cmds as cmds
 from .base_standarditem import BaseSimulationItem
 from dw_maya.DynEval import sim_cmds
 import dw_maya.dw_maya_utils as dwu
+from dw_logger import get_logger
+
+logger = get_logger()
 
 class NRigidTreeItem(BaseSimulationItem):
     """Item class for nRigid simulation nodes."""
@@ -44,15 +20,20 @@ class NRigidTreeItem(BaseSimulationItem):
         self.setText(self.short_name)
         self.setIcon(QtGui.QIcon("path/to/rigid_icon.png"))
 
-        # Set initial data for model
-        self.setData(self.short_name, QtCore.Qt.DisplayRole)
-        self.setData(self.state, QtCore.Qt.UserRole + 3)
+        self._setup_item()
+
 
     @property
     def short_name(self):
         """Returns a clean short name without suffixes for better readability."""
-        shortname = self.node.split('|')[-1].split(':')[-1].split('_collider')[0]
-        shortname = re.sub(r'_nRigid(Shape)?\d+$', '', shortname)
+        transform = dwu.lsTr(self.node)
+        if transform:
+            shortname = transform[0].split('|')[-1].split(':')[-1].split('_collider')[0]
+            shortname = re.sub(r'_nRigid(Shape)?\d+$', '', shortname)
+        else:
+            shortname = self.node.split('|')[-1].split(':')[-1].split('_collider')[0]
+            shortname = re.sub(r'_nRigid(Shape)?\d+$', '', shortname)
+
         return shortname
 
     @property
@@ -66,8 +47,19 @@ class NRigidTreeItem(BaseSimulationItem):
 
     @property
     def state_attr(self):
-        """Returns the attribute used to toggle nRigid state."""
+        """Override to use correct attribute for nRigid."""
         return 'isDynamic'
+
+    def set_state(self, state: bool) -> None:
+        """Set nRigid dynamic state."""
+        try:
+            cmds.setAttr(f"{self.node}.{self.state_attr}", state)
+            super().set_state(state)
+
+        except Exception as e:
+            print(f"NRIGID ERROR: Failed to set state: {e}")
+            logger.error(f"Failed to set state for nRigid {self.node}: {e}")
+            raise
 
 
     def cache_dir(self, mode=1):

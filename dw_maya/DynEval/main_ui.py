@@ -190,11 +190,12 @@ class DynEvalUI(QtWidgets.QMainWindow):
 
         # Setup central widget and layout
         self.central_widget = QtWidgets.QWidget(self)
+        self._setup_ui()
         self.setCentralWidget(self.central_widget)
 
-        # Initialize UI
-        self._setup_ui()
         self._setup_shortcuts()
+        self.build_tree()
+
 
     def _setup_ui(self):
         """Initialize the main UI layout."""
@@ -213,6 +214,7 @@ class DynEvalUI(QtWidgets.QMainWindow):
         self.dyn_eval_tree.installEventFilter(self)
         self.dyn_eval_tree.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
         self.dyn_eval_tree.customContextMenuRequested.connect(self._show_tree_context_menu)
+        left_panel.addWidget(self.dyn_eval_tree)  # Add tree to layout
 
         # Add status label beneath tree
         self.status_layout = QtWidgets.QVBoxLayout()
@@ -222,16 +224,22 @@ class DynEvalUI(QtWidgets.QMainWindow):
 
         # Add loading indicator
         self.loading_movie = QtGui.QMovie(".icons/loading.gif")
+        self.loading_movie.setScaledSize(QtCore.QSize(25, 25))  # Scale to 16x16 pixels
         self.loading_label = QtWidgets.QLabel()
+        self.loading_label.setFixedSize(16, 200)
         self.loading_label.setMovie(self.loading_movie)
         self.loading_label.hide()
 
         status_wrapper = QtWidgets.QHBoxLayout()
         status_wrapper.addWidget(self.loading_label)
         status_wrapper.addWidget(self.status_label, stretch=1)
-        self.status_layout.addLayout(status_wrapper)
+        status_wrapper.setContentsMargins(5, 5, 5, 5)  # Add some padding
+
+        left_panel.addLayout(status_wrapper)
 
         left_panel.addLayout(self.status_layout)
+        self.status_layout.addWidget(self.dyn_eval_tree)
+        self.status_layout.addWidget(self.status_label)
 
         main_layout.addLayout(left_panel)
 
@@ -278,6 +286,7 @@ class DynEvalUI(QtWidgets.QMainWindow):
         self.details_panel.addTab(self.info_tab, "Info")
 
         main_layout.addWidget(self.details_panel)
+        self.central_widget.setLayout(main_layout)
 
         # Connect signals
         self._connect_signals()
@@ -327,11 +336,10 @@ class DynEvalUI(QtWidgets.QMainWindow):
     def _update_info_panel(self, item):
         """Update info panel with current item details."""
         info_text = []
-        info_text.append(f"Node: {item.node}")
-        info_text.append(f"Type: {item.node_type}")
+        info_text.append(f"Node: {item.data(QtCore.Qt.UserRole + 1)}")
+        info_text.append(f"Type: {item.data(QtCore.Qt.UserRole + 5)}")
 
-        if hasattr(item, 'solver_name'):
-            info_text.append(f"Solver: {item.solver_name}")
+        info_text.append(f"Solver: {item.data(QtCore.Qt.UserRole + 4)}")
 
         if hasattr(item, 'mesh_transform'):
             info_text.append(f"Mesh: {item.mesh_transform}")
@@ -349,11 +357,11 @@ class DynEvalUI(QtWidgets.QMainWindow):
             menu.addSeparator()
 
             # Add type-specific operations
-            if current_item.node_type in ['nCloth', 'hairSystem']:
+            if current_item.data(QtCore.Qt.UserRole + 5) in ['nCloth', 'hairSystem']:
                 cache_menu = menu.addMenu("Cache")
-                cache_menu.addAction("Create nCache", self.createCache())
+                cache_menu.addAction("Create nCache", self.createCache)
 
-            elif current_item.node_type == 'zSolverTransform':
+            elif current_item.data(QtCore.Qt.UserRole + 5) == 'zSolverTransform':
                 cache_menu = menu.addMenu("Cache")
                 cache_menu.addAction("Create Alembic", self._create_abc_cache)
 
@@ -363,13 +371,13 @@ class DynEvalUI(QtWidgets.QMainWindow):
         """Handle cache selection event."""
         try:
             if current_item := self.get_selected_tree_item():
-                self.comments_tab.setTitle(current_item.short_name)
+                self.comments_tab.setTitle(current_item.data(QtCore.Qt.DisplayRole))
                 metadata = current_item.metadata()
 
                 if Path(metadata).exists():
                     data = dw_json.load_json(metadata)
                     comment = data.get('comment', {}).get(
-                        current_item.solver_name, {}
+                        current_item.data(QtCore.Qt.UserRole + 4), {}
                     ).get(cache_info.version, "")
                     self.comments_tab.setComment(comment)
 
@@ -405,7 +413,7 @@ class DynEvalUI(QtWidgets.QMainWindow):
 
                 mu.executeInMainThreadWithResult(
                     vtx_map_management.set_vtx_map_data,
-                    current_item.node,
+                    current_item.data(QtCore.Qt.UserRole + 1),
                     f"{map_info.name}PerVertex",
                     values,
                     True
@@ -422,7 +430,7 @@ class DynEvalUI(QtWidgets.QMainWindow):
 
             success = self.preset_manager.load_preset(
                 preset_info,
-                [current_item.node],
+                [current_item.data(QtCore.Qt.UserRole + 1)],
                 blend=1.0
             )
 
@@ -446,7 +454,7 @@ class DynEvalUI(QtWidgets.QMainWindow):
 
             metadata = current_item.metadata()
             metadata_path = Path(metadata)
-            solver = current_item.solver_name
+            solver = current_item.data(QtCore.Qt.UserRole + 4)
 
             recap_dic = {'comment': {solver: {}}}
             for cache in selected_caches:
@@ -467,14 +475,16 @@ class DynEvalUI(QtWidgets.QMainWindow):
         """Build the complete simulation hierarchy tree."""
         try:
             self._show_status("Initializing...", True)
-            self.dyn_eval_tree.model.clear()
+            self.dyn_eval_tree.clear()
 
             # Get data (safely in main thread)
             self._show_status("Loading Nucleus systems...", True)
-            nucleus_data = mu.executeInMainThreadWithResult(self._get_nucleus_data)
+            # nucleus_data = mu.executeInMainThreadWithResult(self._get_nucleus_data)
+            nucleus_data = self._get_nucleus_data()
 
             self._show_status("Loading Ziva systems...", True)
-            ziva_data = mu.executeInMainThreadWithResult(self._get_ziva_data)
+            # ziva_data = mu.executeInMainThreadWithResult(self._get_ziva_data)
+            ziva_data = self._get_ziva_data()
 
             # Build trees
             if nucleus_data:
@@ -487,8 +497,8 @@ class DynEvalUI(QtWidgets.QMainWindow):
 
             # Expand items
             self._show_status("Finalizing...", True)
-            for i in range(self.dyn_eval_tree.model.rowCount()):
-                index = self.dyn_eval_tree.model.index(i, 0)
+            for i in range(self.dyn_eval_tree.model().rowCount()):
+                index = self.dyn_eval_tree.model().index(i, 0)
                 self.dyn_eval_tree.expand(index)
 
             self._hide_status()
@@ -554,7 +564,7 @@ class DynEvalUI(QtWidgets.QMainWindow):
 
                     char_item.appendRow(solver_item)
 
-                self.dyn_eval_tree.model.appendRow(char_item)
+                self.dyn_eval_tree.model().appendRow(char_item)
 
         except Exception as e:
             logger.error(f"Failed to build nucleus tree: {e}")
@@ -583,7 +593,7 @@ class DynEvalUI(QtWidgets.QMainWindow):
                         item_class = FasciaTreeItem if node_type == 'muscle' else SkinTreeItem
                         self._add_ordered_items(nodes, item_class, char_item)
 
-                self.dyn_eval_tree.model.appendRow(char_item)
+                self.dyn_eval_tree.model().appendRow(char_item)
 
         except Exception as e:
             logger.error(f"Failed to build Ziva tree: {e}")
@@ -644,11 +654,11 @@ class DynEvalUI(QtWidgets.QMainWindow):
 
         def collect_expanded(parent_index):
             if self.dyn_eval_tree.isExpanded(parent_index):
-                item = self.dyn_eval_tree.model.itemFromIndex(parent_index)
+                item = self.dyn_eval_tree.model().itemFromIndex(parent_index)
                 expanded.add(self._get_item_path(item))
 
-            for row in range(self.dyn_eval_tree.model.rowCount(parent_index)):
-                child_index = self.dyn_eval_tree.model.index(row, 0, parent_index)
+            for row in range(self.dyn_eval_tree.model().rowCount(parent_index)):
+                child_index = self.dyn_eval_tree.model().index(row, 0, parent_index)
                 collect_expanded(child_index)
 
         collect_expanded(QtCore.QModelIndex())
@@ -658,12 +668,12 @@ class DynEvalUI(QtWidgets.QMainWindow):
         """Restore expansion state from paths."""
 
         def expand_matched(parent_index):
-            item = self.dyn_eval_tree.model.itemFromIndex(parent_index)
+            item = self.dyn_eval_tree.model().itemFromIndex(parent_index)
             if self._get_item_path(item) in expanded_paths:
                 self.dyn_eval_tree.expand(parent_index)
 
-            for row in range(self.dyn_eval_tree.model.rowCount(parent_index)):
-                child_index = self.dyn_eval_tree.model.index(row, 0, parent_index)
+            for row in range(self.dyn_eval_tree.model().rowCount(parent_index)):
+                child_index = self.dyn_eval_tree.model().index(row, 0, parent_index)
                 expand_matched(child_index)
 
         expand_matched(QtCore.QModelIndex())
@@ -690,8 +700,8 @@ class DynEvalUI(QtWidgets.QMainWindow):
         indexes = self.dyn_eval_tree.selectionModel().selectedRows()
         if indexes:
             if multiple_selection:
-                return [self.dyn_eval_tree.model.itemFromIndex(index) for index in indexes]
-            return self.dyn_eval_tree.model.itemFromIndex(indexes[0])
+                return [self.dyn_eval_tree.model().itemFromIndex(index) for index in indexes]
+            return self.dyn_eval_tree.model().itemFromIndex(indexes[0])
         return None
 
 
@@ -706,7 +716,7 @@ class DynEvalUI(QtWidgets.QMainWindow):
         Returns:
             QtWidgets.QAction: The created action with the specified text and handler.
         """
-        action = QtWidgets.QAction(text, self)
+        action = QtGui.QAction(text, self)
         action.triggered.connect(handler) # Connect the specified handler function
         return action
 
@@ -956,7 +966,7 @@ class DynEvalUI(QtWidgets.QMainWindow):
         if cache_item:
             metadata = dyn_item.metadata()
             metadata_path = Path(metadata)
-            self.comments_tab.setTitle(dyn_item.short_name)
+            self.comments_tab.setTitle(dyn_item.data(QtCore.Qt.DisplayRole))
             if metadata_path.exists():
                 # Load and set the comment if metadata exists
                 data = dw_json.load_json(metadata)
@@ -980,7 +990,7 @@ class DynEvalUI(QtWidgets.QMainWindow):
 
         json_metadata = item.metadata()
         json_metadata_path = Path(json_metadata)
-        solver = item.solver_name
+        solver = item.data(QtCore.Qt.UserRole + 4)
         sel_caches = self.cache_tree.cache_tree.selectedItems()
 
         json_recap_dic = {'comment': {}}
@@ -1143,21 +1153,13 @@ class DynEvalUI(QtWidgets.QMainWindow):
 
     def _setup_shortcuts(self):
         """Setup keyboard shortcuts."""
-        self.undo_shortcut = QtGui.QKeySequence(QtGui.QKeySequence.Undo)
-        self.redo_shortcut = QtGui.QKeySequence(QtGui.QKeySequence.Redo)
+        # Create shortcuts
+        self.undo_shortcut = QtGui.QShortcut(QtGui.QKeySequence.Undo, self)
+        self.redo_shortcut = QtGui.QShortcut(QtGui.QKeySequence.Redo, self)
 
-        # Create actions for shortcuts
-        self.undo_action = QtWidgets.QAction(self)
-        self.undo_action.setShortcut(self.undo_shortcut)
-        self.undo_action.triggered.connect(self._handle_undo)
-
-        self.redo_action = QtWidgets.QAction(self)
-        self.redo_action.setShortcut(self.redo_shortcut)
-        self.redo_action.triggered.connect(self._handle_redo)
-
-        # Add actions to window
-        self.addAction(self.undo_action)
-        self.addAction(self.redo_action)
+        # Connect signals
+        self.undo_shortcut.activated.connect(self._handle_undo)
+        self.redo_shortcut.activated.connect(self._handle_redo)
 
         # Initial state
         self._update_shortcuts_state(False)
@@ -1186,9 +1188,12 @@ class DynEvalUI(QtWidgets.QMainWindow):
 
     def _update_shortcuts_state(self, enabled: bool):
         """Update shortcut states based on mouse position."""
-        self.undo_action.setEnabled(enabled)
-        self.redo_action.setEnabled(enabled)
-
+        if enabled:
+            self.undo_shortcut.setKey(QtGui.QKeySequence.Undo)
+            self.redo_shortcut.setKey(QtGui.QKeySequence.Redo)
+        else:
+            self.undo_shortcut.setKey(QtGui.QKeySequence())
+            self.redo_shortcut.setKey(QtGui.QKeySequence())
 
 def show_ui():
     if MODE == 0:

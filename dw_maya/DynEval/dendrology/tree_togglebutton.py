@@ -2,7 +2,10 @@ from PySide6 import QtWidgets, QtCore, QtGui
 from enum import Enum
 import math
 from typing import Optional
+from .nucleus_leaf.base_standarditem import BaseSimulationItem
+from dw_logger import get_logger
 
+logger = get_logger()
 
 class ToggleState(Enum):
     DISABLED = 0
@@ -31,6 +34,29 @@ class ToggleButtonDelegate(QtWidgets.QStyledItemDelegate):
         # Track pending items
         self.pending_items = set()
 
+    def editorEvent(self, event, model, option, index) -> bool:
+        """Handle mouse events for the toggle button."""
+        if not index.isValid() or index.column() != 1:  # Only handle events in state column
+            return False
+
+        if event.type() == QtCore.QEvent.MouseButtonRelease:
+            button_rect = self._get_button_rect(option.rect)
+            if button_rect.contains(event.pos()):
+                # Get current state and toggle it
+                current_state = index.data(QtCore.Qt.UserRole + 3)
+                new_state = not bool(current_state)
+
+                # Emit toggled signal with the index and new state
+                self.toggled.emit(index, new_state)
+                return True
+
+        return super().editorEvent(event, model, option, index)
+
+
+    def sizeHint(self, option, index) -> QtCore.QSize:
+        """Return the size hint for the delegate."""
+        return QtCore.QSize(24, 24)  # Fixed size for toggle button
+
     def _setup_animation(self):
         """Initialize animation timer and properties."""
         self._animation_timer = QtCore.QTimer(self)
@@ -49,21 +75,16 @@ class ToggleButtonDelegate(QtWidgets.QStyledItemDelegate):
             self._dot_positions.append(angle)
 
     def paint(self, painter, option, index):
+        """Paint the toggle button."""
         if not index.isValid():
             return
 
+        # Save painter state
+        painter.save()
+        painter.setRenderHint(QtGui.QPainter.Antialiasing)
+
         # Get current state
         state = self._get_state(index)
-
-        # Manage animation timer
-        if state == ToggleState.PENDING:
-            self.pending_items.add(index)
-            if not self._animation_timer.isActive():
-                self._animation_timer.start()
-        else:
-            self.pending_items.discard(index)
-            if not self.pending_items and self._animation_timer.isActive():
-                self._animation_timer.stop()
 
         # Calculate button rect
         button_rect = self._get_button_rect(option.rect)
@@ -74,14 +95,15 @@ class ToggleButtonDelegate(QtWidgets.QStyledItemDelegate):
 
         if state == ToggleState.PENDING:
             self._draw_loading_animation(painter, button_rect)
-        elif state == ToggleState.DISABLED:
-            self._draw_disabled_indicator(painter, button_rect)
+
+        # Restore painter state
+        painter.restore()
 
     def _get_button_rect(self, rect):
         """Calculate button geometry."""
         button_size = min(rect.height() - 4, 20)
         return QtCore.QRect(
-            rect.right() - button_size - 4,
+            rect.left() - button_size + 28,
             rect.center().y() - button_size // 2,
             button_size,
             button_size
@@ -150,7 +172,8 @@ class ToggleButtonDelegate(QtWidgets.QStyledItemDelegate):
                 )
 
     def _get_state(self, index) -> ToggleState:
-        """Get current toggle state including pending."""
+        """Get current toggle state."""
         state = index.data(QtCore.Qt.UserRole + 3)
-        pending = index.data(QtCore.Qt.UserRole + 5)
-        return ToggleState.PENDING if pending else (ToggleState.ENABLED if state else ToggleState.DISABLED)
+        if isinstance(state, bool):
+            return ToggleState.ENABLED if state else ToggleState.DISABLED
+        return ToggleState.DISABLED

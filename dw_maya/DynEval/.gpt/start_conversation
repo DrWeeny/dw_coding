@@ -2,6 +2,8 @@ Hi, we're working on refactoring my Maya Python library dw_coding.
 
 Current directory structure:
 dw_coding/
+├── dw_logger/
+├── dw_ressources/
 ├── .files
 ├── apps_programs/
 │   ├── ffmpeg/

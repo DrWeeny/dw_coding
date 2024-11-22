@@ -88,13 +88,13 @@ class ClothSys:
     @property
     def system(self):
         """Provides a dictionary representation of the Nucleus system."""
-        return {
+        return {self.nucleus: {
             "nucleus": self.nucleus,
             "nCloth": self.ncloth,
             "nRigid": self.nrigid,
             "nHair": self.nhair,
             "nConstraint": self.nconstraint
-        }
+        }}
 
     def to_dict(self):
         """Returns a dictionary format of the system, which can be used for JSON export."""
@@ -122,24 +122,18 @@ def dw_get_hierarchy():
         }
     """
 
-    # Initialize an empty dictionary to store the output hierarchy
-    output = defaultdict(lambda: defaultdict(list))
-
-    # Get all Nucleus nodes in the scene
     scene_nucleus = cmds.ls(type='nucleus')
+    output = defaultdict(dict)
+    for i in scene_nucleus:
+        # Describe the nucleus system
+        mysys = ClothSys(i)
+        # Find if Cloth rig name already exists
+        if not mysys.name in output:
+            # If not, let's create the key
+            output[mysys.name] = defaultdict(list)
 
-    for nucleus_node in scene_nucleus:
-        # Create a ClothSys instance to organize connections for this nucleus node
-        nucleus_system = ClothSys(nucleus_node)
-
-        # Check if the top-level dictionary already has the object name
-        object_name = nucleus_system.object_name
-        if object_name not in output:
-            output[object_name] = defaultdict(list)
-
-        # Populate the nucleus details for each type of system component
-        for node_type, connected_nodes in nucleus_system.system.items():
-            output[object_name][nucleus_node][node_type] = connected_nodes
+        for j in mysys.system:
+            output[mysys.name][j] = mysys.system[j]
 
     return output
 
@@ -154,16 +148,21 @@ def sort_list_by_outliner(nodes):
     Returns:
         list: The input list sorted according to the order in the Maya Outliner.
     """
+    if not isinstance(nodes, list):
+        nodes = [nodes]
+
     # Get all DAG nodes in the current Maya scene with their order
-    maya_nodes = cmds.ls(dag=True)
-    node_indices = {node: idx for idx, node in enumerate(maya_nodes)}
+    if "|" not in nodes[0]:
+        maya_nodes = cmds.ls(dag=True)
+    else:
+        maya_nodes = cmds.ls(dag=True, l=True)
+    id_list = []
+    for c in nodes:
+        id = maya_nodes.index(c)
+        id_list.append(id)
 
-    # Filter nodes to those found in the DAG and obtain their outliner order
-    outliner_list = [node for node, _ in sorted(
-        ((node, node_indices[node]) for node in nodes if node in node_indices),
-        key=itemgetter(1)
-    )]
-
+    outliner_list = [i[0] for i in
+                     sorted(zip(nodes, id_list), key=itemgetter(1))]
     return outliner_list
 
 def get_cloth_mesh_sh(ncloth_shape: str) -> list:

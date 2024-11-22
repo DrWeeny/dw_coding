@@ -1,30 +1,3 @@
-#!/usr/bin/env python
-#----------------------------------------------------------------------------#
-#------------------------------------------------------------------ HEADER --#
-
-"""
-@author:
-    abtidona
-
-@description:
-    this is a description
-
-@applications:
-    - groom
-    - cfx
-    - fur
-"""
-
-#----------------------------------------------------------------------------#
-#----------------------------------------------------------------- IMPORTS --#
-
-# built-in
-import sys, os
-# ----- Edit sysPath -----#
-rdPath = 'E:\\dw_coding\\dw_open_tools'
-if not rdPath in sys.path:
-    print(f"Add {rdPath} to sysPath")
-    sys.path.insert(0, rdPath)
 import re
 
 # internal
@@ -43,9 +16,7 @@ class HairTreeItem(BaseSimulationItem):
         self.setText(self.short_name)
         self.setIcon(QtGui.QIcon("path/to/hair_icon.png"))
 
-        # Set initial state for the button, specific to hair (simulationMethod attribute)
-        self.setData(self.state, QtCore.Qt.UserRole + 3)  # Toggle state data
-
+        self._setup_item()
 
     @property
     def mesh_transform(self):

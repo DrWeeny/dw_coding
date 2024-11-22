@@ -33,9 +33,15 @@ def lsTr(*args, **kwargs) -> List[str]:
         >>> lsTr(sl=True, l=True)  # Long names
         ['|Scene|pSphere1', '|Scene|pCube1']
     """
+    # Check if there are long name inside the first argument
+    long_name_default = False
+    if args and isinstance(args[0], (list, tuple)):
+        if any('|' in s for s in args[0]):
+            long_name_default = True
+
     # Process flags
     parent = flags(kwargs, None, 'parent', 'p')
-    long_name = flags(kwargs, None, 'long', 'l')
+    long_name = flags(kwargs, long_name_default, 'long', 'l')
     unique = flags(kwargs, True, 'unique', 'u')
 
     relatives_flags = {'parent': parent if parent else True}

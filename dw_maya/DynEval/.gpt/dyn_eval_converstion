@@ -1,6 +1,7 @@
 ├── DynEval/
 │   ├── __init__.py
 │   ├── launch.py
+│   ├── main_beta.py
 │   ├── main_ui.py
 │   ├── sim_widget/
 │   │   ├── __init__.py
@@ -47,5 +48,44 @@ tree_toggle_button.py is a friendly user display button which is red or green to
 ziva_leaf.py is the standard item to represent the ziva simulation items
 
 
-what elements do you prefer to review first ? we were previously trying to have a main_ui.py which is usable in maya
-so we can proceed on implementing and testing features
+Here's a summary of what we accomplished:
+
+Built a Maya PySide6 tool for managing nucleus and nCloth simulations featuring:
+
+Two-column tree view with toggle buttons
+State management for nucleus, nCloth, and nRigid nodes
+Proper parent-child hierarchy
+
+
+Fixed key technical issues:
+
+Parent-child relationship in tree model
+State propagation between UI and Maya attributes
+Button delegate handling
+Node type attribute handling
+
+
+Main components:
+
+DynEvalUI: Main window
+SimulationTreeView: Custom tree with toggle support
+ToggleButtonDelegate: Custom button rendering
+BaseSimulationItem/ClothTreeItem: Node representation
+
+
+Core functionality:
+
+Toggle simulation states (enable/isDynamic)
+Batch operations support
+Tree hierarchy building
+State synchronization with Maya
+
+
+
+Current state: Working implementation with proper toggling of nucleus, nCloth, and nRigid states, with left-aligned toggle buttons in a fixed-width column.
+Key files to reference:
+
+main_ui_beta.py
+tree_togglebutton.py
+base_standarditem.py
+cloth_standarditem.py

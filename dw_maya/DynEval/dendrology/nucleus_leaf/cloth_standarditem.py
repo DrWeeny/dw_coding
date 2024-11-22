@@ -1,42 +1,15 @@
-#!/usr/bin/env python
-# ----------------------------------------------------------------------------#
-# ------------------------------------------------------------------ HEADER --#
-
-"""
-@author:
-    abtidona
-
-@description:
-    this is a description
-
-@applications:
-    - groom
-    - cfx
-    - fur
-"""
-
-# ----------------------------------------------------------------------------#
-# ----------------------------------------------------------------- IMPORTS --#
-
-# built-in
-import sys, os
-
-from PySide6 import QtCore
-
-# ----- Edit sysPath -----#
-rdPath = 'E:\\dw_coding\\dw_open_tools'
-if not rdPath in sys.path:
-    print(f"Add {rdPath} to sysPath")
-    sys.path.insert(0, rdPath)
-
-import re
 from pathlib import Path
-
+from PySide6 import QtCore
 
 # internal
 from maya import cmds
 from .base_standarditem import BaseSimulationItem
 from dw_maya.DynEval import sim_cmds
+from dw_logger import get_logger
+
+from dw_maya.dw_maya_utils import lsTr
+
+logger = get_logger()
 
 
 class ClothTreeItem(BaseSimulationItem):
@@ -46,7 +19,7 @@ class ClothTreeItem(BaseSimulationItem):
         super().__init__(name)
         self.setText(self.short_name)
 
-        self.setData(self.state, QtCore.Qt.UserRole + 3)  # Toggle state data
+        self._setup_item()
 
     @property
     def short_name(self):
@@ -58,18 +31,67 @@ class ClothTreeItem(BaseSimulationItem):
         """Simulation state attribute."""
         return 'isDynamic'
 
+    @property
+    def mesh_transform(self):
+        hist = cmds.listHistory(self.node + '.outputMesh', lf=False, f=True)
+        o = [i for i in hist if cmds.nodeType(i) == 'mesh']
+        o = [i for i in o if len(i.split('.')) == 1]
+        o = lsTr(o[0], long=True)[0]
+        return o
+
+    def _get_current_state(self) -> bool:
+        """Get current state from Maya with error handling."""
+        try:
+            return bool(cmds.getAttr(f"{self.node}.{self.state_attr}"))
+        except Exception as e:
+            logger.warning(f"Failed to get state for {self.node}: {e}")
+            return False
+
+    def set_state(self, state: bool) -> None:
+        """Set nCloth dynamic state."""
+        try:
+            logger.debug(f"Setting {self.node_type} state - Node: {self.node}, State: {state}")
+
+            # Update Maya attribute
+            cmds.setAttr(f"{self.node}.{self.state_attr}", state)
+
+            # Update item data
+            self.setData(state, self.CUSTOM_ROLES['STATE'])
+
+            # Update model
+            if self.model():
+                parent_index = self.parent().index() if self.parent() else QtCore.QModelIndex()
+                state_index = self.model().index(self.row(), 1, parent_index)
+                if state_index.isValid():
+                    self.model().setData(state_index, state, QtCore.Qt.UserRole + 3)
+
+            logger.debug(f"Successfully set {self.node_type} state for {self.node}")
+
+        except Exception as e:
+            logger.error(f"Failed to set state for {self.node_type} {self.node}: {e}")
+            raise
+
     def cache_dir(self, mode=1):
-        """Get cache directory path."""
-        base_dir = Path(cmds.workspace(fileRuleEntry='fileCache')).resolve()
-        sub_dir = Path(self.namespace, self.solver_name, self.short_name)
-        return (base_dir / ('dynTmp' if mode == 0 else sub_dir)).as_posix()
+        '''
+        :return: str '../cache/ncache/nucleus/cloth/'
+        '''
+
+        self.set_filerule()
+        directory = cmds.workspace(fileRuleEntry='fileCache')
+        directory = cmds.workspace(en=directory)
+        if mode == 0:
+            return str(Path(directory) / 'dynTmp')
+
+        directory = Path(directory) / f"{self.namespace}/{self._get_solver(self.node)}/{self.short_name}"
+
+        return str(directory)
 
     def cache_file(self, mode=1, suffix=''):
         """Construct cache filename."""
         iteration = self.get_iter() + mode
         suffix_text = f"_{suffix}" if suffix else ""
         cache_filename = f"{self.short_name}{suffix_text}_v{iteration:03d}.xml"
-        return (Path(self.cache_dir()) / cache_filename).as_posix()
+        return str(Path(self.cache_dir()) / cache_filename)
 
     def has_cache(self):
         """Check if the cache exists for the node."""
