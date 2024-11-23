@@ -6,7 +6,7 @@ from pathlib import Path
 from enum import Enum, auto
 from dw_logger import get_logger
 from dataclasses import dataclass
-# from dw_ressources import get_resource_path
+from dw_ressources import get_resource_path
 
 logger = get_logger()
 
@@ -44,6 +44,12 @@ class BaseSimulationItem(QtGui.QStandardItem):
                  'hairSystem': (237, 150, 0),
                  'nConstraint': ''}
 
+    ICON_LIST = {'nucleus': '',
+                'nCloth': get_resource_path('pic_files/ncloth.png'),
+                'hairSystem': get_resource_path('pic_files/nhair.png'),
+                'nRigid': get_resource_path('pic_files/collider.png'),
+                'nConstraint': get_resource_path('pic_files/nconstraint.png')}
+
 
     def __init__(self, name: str):
         """Initialize simulation item with enhanced data management.
@@ -55,6 +61,7 @@ class BaseSimulationItem(QtGui.QStandardItem):
         # logger.info(f"{name} has been appended in tree")
         self._node_data = self._initialize_node_data(name)
         self._setup_item()
+        self.set_node_color()
 
     def _initialize_node_data(self, name: str) -> NodeData:
         """Initialize node data with proper error handling."""
@@ -88,11 +95,6 @@ class BaseSimulationItem(QtGui.QStandardItem):
         # Initialize state
         current_state = self._get_current_state()
         self.setData(current_state, self.CUSTOM_ROLES['STATE'])
-
-        # b = QtGui.QBrush(self.node_color)
-        # self.setForeground(0, b)
-        # _icon = QtGui.QIcon(self.node_icon)
-        # self.setIcon(0, _icon)
 
 
     def _get_namespace(self, node_name: str) -> str:
@@ -202,6 +204,10 @@ class BaseSimulationItem(QtGui.QStandardItem):
             _nt = cmds.nodeType(self.node)
         return _nt
 
+    def set_node_color(self):
+        b = QtGui.QBrush(self.node_color)
+        self.setForeground(b)
+
     @property
     def node_color(self):
         rgb = self.TEXT_COLOR[self.node_type]
@@ -226,6 +232,10 @@ class BaseSimulationItem(QtGui.QStandardItem):
         if cmds.objExists(self.node):
             value = cmds.getAttr(f"{self.node}.{self.state_attr}")
         return value
+
+    @property
+    def mesh_transform(self):
+        return self.node
 
     def set_filerule(self):
 

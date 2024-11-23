@@ -98,6 +98,9 @@ class DynEvalUI(QtWidgets.QMainWindow):
         # self._setup_shortcuts()
         self.build_tree()
 
+        # Connect signals
+        self._connect_signals()
+
     def _setup_ui(self):
         """Initialize the main UI layout."""
 
@@ -192,9 +195,10 @@ class DynEvalUI(QtWidgets.QMainWindow):
         main_layout.addWidget(self.details_panel)
         self.central_widget.setLayout(main_layout)
 
-        # Connect signals
-        # self._connect_signals()
 
+    # ====================================================================
+    # TREE BUILDING METHODS
+    # ====================================================================
     def build_tree(self):
         """Build the complete simulation hierarchy tree."""
         try:
@@ -246,7 +250,6 @@ class DynEvalUI(QtWidgets.QMainWindow):
 
                     # Add to root - DON'T append to itself
                     self.dyn_eval_tree.model().invisibleRootItem().appendRow(row)
-                    print("gneh")
 
         except Exception as e:
             logger.error(f"Failed to build nucleus tree: {e}")
@@ -302,10 +305,39 @@ class DynEvalUI(QtWidgets.QMainWindow):
         except Exception as e:
             logger.error(f"Failed to get nucleus data: {e}")
             return {}
-
+    # ====================================================================
+    # CONNECT SIGNALS
+    # ====================================================================
     def _connect_signals(self):
         """Connect all UI signals."""
-        pass
+        # Connect to double-click signal
+        self.dyn_eval_tree.itemDoubleClicked.connect(self.handle_item_double_click)
+        # Try both approaches:
+        # 1. For single click handling
+        self.dyn_eval_tree.clicked.connect(self.handle_item_clicked)
+
+        # 2. For multi-selection handling
+        self.dyn_eval_tree.selectionModel().selectionChanged.connect(
+            lambda selected, deselected: self.handle_selection_changed(
+                self.dyn_eval_tree.get_selected_items()
+            )
+        )
+
+
+    def handle_item_double_click(self, item):
+        """Handle double-click on tree item."""
+        cmds.select(item.mesh_)
+        # Your double-click handling code here
+
+    def handle_item_clicked(self, item):
+        """Handle single click on tree item."""
+        print(f"Clicked: {item.node}")
+        # Your click handling code here
+
+    def handle_selection_changed(self, selected_items):
+        """Handle selection changes."""
+        print(f"Selection changed - selected items: {[item.node for item in selected_items]}")
+        # Your selection change handling code here
 
     def _show_tree_context_menu(self):
         pass

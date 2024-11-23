@@ -18,7 +18,6 @@ class ClothTreeItem(BaseSimulationItem):
     def __init__(self, name):
         super().__init__(name)
         self.setText(self.short_name)
-
         self._setup_item()
 
     @property

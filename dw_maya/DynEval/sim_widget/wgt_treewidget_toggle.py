@@ -1,5 +1,5 @@
 from PySide6 import QtCore, QtGui, QtWidgets
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
 from ..dendrology.nucleus_leaf.base_standarditem import BaseSimulationItem
 from dw_maya.DynEval.dendrology.tree_togglebutton import ToggleButtonDelegate
 from dw_logger import get_logger
@@ -61,8 +61,16 @@ class SimulationTreeModel(QtGui.QStandardItemModel):
 class SimulationTreeView(QtWidgets.QTreeView):
     """Custom tree view for simulation nodes with toggle support."""
 
+    # custom signals :
+    itemDoubleClicked = QtCore.Signal(BaseSimulationItem)
+    selectionChanged = QtCore.Signal(list)
+    clicked = QtCore.Signal(BaseSimulationItem)
+
     def __init__(self, parent=None):
         super().__init__(parent)
+
+        # Set the model
+        self.setModel(SimulationTreeModel())
 
         # Setup delegate
         self.toggle_delegate = ToggleButtonDelegate(self)
@@ -74,19 +82,22 @@ class SimulationTreeView(QtWidgets.QTreeView):
 
         # Configure view
         self.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
+        self.setSelectionMode(QtWidgets.QAbstractItemView.ExtendedSelection) # multiple sel
         self.setAlternatingRowColors(True)
         self.setAnimated(True)
         self.setIndentation(20)
         self.setSortingEnabled(True)
 
         # Optional: Prevent column resize
-        # header = self.header()
-        # header.setSectionResizeMode(1, QtWidgets.QHeaderView.Fixed)
-
-        self.setModel(SimulationTreeModel())
+        header = self.header()
+        header.setSectionResizeMode(0, QtWidgets.QHeaderView.Stretch)
+        header.setSectionResizeMode(1, QtWidgets.QHeaderView.Fixed)
+        header.setStretchLastSection(False)
 
         # Connect toggle signal to handle batch operations
         self.toggle_delegate.toggled.connect(self._handle_toggle)
+        self.doubleClicked.connect(self._handle_double_click)
+        self.selectionModel().selectionChanged.connect(self._handle_selection_changed)
 
     def clear(self):
         self.setModel(SimulationTreeModel())
@@ -116,3 +127,107 @@ class SimulationTreeView(QtWidgets.QTreeView):
 
         except Exception as e:
             logger.error(f"Toggle operation failed: {e}")
+
+    def _handle_double_click(self, index: QtCore.QModelIndex):
+        """Handle double-click events on tree items."""
+        try:
+            # Get the item from the first column (where the simulation item is stored)
+            item_index = self.model().index(index.row(), 0, index.parent())
+            item = self.model().itemFromIndex(item_index)
+
+            if isinstance(item, BaseSimulationItem):
+                self.itemDoubleClicked.emit(item)
+
+        except Exception as e:
+            logger.error(f"Double-click handling failed: {e}")
+
+    def _handle_selection_changed(self, selected: QtCore.QItemSelection, deselected: QtCore.QItemSelection):
+        """Handle selection changes and emit selected items."""
+        try:
+            selected_items = self.get_selected_items()  # Use existing method
+            self.selectionChanged.emit(selected_items)  # Emit the items
+            print(f"Selection changed: {len(selected_items)} items")  # Debug print
+        except Exception as e:
+            logger.error(f"Selection change handling failed: {e}")
+
+    def get_selected_items(self) -> List[BaseSimulationItem]:
+        """Get currently selected items."""
+        try:
+            selected_items = []
+            selection_model = self.selectionModel()
+
+            if selection_model:
+                selected_indexes = selection_model.selectedRows()
+
+                for index in selected_indexes:
+                    item = self.model().itemFromIndex(index)
+                    if isinstance(item, BaseSimulationItem):
+                        selected_items.append(item)
+
+            return selected_items
+
+        except Exception as e:
+            logger.error(f"Failed to get selected items: {e}")
+            return []
+
+    def mousePressEvent(self, event: QtGui.QMouseEvent) -> None:
+        """Handle mouse press events."""
+        super().mousePressEvent(event)
+        index = self.indexAt(event.pos())
+        if index.isValid():
+            item = self.model().itemFromIndex(self.model().index(index.row(), 0, index.parent()))
+            if isinstance(item, BaseSimulationItem):
+                self.clicked.emit(item)
+
+    def clear_selection(self):
+        """Clear the current selection."""
+        if self.selectionModel():
+            self.selectionModel().clearSelection()
+
+    def select_items(self, items: List[BaseSimulationItem]):
+        """Programmatically select specific items."""
+        try:
+            if not items:
+                return
+
+            selection_model = self.selectionModel()
+            if not selection_model:
+                return
+
+            # Clear current selection
+            selection_model.clearSelection()
+
+            # Create new selection
+            selection = QtCore.QItemSelection()
+
+            def find_item_index(target_item):
+                """Helper to find the model index for an item."""
+                for row in range(self.model().rowCount()):
+                    parent_index = self.model().index(row, 0)
+                    parent_item = self.model().itemFromIndex(parent_index)
+
+                    if parent_item == target_item:
+                        return parent_index
+
+                    # Check children
+                    for child_row in range(parent_item.rowCount()):
+                        child_index = self.model().index(child_row, 0, parent_index)
+                        child_item = self.model().itemFromIndex(child_index)
+
+                        if child_item == target_item:
+                            return child_index
+
+                return None
+
+            # Add each item to selection
+            for item in items:
+                index = find_item_index(item)
+                if index:
+                    selection.select(index, index)
+
+            # Apply selection
+            selection_model.select(selection, QtCore.QItemSelectionModel.Select |
+                                   QtCore.QItemSelectionModel.Rows)
+
+        except Exception as e:
+            logger.error(f"Failed to select items: {e}")
