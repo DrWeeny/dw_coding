@@ -73,12 +73,15 @@ class MapTypeDelegate(QtWidgets.QStyledItemDelegate):
         return editor
 
     def setEditorData(self, editor, index):
+        """Set up editor data and show popup immediately."""
         if not isinstance(editor, QtWidgets.QComboBox):
             return
 
         map_info = self._get_map_info(index)
         if map_info:
             editor.setCurrentIndex(map_info.map_type.value)
+            # Show popup immediately
+            editor.showPopup()
 
     def paint(self, painter, option, index):
         if not index.isValid():
@@ -112,7 +115,6 @@ class MapTypeDelegate(QtWidgets.QStyledItemDelegate):
             self.typeChanged.emit(map_info, new_type)
             # Force repaint
             index.model().dataChanged.emit(index, index)
-
 
 class MapTreeWidget(QtWidgets.QWidget):
     """Enhanced widget for map management using model/view architecture."""
@@ -151,6 +153,22 @@ class MapTreeWidget(QtWidgets.QWidget):
         self.tree_view.setAllColumnsShowFocus(True)
         self.tree_view.setAlternatingRowColors(True)
 
+        # Increase row height
+        self.tree_view.setStyleSheet("""
+            QTreeView {
+                outline: 0;  /* Remove focus outline */
+            }
+            QTreeView::item {
+                min-height: 24px;  /* Increased row height */
+                padding: 2px;
+            }
+            QTreeView::item:hover {
+                background: rgba(60, 60, 60, 100);
+            }
+            QTreeView::item:selected {
+                background: rgba(80, 80, 80, 150);
+            }
+        """)
 
         # Set up model and delegate
         self.model = MapTreeModel()
@@ -164,7 +182,15 @@ class MapTreeWidget(QtWidgets.QWidget):
         header.setSectionResizeMode(0, QtWidgets.QHeaderView.Stretch)
         header.setSectionResizeMode(1, QtWidgets.QHeaderView.Fixed)
         header.setStretchLastSection(False)
-        self.tree_view.setColumnWidth(1, 60)
+        self.tree_view.setColumnWidth(0, 180)
+        self.tree_view.setColumnWidth(1, 80)
+
+        # Disable selection for type column
+        self.tree_view.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
+        self.tree_view.setSelectionMode(QtWidgets.QAbstractItemView.ExtendedSelection)
+
+        # Prevent editing of first column
+        self.model.setHeaderData(0, QtCore.Qt.Horizontal, QtCore.Qt.NoItemFlags, QtCore.Qt.EditRole)
 
         self.model.setHorizontalHeaderLabels(["Map Name", "Type"])
 
@@ -177,6 +203,14 @@ class MapTreeWidget(QtWidgets.QWidget):
         self.type_delegate.typeChanged.connect(self.mapTypeChanged)
         # Connect tree view's doubleClicked signal directly
         self.tree_view.doubleClicked.connect(self._handle_double_click)
+
+        # Add click handler for the type column
+        self.tree_view.clicked.connect(self._handle_click)
+
+    def _handle_click(self, index):
+        """Handle click events and show combobox immediately for type column."""
+        if index.column() == 1:  # Type column
+            self.tree_view.edit(index)
 
     def _handle_double_click(self, index: QtCore.QModelIndex):
         """Handle double-click events on tree items."""
