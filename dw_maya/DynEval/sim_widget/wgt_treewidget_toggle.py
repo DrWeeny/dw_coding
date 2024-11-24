@@ -94,6 +94,8 @@ class SimulationTreeView(QtWidgets.QTreeView):
         header.setSectionResizeMode(1, QtWidgets.QHeaderView.Fixed)
         header.setStretchLastSection(False)
 
+        self.setMouseTracking(True)
+
         # Connect toggle signal to handle batch operations
         self.toggle_delegate.toggled.connect(self._handle_toggle)
         self.doubleClicked.connect(self._handle_double_click)
@@ -179,10 +181,42 @@ class SimulationTreeView(QtWidgets.QTreeView):
             if isinstance(item, BaseSimulationItem):
                 self.clicked.emit(item)
 
+    def keyPressEvent(self, event: QtGui.QKeyEvent) -> None:
+        """Handle keyboard navigation and actions.
+
+        Implements:
+        - Enter/Return: Trigger double-click behavior (select in Maya)
+        - Escape: Clear selection
+        """
+        try:
+            if event.key() in (QtCore.Qt.Key_Enter, QtCore.Qt.Key_Return):
+                # Get selected items and trigger double-click behavior
+                selected_items = self.get_selected_items()
+                if selected_items:
+                    for item in selected_items:
+                        self.itemDoubleClicked.emit(item)
+
+            elif event.key() == QtCore.Qt.Key_Escape:
+                self.clear_selection()
+
+            else:
+                # Let other key events propagate normally
+                super().keyPressEvent(event)
+
+        except Exception as e:
+            logger.error(f"Key press handling failed: {e}")
+
     def clear_selection(self):
         """Clear the current selection."""
         if self.selectionModel():
             self.selectionModel().clearSelection()
+
+    def mouseMoveEvent(self, event):
+        """Handle mouse movement for hover effects."""
+        super().mouseMoveEvent(event)
+        index = self.indexAt(event.pos())
+        if index.isValid() and index.column() == 1:
+            self.viewport().update()
 
     def select_items(self, items: List[BaseSimulationItem]):
         """Programmatically select specific items."""

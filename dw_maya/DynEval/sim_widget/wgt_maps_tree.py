@@ -4,318 +4,285 @@ from enum import Enum
 from typing import Optional, List, Dict, Any
 import maya.cmds as cmds
 import maya.utils as mu
-
+from dw_maya.DynEval.sim_cmds import vtx_map_management
 from dw_logger import get_logger
 
 logger = get_logger()
 
 
 class MapType(Enum):
-    NONE = 0
-    VERTEX = 1
-    TEXTURE = 2
-
+    Null = 0
+    PerVertex = 1
+    Texture = 2
 
 @dataclass
 class MapInfo:
     """Enhanced data container for map information."""
     name: str
-    mode: str
+    mode: int
     mesh: Optional[str] = None
     solver: Optional[str] = None
-    map_type: MapType = MapType.VERTEX
+    map_type: MapType = MapType.PerVertex
     value_range: tuple[float, float] = (0.0, 1.0)
+    is_edited: bool = False
 
 
-class MapEditWidget(QtWidgets.QWidget):
-    """Widget for editing map values and ranges."""
-
-    value_changed = QtCore.Signal(MapInfo, float, float)  # Signal for range/value changes
+class MapTreeModel(QtGui.QStandardItemModel):
+    """Model for map management."""
 
     def __init__(self, parent=None):
         super().__init__(parent)
+        self.setHorizontalHeaderLabels(["Map Name", "Type"])
+
+
+class MapNameItem(QtGui.QStandardItem):
+    """Item representing a map in the tree."""
+
+    def __init__(self, map_info: MapInfo):
+        super().__init__(map_info.name)
+        self.map_info = map_info
+        self.setEditable(False)
+
+        # Store the map info for access
+        self.setData(map_info, QtCore.Qt.UserRole)
+
+
+class MapTypeDelegate(QtWidgets.QStyledItemDelegate):
+    """Delegate for the map type column with combobox."""
+
+    typeChanged = QtCore.Signal(MapInfo, MapType)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.type_colors = {
+            MapType.Null: QtGui.QColor(175, 175, 175),
+            MapType.PerVertex: QtGui.QColor(0, 255, 0),
+            MapType.Texture: QtGui.QColor(0, 125, 255)
+        }
+
+    def createEditor(self, parent, option, index):
+        if not index.isValid() or index.column() != 1:
+            return None
+
+        editor = QtWidgets.QComboBox(parent)
+        editor.addItems([t.name for t in MapType])
+        editor.currentIndexChanged.connect(
+            lambda idx: self._handle_type_change(index, MapType(idx))
+        )
+        return editor
+
+    def setEditorData(self, editor, index):
+        if not isinstance(editor, QtWidgets.QComboBox):
+            return
+
+        map_info = self._get_map_info(index)
+        if map_info:
+            editor.setCurrentIndex(map_info.map_type.value)
+
+    def paint(self, painter, option, index):
+        if not index.isValid():
+            return
+
+        painter.save()
+
+        # Get map info and set color
+        map_info = self._get_map_info(index)
+        if map_info:
+            color = self.type_colors.get(map_info.map_type, self.type_colors[MapType.Null])
+            painter.setPen(color)
+
+        # Draw the text
+        text = index.data(QtCore.Qt.DisplayRole)
+        text_rect = option.rect.adjusted(4, 0, -4, 0)  # Add some padding
+        painter.drawText(text_rect, QtCore.Qt.AlignVCenter, text)
+
+        painter.restore()
+
+    def _get_map_info(self, index) -> Optional[MapInfo]:
+        """Get MapInfo from the name column of the same row."""
+        name_item = index.model().item(index.row(), 0)
+        return name_item.data(QtCore.Qt.UserRole) if name_item else None
+
+    def _handle_type_change(self, index, new_type: MapType):
+        """Handle map type changes."""
+        map_info = self._get_map_info(index)
+        if map_info:
+            map_info.map_type = new_type
+            self.typeChanged.emit(map_info, new_type)
+            # Force repaint
+            index.model().dataChanged.emit(index, index)
+
+
+class MapTreeWidget(QtWidgets.QWidget):
+    """Enhanced widget for map management using model/view architecture."""
+
+    mapSelected = QtCore.Signal(MapInfo)
+    mapTypeChanged = QtCore.Signal(MapInfo, MapType)
+    itemDoubleClicked = QtCore.Signal(MapNameItem)
+
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.current_node = None
+        self.name = None
+        self.mesh_name = None
+        self.solver = None
         self._setup_ui()
-        self._current_map: Optional[MapInfo] = None
+        self._connect_signals()
 
     def _setup_ui(self):
         layout = QtWidgets.QVBoxLayout(self)
 
-        # Mode selection
-        mode_group = QtWidgets.QGroupBox("Edit Mode")
-        mode_layout = QtWidgets.QVBoxLayout()
-
-        self.rb_range = QtWidgets.QRadioButton("Range")
-        self.rb_value = QtWidgets.QRadioButton("Value")
-        self.rb_range.setChecked(True)
-
-        mode_layout.addWidget(self.rb_range)
-        mode_layout.addWidget(self.rb_value)
-        mode_group.setLayout(mode_layout)
-        layout.addWidget(mode_group)
-
-        # Value widgets
-        value_widget = QtWidgets.QWidget()
-        value_layout = QtWidgets.QGridLayout(value_widget)
-
-        self.min_label = QtWidgets.QLabel("Min:")
-        self.max_label = QtWidgets.QLabel("Max:")
-        self.min_value = QtWidgets.QDoubleSpinBox()
-        self.max_value = QtWidgets.QDoubleSpinBox()
-
-        # Configure spinboxes
-        for spinbox in (self.min_value, self.max_value):
-            spinbox.setRange(0.0, 1.0)
-            spinbox.setSingleStep(0.1)
-            spinbox.setDecimals(3)
-
-        value_layout.addWidget(self.min_label, 0, 0)
-        value_layout.addWidget(self.min_value, 0, 1)
-        value_layout.addWidget(self.max_label, 1, 0)
-        value_layout.addWidget(self.max_value, 1, 1)
-
-        layout.addWidget(value_widget)
-
-        # Quick value buttons
-        quick_values = QtWidgets.QGroupBox("Quick Values")
-        quick_layout = QtWidgets.QHBoxLayout()
-
-        self.btn_zero = QtWidgets.QPushButton("0")
-        self.btn_half = QtWidgets.QPushButton("0.5")
-        self.btn_one = QtWidgets.QPushButton("1")
-
-        quick_layout.addWidget(self.btn_zero)
-        quick_layout.addWidget(self.btn_half)
-        quick_layout.addWidget(self.btn_one)
-        quick_values.setLayout(quick_layout)
-
-        layout.addWidget(quick_values)
-
-        # Connect signals
-        self._connect_signals()
-
-    def _connect_signals(self):
-        """Connect widget signals."""
-        self.rb_range.toggled.connect(self._update_mode)
-        self.rb_value.toggled.connect(self._update_mode)
-        self.min_value.valueChanged.connect(self._on_value_changed)
-        self.max_value.valueChanged.connect(self._on_value_changed)
-
-        # Quick value buttons
-        self.btn_zero.clicked.connect(lambda: self._set_quick_value(0.0))
-        self.btn_half.clicked.connect(lambda: self._set_quick_value(0.5))
-        self.btn_one.clicked.connect(lambda: self._set_quick_value(1.0))
-
-    def set_map(self, map_info: MapInfo):
-        """Set the current map being edited."""
-        self._current_map = map_info
-        if map_info:
-            self.min_value.setValue(map_info.value_range[0])
-            self.max_value.setValue(map_info.value_range[1])
-
-    def _update_mode(self):
-        """Update UI based on selected mode."""
-        is_range = self.rb_range.isChecked()
-        self.max_label.setVisible(is_range)
-        self.max_value.setVisible(is_range)
-
-    def _on_value_changed(self):
-        """Handle value changes."""
-        if self._current_map:
-            min_val = self.min_value.value()
-            max_val = self.max_value.value() if self.rb_range.isChecked() else min_val
-            self.value_changed.emit(self._current_map, min_val, max_val)
-
-    def _set_quick_value(self, value: float):
-        """Set quick value for both min and max."""
-        self.min_value.setValue(value)
-        if self.rb_range.isChecked():
-            self.max_value.setValue(value)
-
-
-class MapTreeWidget(QtWidgets.QWidget):
-    """Enhanced widget for displaying and managing vertex maps."""
-
-    map_selected = QtCore.Signal(MapInfo)
-    map_edited = QtCore.Signal(MapInfo, float, float)
-
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.node = None
-        self._setup_ui()
-
-    def _setup_ui(self):
-        """Initialize UI components."""
-        main_layout = QtWidgets.QHBoxLayout(self)
-
-        # Left side: Tree and controls
-        left_widget = QtWidgets.QWidget()
-        left_layout = QtWidgets.QVBoxLayout(left_widget)
-
-        # Search and filter
+        # Filter controls
+        filter_layout = QtWidgets.QHBoxLayout()
         self.search_box = QtWidgets.QLineEdit()
         self.search_box.setPlaceholderText("Filter maps...")
-        left_layout.addWidget(self.search_box)
+        self.type_filter = QtWidgets.QComboBox()
+        self.type_filter.addItems(["All Types"] + [t.name for t in MapType])
 
-        # Map type filter
-        self.type_combo = QtWidgets.QComboBox()
-        self.type_combo.addItems(["All Types", "Vertex", "Texture"])
-        left_layout.addWidget(self.type_combo)
+        filter_layout.addWidget(self.search_box)
+        filter_layout.addWidget(self.type_filter)
+        layout.addLayout(filter_layout)
 
-        # Tree widget
-        self.maps_tree = QtWidgets.QTreeWidget()
-        self.maps_tree.setHeaderLabels(["Map", "Type"])
-        self.maps_tree.setSelectionMode(QtWidgets.QAbstractItemView.ExtendedSelection)
-        left_layout.addWidget(self.maps_tree)
+        # Tree View
+        self.tree_view = QtWidgets.QTreeView()
+        self.tree_view.setSelectionMode(QtWidgets.QAbstractItemView.ExtendedSelection)
+        self.tree_view.setAllColumnsShowFocus(True)
+        self.tree_view.setAlternatingRowColors(True)
 
-        # Quick actions
-        action_layout = QtWidgets.QHBoxLayout()
-        self.paint_btn = QtWidgets.QPushButton("Paint")
-        self.reset_btn = QtWidgets.QPushButton("Reset")
-        action_layout.addWidget(self.paint_btn)
-        action_layout.addWidget(self.reset_btn)
-        left_layout.addLayout(action_layout)
 
-        main_layout.addWidget(left_widget)
+        # Set up model and delegate
+        self.model = MapTreeModel()
+        self.tree_view.setModel(self.model)
 
-        # Right side: Map editor
-        self.map_editor = MapEditWidget()
-        main_layout.addWidget(self.map_editor)
+        self.type_delegate = MapTypeDelegate()
+        self.tree_view.setItemDelegateForColumn(1, self.type_delegate)
 
-        # Connect signals
-        self._connect_signals()
+        # Configure columns
+        header = self.tree_view.header()
+        header.setSectionResizeMode(0, QtWidgets.QHeaderView.Stretch)
+        header.setSectionResizeMode(1, QtWidgets.QHeaderView.Fixed)
+        header.setStretchLastSection(False)
+        self.tree_view.setColumnWidth(1, 120)
 
-    def set_node(self, node):
-        """Set the current simulation node and update cache list."""
-        self.node = node
-        self.populate_maps()
+        self.model.setHorizontalHeaderLabels(["Map Name", "Type"])
+
+        layout.addWidget(self.tree_view)
 
     def _connect_signals(self):
-        """Connect widget signals."""
         self.search_box.textChanged.connect(self._filter_maps)
-        self.type_combo.currentIndexChanged.connect(self._filter_maps)
-        self.maps_tree.itemSelectionChanged.connect(self._on_selection_changed)
-        self.paint_btn.clicked.connect(self._on_paint_clicked)
-        self.reset_btn.clicked.connect(self._on_reset_clicked)
-        self.map_editor.value_changed.connect(self._on_map_edited)
+        self.type_filter.currentIndexChanged.connect(self._filter_maps)
+        # self.tree_view.selectionModel().selectionChanged.connect(self._handle_selection)
+        self.type_delegate.typeChanged.connect(self.mapTypeChanged)
+        self.doubleClicked.connect(self._handle_double_click)
 
-    def _on_map_edited(self, map_info: MapInfo, min_val: float, max_val: float):
-        """Handle map value edits."""
+    def _handle_double_click(self, index: QtCore.QModelIndex):
+        """Handle double-click events on tree items."""
         try:
-            if self.node and map_info:
-                values = self._get_vertex_count() * [min_val]
-                self._set_map_values(map_info.name, values)
-                self.map_edited.emit(map_info, min_val, max_val)
+            # Get the item from the first column (where the simulation item is stored)
+            item_index = self.tree_view.model().index(index.row(), 0, index.parent())
+            item = self.tree_view.model().itemFromIndex(item_index)
+
+            if isinstance(item, MapNameItem):
+                self.itemDoubleClicked.emit(item)
+
         except Exception as e:
-            logger.error(f"Failed to edit map values: {e}")
+            logger.error(f"Double-click handling failed: {e}")
 
-    def _get_vertex_count(self) -> int:
-        """Get vertex count of current mesh."""
-        if self.node and self.node.mesh_transform:
-            return cmds.polyEvaluate(self.node.mesh_transform, vertex=True)
-        return 0
+    def set_current_node(self, item):
+        self.current_node = item
+        self.name = item.node
+        self.mesh_name = item.mesh_transform
+        self.solver = self._get_solver(self.name)
+        self.populate_maps()
 
-    def _set_map_values(self, map_name: str, values: List[float]):
-        """Set vertex map values."""
-        from ..sim_cmds import vtx_map_management
-        vtx_map_management.set_vtx_map_data(
-            self.node.node,
-            f"{map_name}PerVertex",
-            values,
-            refresh=True
-        )
+    def get_maps(self):
+        '''
+        :return: <<list>> of string
+        '''
+        return vtx_map_management.get_vtx_maps(self.current_node.node)
+
+    def get_maps_info(self):
+        '''
+        :return: <<list>> of integer
+        '''
+        result_MAPS = []
+        for map_name in self.get_maps():
+            value = vtx_map_management.get_vtx_map_type(self.current_node.node,
+                                                    f'{map_name}MapType')
+
+            map_info = MapInfo(map_name,
+                               value,
+                               map_type=MapType(value),
+                               solver=self.solver)
+            result_MAPS.append(map_info)
+        return result_MAPS
+
 
     def populate_maps(self):
-        """Populate tree with maps from current node."""
-        self.maps_tree.clear()
-        if not self.node or self.node.node_type not in ['nCloth', 'nRigid']:
-            return
+        """Update the tree with new map data."""
+        self.model.clear()
 
+        for map_info in self.get_maps_info():
+            name_item = MapNameItem(map_info)
+            type_item = QtGui.QStandardItem(map_info.map_type.name)
+            type_item.setData(map_info.map_type.value, QtCore.Qt.UserRole)
+
+            self.model.appendRow([name_item, type_item])
+
+        # Clear filters
+        self.search_box.clear()
+        self.type_filter.setCurrentIndex(0)
+
+    def _filter_maps(self):
+        """Filter maps based on search text and type."""
+        search_text = self.search_box.text().lower()
+        type_filter = MapType[self.type_filter.currentText()] if self.type_filter.currentIndex() > 0 else None
+
+        for row in range(self.model.rowCount()):
+            item = self.model.item(row, 0)
+            map_info = item.data(QtCore.Qt.UserRole)
+
+            should_show = True
+            if search_text:
+                should_show = search_text in map_info.name.lower()
+            if type_filter and should_show:
+                should_show = map_info.map_type == type_filter
+
+            self.tree_view.setRowHidden(row, QtCore.QModelIndex(), not should_show)
+
+    def get_selected_maps(self) -> List[MapInfo]:
+        """Get currently selected maps."""
+        maps = []
+        for index in self.tree_view.selectedIndexes():
+            if index.column() == 0:  # Only process name column
+                item = self.model.itemFromIndex(index)
+                map_info = item.data(QtCore.Qt.UserRole)
+                if map_info:
+                    maps.append(map_info)
+        return maps
+
+    def clear(self):
+        """Clear all maps and reset the widget state."""
+        self.model.clear()
+        self.search_box.clear()
+        self.type_filter.setCurrentIndex(0)
+
+    def paint_map(self):
+        """
+        trigger the maya paint tool on selected cloth mesh
+        (will keep component if some are selected)
+        """
+        map_item = self.maps_tree.currentItem()
+        if self.node.node_type in ['nCloth', 'nRigid']:
+            vtx_map_management.paint_vtx_map(map_item.map_to_paint,
+                                             map_item.cloth_mesh,
+                                             self.solver)
+
+    def _get_solver(self, node_name: str) -> str:
+        """Get connected solver with error handling."""
         try:
-            for map_name, map_mode in zip(self.node.get_maps(), self.node.get_maps_mode()):
-                item = QtWidgets.QTreeWidgetItem(self.maps_tree)
-                item.setText(0, map_name)
-                item.setText(1, map_mode)
-
-                # Store map info
-                map_info = MapInfo(
-                    name=map_name,
-                    mode=map_mode,
-                    mesh=self.node.mesh_transform,
-                    solver=self.node.solver_name
-                )
-                item.setData(0, QtCore.Qt.UserRole, map_info)
-
+            connections = cmds.listConnections(node_name, type="nucleus") or []
+            return connections[0].split(':')[-1] if connections else ''
         except Exception as e:
-            logger.error(f"Failed to populate maps: {e}")
-
-    def _filter_maps(self, filter_text: str = ""):
-        """Filter visible maps based on search text and type."""
-        filter_text = self.search_box.text().lower()
-        type_filter = self.type_combo.currentText()
-
-        for i in range(self.maps_tree.topLevelItemCount()):
-            item = self.maps_tree.topLevelItem(i)
-            map_info = item.data(0, QtCore.Qt.UserRole)
-
-            # Check type filter
-            show_item = True
-            if type_filter != "All Types":
-                show_item = (
-                        (type_filter == "Vertex" and "PerVertex" in map_info.mode) or
-                        (type_filter == "Texture" and "Map" in map_info.mode)
-                )
-
-            # Check text filter
-            if show_item and filter_text:
-                show_item = filter_text in map_info.name.lower()
-
-            item.setHidden(not show_item)
-
-    def _on_selection_changed(self):
-        """Handle map selection change."""
-        items = self.maps_tree.selectedItems()
-        if not items:
-            return
-
-        map_info = items[0].data(0, QtCore.Qt.UserRole)
-        self.map_editor.set_map(map_info)
-        self.map_selected.emit(map_info)
-
-        # Update button states
-        self.paint_btn.setEnabled("PerVertex" in map_info.mode)
-        self.reset_btn.setEnabled(True)
-
-    def _on_paint_clicked(self):
-        """Handle paint button click."""
-        items = self.maps_tree.selectedItems()
-        if not items:
-            return
-
-        map_info = items[0].data(0, QtCore.Qt.UserRole)
-        if "PerVertex" not in map_info.mode:
-            return
-
-        try:
-            from ..sim_cmds import vtx_map_management
-            mu.executeInMainThreadWithResult(
-                vtx_map_management.paint_vtx_map,
-                f"{self.node.node}.{map_info.name}",
-                map_info.mesh,
-                map_info.solver
-            )
-        except Exception as e:
-            logger.error(f"Failed to start paint tool: {e}")
-
-    def _on_reset_clicked(self):
-        """Handle reset button click."""
-        items = self.maps_tree.selectedItems()
-        if not items:
-            return
-
-        try:
-            for item in items:
-                map_info = item.data(0, QtCore.Qt.UserRole)
-                values = [0.0] * self._get_vertex_count()
-                self._set_map_values(map_info.name, values)
-        except Exception as e:
-            logger.error(f"Failed to reset map values: {e}")
+            return None

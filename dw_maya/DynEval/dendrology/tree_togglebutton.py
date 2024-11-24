@@ -26,7 +26,8 @@ class ToggleButtonDelegate(QtWidgets.QStyledItemDelegate):
             ToggleState.DISABLED: QtGui.QColor("#EF4444"),  # Red
             ToggleState.PENDING: QtGui.QColor("#FCD34D"),  # Yellow
         }
-        self.hover_color = QtGui.QColor(0, 0, 0, 30)
+        self.hover_color = QtGui.QColor(0, 0, 0, 15)  # Lighter background
+        self.hover_highlight = QtGui.QColor(59, 130, 246, 180)  # Semi-transparent blue
 
         # Animation setup
         self._setup_animation()
@@ -34,19 +35,29 @@ class ToggleButtonDelegate(QtWidgets.QStyledItemDelegate):
         # Track pending items
         self.pending_items = set()
 
+        # Initialize hover tracking
+        self.hover_active = False
+        self.current_hover_rect = None
+
     def editorEvent(self, event, model, option, index) -> bool:
         """Handle mouse events for the toggle button."""
-        if not index.isValid() or index.column() != 1:  # Only handle events in state column
+        if not index.isValid() or index.column() != 1:
             return False
 
-        if event.type() == QtCore.QEvent.MouseButtonRelease:
-            button_rect = self._get_button_rect(option.rect)
+        button_rect = self._get_button_rect(option.rect)
+
+        # Handle mouse move and hover
+        if event.type() == QtCore.QEvent.MouseMove:
+            self.hover_active = button_rect.contains(event.pos())
+            self.current_hover_rect = button_rect if self.hover_active else None
+            self.parent().viewport().update()
+            return True
+
+        # Handle click
+        elif event.type() == QtCore.QEvent.MouseButtonRelease:
             if button_rect.contains(event.pos()):
-                # Get current state and toggle it
                 current_state = index.data(QtCore.Qt.UserRole + 3)
                 new_state = not bool(current_state)
-
-                # Emit toggled signal with the index and new state
                 self.toggled.emit(index, new_state)
                 return True
 
@@ -75,11 +86,10 @@ class ToggleButtonDelegate(QtWidgets.QStyledItemDelegate):
             self._dot_positions.append(angle)
 
     def paint(self, painter, option, index):
-        """Paint the toggle button."""
+        """Paint the toggle button with hover highlight."""
         if not index.isValid():
             return
 
-        # Save painter state
         painter.save()
         painter.setRenderHint(QtGui.QPainter.Antialiasing)
 
@@ -89,26 +99,38 @@ class ToggleButtonDelegate(QtWidgets.QStyledItemDelegate):
         # Calculate button rect
         button_rect = self._get_button_rect(option.rect)
 
-        # Draw components
-        self._draw_hover_effect(painter, option, button_rect)
-        self._draw_base_button(painter, button_rect, state)
+        # Draw hover effect
+        if self.hover_active and self.current_hover_rect == button_rect:
+            # Draw hover highlight
+            highlight_rect = button_rect.adjusted(-4, -4, 4, 4)
+            painter.setPen(QtGui.QPen(self.hover_highlight, 2))
+            painter.setBrush(QtCore.Qt.NoBrush)
+            painter.drawRoundedRect(highlight_rect, 6, 6)
 
+        # Draw base button
+        color = self.colors[state]
+        painter.setPen(QtGui.QPen(color, 2))
+        painter.setBrush(QtCore.Qt.NoBrush)
+        painter.drawEllipse(button_rect)
+
+        # Draw loading animation if pending
         if state == ToggleState.PENDING:
             self._draw_loading_animation(painter, button_rect)
 
-        # Restore painter state
         painter.restore()
 
     def _get_button_rect(self, rect):
         """Calculate button geometry."""
-        button_size = min(rect.height() - 4, 20)
+        button_size = min(rect.height() - 8, 16)  # Slightly smaller button
+        center_x = rect.center().x()
+        center_y = rect.center().y()
+
         return QtCore.QRect(
-            rect.left() - button_size + 28,
-            rect.center().y() - button_size // 2,
+            center_x - button_size // 2,
+            center_y - button_size // 2,
             button_size,
             button_size
         )
-
     def _draw_hover_effect(self, painter, option, rect):
         """Draw hover state background."""
         if option.state & QtWidgets.QStyle.State_MouseOver:

@@ -9,6 +9,7 @@ from shiboken6 import wrapInstance
 import maya.OpenMayaUI as omui
 import shutil
 import mmap
+from functools import partial
 
 from dw_maya.dw_presets_io import dw_preset, dw_json, dw_folder
 from dw_logger import get_logger
@@ -317,16 +318,18 @@ class DynEvalUI(QtWidgets.QMainWindow):
         self.dyn_eval_tree.clicked.connect(self.handle_item_clicked)
 
         # 2. For multi-selection handling
-        self.dyn_eval_tree.selectionModel().selectionChanged.connect(
-            lambda selected, deselected: self.handle_selection_changed(
-                self.dyn_eval_tree.get_selected_items()
-            )
-        )
+        self.dyn_eval_tree.selectionModel().selectionChanged.connect(self.handle_selection_changed)
+
+        # SWITCH between map / cache / preset in middle column
+        self.mode_selector.currentIndexChanged.connect(self._handle_mode_change)
 
 
+    # ====================================================================
+    #  SIGNALS HELPERS
+    # ====================================================================
     def handle_item_double_click(self, item):
         """Handle double-click on tree item."""
-        cmds.select(item.mesh_)
+        cmds.select(item.mesh_transform)
         # Your double-click handling code here
 
     def handle_item_clicked(self, item):
@@ -334,16 +337,59 @@ class DynEvalUI(QtWidgets.QMainWindow):
         print(f"Clicked: {item.node}")
         # Your click handling code here
 
-    def handle_selection_changed(self, selected_items):
+    def handle_selection_changed(self):
         """Handle selection changes."""
-        print(f"Selection changed - selected items: {[item.node for item in selected_items]}")
+        items = self.dyn_eval_tree.get_selected_items()
+        print(f"Selection changed - selected items: {[item.node for item in items]}")
+
+        index = self.stack_widget.currentIndex()
+        match index:
+            case 0:
+                self.cache_tree.set_node(items[0])
+            case 1:
+                self._update_maps_for_selection(items)
+            case 2:
+                self.preset_widget.set_node(items[0])
+
         # Your selection change handling code here
+
+    def _handle_mode_change(self, index: int):
+        """Handle switching between cache/maps/preset modes."""
+        self.stack_widget.setCurrentIndex(index)
+        if current_item := self.dyn_eval_tree.get_selected_items():
+            match index:
+                case 0:
+                    self.cache_tree.set_node(current_item[0])
+                case 1:
+                    self._update_maps_for_selection(current_item)
+                case 2:
+                    self.preset_widget.set_node(current_item[0])
 
     def _show_tree_context_menu(self):
         pass
 
     def refresh_tree(self):
         pass
+
+    # ====================================================================
+    #  MAPS WIDGET FUNCTIONS
+    # ====================================================================
+    def _update_maps_for_selection(self, selected_items):
+        """Update maps tree when simulation items are selected."""
+        # Find first nCloth or nRigid item in selection
+        target_item = None
+        for item in selected_items:
+            if item.node_type in ['nCloth', 'nRigid']:
+                target_item = item
+                break
+
+        if target_item:
+            # Get maps data for the item
+            self.maps_tree.set_current_node(selected_items[0])
+        else:
+            # Clear maps if no valid item selected
+            self.maps_tree.clear()
+
 
     # def _setup_shortcuts(self):
     #     """Setup keyboard shortcuts."""
