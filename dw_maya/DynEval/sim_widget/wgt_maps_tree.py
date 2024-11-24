@@ -11,7 +11,7 @@ logger = get_logger()
 
 
 class MapType(Enum):
-    Null = 0
+    NONE = 0
     PerVertex = 1
     Texture = 2
 
@@ -25,6 +25,7 @@ class MapInfo:
     map_type: MapType = MapType.PerVertex
     value_range: tuple[float, float] = (0.0, 1.0)
     is_edited: bool = False
+    per_vertex_weights: list = None
 
 
 class MapTreeModel(QtGui.QStandardItemModel):
@@ -55,7 +56,7 @@ class MapTypeDelegate(QtWidgets.QStyledItemDelegate):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.type_colors = {
-            MapType.Null: QtGui.QColor(175, 175, 175),
+            MapType.NONE: QtGui.QColor(175, 175, 175),
             MapType.PerVertex: QtGui.QColor(0, 255, 0),
             MapType.Texture: QtGui.QColor(0, 125, 255)
         }
@@ -88,7 +89,7 @@ class MapTypeDelegate(QtWidgets.QStyledItemDelegate):
         # Get map info and set color
         map_info = self._get_map_info(index)
         if map_info:
-            color = self.type_colors.get(map_info.map_type, self.type_colors[MapType.Null])
+            color = self.type_colors.get(map_info.map_type, self.type_colors[MapType.NONE])
             painter.setPen(color)
 
         # Draw the text
@@ -120,7 +121,6 @@ class MapTreeWidget(QtWidgets.QWidget):
     mapTypeChanged = QtCore.Signal(MapInfo, MapType)
     itemDoubleClicked = QtCore.Signal(MapNameItem)
 
-
     def __init__(self, parent=None):
         super().__init__(parent)
         self.current_node = None
@@ -128,6 +128,7 @@ class MapTreeWidget(QtWidgets.QWidget):
         self.mesh_name = None
         self.solver = None
         self._setup_ui()
+        self.tree_view.setMouseTracking(True)
         self._connect_signals()
 
     def _setup_ui(self):
@@ -163,7 +164,7 @@ class MapTreeWidget(QtWidgets.QWidget):
         header.setSectionResizeMode(0, QtWidgets.QHeaderView.Stretch)
         header.setSectionResizeMode(1, QtWidgets.QHeaderView.Fixed)
         header.setStretchLastSection(False)
-        self.tree_view.setColumnWidth(1, 120)
+        self.tree_view.setColumnWidth(1, 60)
 
         self.model.setHorizontalHeaderLabels(["Map Name", "Type"])
 
@@ -174,20 +175,34 @@ class MapTreeWidget(QtWidgets.QWidget):
         self.type_filter.currentIndexChanged.connect(self._filter_maps)
         # self.tree_view.selectionModel().selectionChanged.connect(self._handle_selection)
         self.type_delegate.typeChanged.connect(self.mapTypeChanged)
-        self.doubleClicked.connect(self._handle_double_click)
+        # Connect tree view's doubleClicked signal directly
+        self.tree_view.doubleClicked.connect(self._handle_double_click)
 
     def _handle_double_click(self, index: QtCore.QModelIndex):
         """Handle double-click events on tree items."""
         try:
-            # Get the item from the first column (where the simulation item is stored)
-            item_index = self.tree_view.model().index(index.row(), 0, index.parent())
-            item = self.tree_view.model().itemFromIndex(item_index)
+            if index.isValid():
+                # Always get the first column's item regardless of which column was clicked
+                item_index = self.model.index(index.row(), 0, index.parent())
+                map_item = self.model.itemFromIndex(item_index)
 
-            if isinstance(item, MapNameItem):
-                self.itemDoubleClicked.emit(item)
+                if isinstance(map_item, MapNameItem):
+                    map_info = map_item.map_info
+                    if self.current_node and self.current_node.node_type in ['nCloth', 'nRigid']:
+                        # Build attribute path based on map type
+                        attr_path = f"{self.current_node.node}.{map_info.name}"
+                        if map_info.map_type == MapType.PerVertex:
+                            attr_path += "PerVertex"
 
+                        # Launch paint tool
+                        vtx_map_management.paint_vtx_map(
+                            attr_path,
+                            self.mesh_name,
+                            self.solver
+                        )
         except Exception as e:
-            logger.error(f"Double-click handling failed: {e}")
+            logger.error(f"Double-click paint operation failed: {e}")
+
 
     def set_current_node(self, item):
         self.current_node = item
@@ -216,6 +231,15 @@ class MapTreeWidget(QtWidgets.QWidget):
                                map_type=MapType(value),
                                solver=self.solver)
             result_MAPS.append(map_info)
+
+            # Check vertex data to determine if it's been painted
+            vtx_data = vtx_map_management.get_vtx_map_data(self.name, f"{map_name}PerVertex")
+            if vtx_data:
+                if not all(v == 1.0 for v in vtx_data):
+                    map_info.map_type = MapType.PerVertex
+                    map_info.is_edited = True
+                    map_info.per_vertex_weights = vtx_data
+
         return result_MAPS
 
 
@@ -273,11 +297,14 @@ class MapTreeWidget(QtWidgets.QWidget):
         trigger the maya paint tool on selected cloth mesh
         (will keep component if some are selected)
         """
-        map_item = self.maps_tree.currentItem()
-        if self.node.node_type in ['nCloth', 'nRigid']:
-            vtx_map_management.paint_vtx_map(map_item.map_to_paint,
-                                             map_item.cloth_mesh,
-                                             self.solver)
+        maps = self.get_selected_maps()
+        if maps:
+            map_info = maps[0]
+
+            if self.current_node.node_type in ['nCloth', 'nRigid']:
+                vtx_map_management.paint_vtx_map(f"{map_info.name}{map_info.map_type}",
+                                                 map_info.mesh,
+                                                 map_info.solver)
 
     def _get_solver(self, node_name: str) -> str:
         """Get connected solver with error handling."""
@@ -286,3 +313,5 @@ class MapTreeWidget(QtWidgets.QWidget):
             return connections[0].split(':')[-1] if connections else ''
         except Exception as e:
             return None
+
+

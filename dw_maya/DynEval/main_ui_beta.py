@@ -311,10 +311,10 @@ class DynEvalUI(QtWidgets.QMainWindow):
     # ====================================================================
     def _connect_signals(self):
         """Connect all UI signals."""
-        # Connect to double-click signal
+        # Connect to double-click signal in the left panel
         self.dyn_eval_tree.itemDoubleClicked.connect(self.handle_item_double_click)
         # Try both approaches:
-        # 1. For single click handling
+        # 1. For single click handling in the left panel
         self.dyn_eval_tree.clicked.connect(self.handle_item_clicked)
 
         # 2. For multi-selection handling

@@ -201,6 +201,7 @@ def set_vtx_map_data(cloth_node: str, vtx_map: str, value: list, refresh: bool =
         cmds.warning(f"Failed to set vertex map data for '{map_attr}': {e}")
         return False
 
+@acceptString("cloth_mesh")
 def paint_vtx_map(map_attr, cloth_mesh=None, nucleus=None):
     """Enables Maya's vertex paint tool on the specified map attribute.
 
@@ -218,15 +219,15 @@ def paint_vtx_map(map_attr, cloth_mesh=None, nucleus=None):
     if not sel_mesh and not cloth_mesh:
         cmds.error("No mesh selected and no cloth mesh provided.")
         return
+    target_mesh = cloth_mesh or sel_mesh
 
-    target_mesh = cloth_mesh or sel_mesh[0]
-    if sel_mesh and sel_mesh[0] != target_mesh:
-        cmds.select(target_mesh, r=True)
-
+    components = [".vtx[", ".e[", ".f["]
+    is_component = any(comp in target_mesh[0] for comp in components)
     # Convert selected components if vertices are selected
-    sel_check = cmds.ls(sl=True)
-    if len(sel_check) > 1:
-        cmds.select(cmds.polyListComponentConversion(sel_check, tv=True), r=True)
+    if is_component:
+        target_mesh = cmds.polyListComponentConversion(target_mesh, tv=True)
+
+    cmds.select(target_mesh, r=True)
 
     # ======================================================================
     # Attempt to Start Painting
