@@ -1,18 +1,3 @@
-import sys
-import os
-
-# ----- Edit sysPath Dynamically -----
-rdPath = os.path.join(os.path.dirname(__file__), "..", "dw_open_tools")
-if rdPath not in sys.path:
-    print(f"Add {rdPath} to sysPath")
-    sys.path.insert(0, rdPath)
-
-try:
-    from maya import cmds, mel
-    print("Maya commands loaded successfully.")
-except ImportError as e:
-    print("Maya commands not available. Error:", e)
-
 # Explicit imports for clarity and maintainability
 from .dw_maya_attrs import get_type_io, add_attr, lock_attr
 from .dw_maya_components import chunks, mag, get_next_free_multi_index, create_maya_ranges

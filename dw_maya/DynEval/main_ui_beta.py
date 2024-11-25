@@ -23,7 +23,7 @@ from .sim_widget import (
     StateManager, SimulationTreeView, PresetManager,
     CacheTreeWidget, MapTreeWidget, PresetWidget,
     CommentEditor,
-    CacheInfo, MapInfo, PresetInfo, CacheType, PresetType, MapType
+    CacheInfo, MapInfo, PresetInfo, CacheType, PresetType, MapType, VertexMapEditor
 )
 
 logger = get_logger()
@@ -187,6 +187,10 @@ class DynEvalUI(QtWidgets.QMainWindow):
         # Comments tab
         self.comments_tab = CommentEditor()
         self.details_panel.addTab(self.comments_tab, "Comments")
+
+        # Paint tab
+        self.paint_map_tab = VertexMapEditor()
+        self.details_panel.addTab(self.paint_map_tab, "Edit Maps")
 
         # Info tab (for showing node/cache/map details)
         self.info_tab = QtWidgets.QTextEdit()

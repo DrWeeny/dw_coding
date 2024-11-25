@@ -263,3 +263,16 @@ def _force_enable_nucleus(nucleus, map_name):
     except:
         cmds.error("Error enabling nucleus; please ensure nucleus and cloth are active and start from the first frame.")
 
+def smooth_pervtx_map(iteration=1):
+    """ Enable maya vertex paint tool and launch smooth
+        :param clothNode: Cloth node name
+        :type clothNode: str
+        :param mapName: Vertex map name
+        :type mapName: str """
+    # Set The Paint Editor and set it to Smooth Operation
+    cmds.artAttrCtx('artAttrNClothContext', edit=1, selectedattroper="smooth")
+    # Make sure the Paint Editor is init otherwise it wont work
+    cmds.refresh()
+    for i in range(iteration):
+        # smooth operation TODO: delay with maya threading
+        cmds.artAttrCtx('artAttrNClothContext', edit=1, clear=1)
