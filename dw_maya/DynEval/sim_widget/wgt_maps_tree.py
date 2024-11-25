@@ -60,6 +60,7 @@ class MapTypeDelegate(QtWidgets.QStyledItemDelegate):
             MapType.PerVertex: QtGui.QColor(0, 255, 0),
             MapType.Texture: QtGui.QColor(0, 125, 255)
         }
+        self._current_editor = None
 
     def createEditor(self, parent, option, index):
         if not index.isValid() or index.column() != 1:
@@ -67,21 +68,37 @@ class MapTypeDelegate(QtWidgets.QStyledItemDelegate):
 
         editor = QtWidgets.QComboBox(parent)
         editor.addItems([t.name for t in MapType])
-        editor.currentIndexChanged.connect(
-            lambda idx: self._handle_type_change(index, MapType(idx))
-        )
+        editor.setFrame(False)  # Remove border for cleaner look
+
+        # Use activated instead of currentIndexChanged for better control
+        editor.activated.connect(lambda idx: self._handle_type_change(index, MapType(idx), editor))
+
+        # Store reference to current editor
+        self._current_editor = editor
         return editor
 
     def setEditorData(self, editor, index):
-        """Set up editor data and show popup immediately."""
         if not isinstance(editor, QtWidgets.QComboBox):
             return
 
         map_info = self._get_map_info(index)
         if map_info:
             editor.setCurrentIndex(map_info.map_type.value)
-            # Show popup immediately
-            editor.showPopup()
+
+            # Post event to show popup after Qt has finished processing current events
+            QtCore.QTimer.singleShot(0, editor.showPopup)
+
+    def setModelData(self, editor, model, index):
+        if not isinstance(editor, QtWidgets.QComboBox):
+            return
+
+        value = editor.currentText()
+        model.setData(index, value, QtCore.Qt.DisplayRole)
+
+        # Update the type in the MapInfo
+        map_info = self._get_map_info(index)
+        if map_info:
+            map_info.map_type = MapType(editor.currentIndex())
 
     def paint(self, painter, option, index):
         if not index.isValid():
@@ -89,32 +106,61 @@ class MapTypeDelegate(QtWidgets.QStyledItemDelegate):
 
         painter.save()
 
-        # Get map info and set color
+        # Get map info and determine text/color
         map_info = self._get_map_info(index)
         if map_info:
             color = self.type_colors.get(map_info.map_type, self.type_colors[MapType.NONE])
+            text = map_info.map_type.name
+        else:
+            color = self.type_colors[MapType.NONE]
+            text = MapType.NONE.name
+
+        # Handle selection and hover states
+        if option.state & QtWidgets.QStyle.State_Selected:
+            painter.fillRect(option.rect, option.palette.highlight())
+            painter.setPen(option.palette.highlightedText().color())
+        elif option.state & QtWidgets.QStyle.State_MouseOver:
+            painter.fillRect(option.rect, QtGui.QColor(60, 60, 60, 100))
+            painter.setPen(color)
+        else:
             painter.setPen(color)
 
         # Draw the text
-        text = index.data(QtCore.Qt.DisplayRole)
-        text_rect = option.rect.adjusted(4, 0, -4, 0)  # Add some padding
+        text_rect = option.rect.adjusted(4, 0, -4, 0)
         painter.drawText(text_rect, QtCore.Qt.AlignVCenter, text)
 
         painter.restore()
 
-    def _get_map_info(self, index) -> Optional[MapInfo]:
+    def _get_map_info(self, index) -> Optional[object]:
         """Get MapInfo from the name column of the same row."""
         name_item = index.model().item(index.row(), 0)
         return name_item.data(QtCore.Qt.UserRole) if name_item else None
 
-    def _handle_type_change(self, index, new_type: MapType):
-        """Handle map type changes."""
-        map_info = self._get_map_info(index)
-        if map_info:
-            map_info.map_type = new_type
-            self.typeChanged.emit(map_info, new_type)
-            # Force repaint
-            index.model().dataChanged.emit(index, index)
+    def _handle_type_change(self, index, new_type: MapType, editor):
+        """Handle type changes with proper cleanup."""
+        try:
+            map_info = self._get_map_info(index)
+            if map_info:
+                # Update the type
+                map_info.map_type = new_type
+
+                # Update the display
+                index.model().setData(index, new_type.name, QtCore.Qt.DisplayRole)
+
+                # Emit the change signal
+                self.typeChanged.emit(map_info, new_type)
+
+                # Force a repaint of the item
+                index.model().dataChanged.emit(index, index)
+
+                # Close the editor after a short delay to ensure proper cleanup
+                QtCore.QTimer.singleShot(10, lambda: self.closeEditor.emit(editor))
+        except Exception as e:
+            print(f"Error handling type change: {e}")
+
+    def updateEditorGeometry(self, editor, option, index):
+        """Ensure proper editor geometry."""
+        editor.setGeometry(option.rect)
 
 class MapTreeWidget(QtWidgets.QWidget):
     """Enhanced widget for map management using model/view architecture."""
