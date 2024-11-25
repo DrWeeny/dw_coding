@@ -33,6 +33,11 @@ def set_data_treecombo(treecombo: TreeComboBox,
     cloth_nodes, nrigid_nodes = [], []
     system = dw_get_hierarchy()
 
+    # Clear existing items first
+    treecombo.clear()
+
+    found_selection = False
+
     for char, solver_nodes in system.items():
         for solver in solver_nodes:
             if "nCloth" in system[char][solver]:
@@ -41,12 +46,22 @@ def set_data_treecombo(treecombo: TreeComboBox,
                 nrigid_nodes = get_ncloth_mesh(system[char][solver]["nRigid"])
 
             if cloth_nodes or nrigid_nodes:
-                try :
-                    treecombo.add_nucleus_data(nucleus_name=nice_name(solver, True),
-                                               cloths=cloth_nodes,
-                                               rigids=nrigid_nodes)
+                try:
+                    treecombo.add_nucleus_data(
+                        nucleus_name=nice_name(solver, True),
+                        cloths=cloth_nodes,
+                        rigids=nrigid_nodes
+                    )
+
+                    # If we have a mesh to select, try to select it
                     if mesh_selection and isinstance(mesh_selection, str):
-                        print("mesh:"+mesh_selection)
-                        treecombo.select_item_by_text(mesh_selection)
-                except:
-                    logger.error(f"Failed to Add items in {treecombo}")
+                        logger.debug(f"Attempting to select mesh: {mesh_selection}")
+                        if treecombo.select_item_by_text(mesh_selection):
+                            found_selection = True
+                            logger.debug(f"Successfully selected mesh: {mesh_selection}")
+
+                except Exception as e:
+                    logger.error(f"Failed to add items in {treecombo}: {e}")
+
+            if mesh_selection and not found_selection:
+                logger.warning(f"Could not find mesh {mesh_selection} in the tree combo")

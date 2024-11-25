@@ -1,4 +1,7 @@
 from PySide6 import QtWidgets, QtCore, QtGui
+from dw_logger import get_logger
+
+logger = get_logger()
 
 
 class MeshComboModel(QtGui.QStandardItemModel):
@@ -57,11 +60,15 @@ class MeshComboModel(QtGui.QStandardItemModel):
         count_items(self.invisibleRootItem().index(), index)
         return row
 
+
 class TreeComboBox(QtWidgets.QComboBox):
     """Custom combo box with tree view"""
 
+    textChanged = QtCore.Signal(str)
+
     def __init__(self, parent=None):
         super().__init__(parent)
+        self.view().clicked.connect(self._handle_item_clicked)
 
         # Create and set the model
         self.model = MeshComboModel()
@@ -79,81 +86,105 @@ class TreeComboBox(QtWidgets.QComboBox):
         self.setSizeAdjustPolicy(QtWidgets.QComboBox.AdjustToContents)
         self.setMaximumWidth(300)
 
+        # Track items and their indices
+        self._items_map = {}  # {text: index}
+        self._current_index = 0
+
+        # Connect the native currentIndexChanged signal to our handler
+        self.currentIndexChanged.connect(self._handle_index_changed)
+
+    def _handle_index_changed(self, index: int):
+        """Handle index changes and emit text signal"""
+        # Find text for this index
+        text = ""
+        for item_text, item_index in self._items_map.items():
+            if item_index == index:
+                text = item_text
+                print(text)
+                break
+
+        logger.debug(f"Index changed to {index}, text: {text}")
+        # Emit our custom signal with the text
+        self.textChanged.emit(text)
+
     def add_nucleus_data(self, nucleus_name: str, cloths=None, rigids=None):
         """Add a complete nucleus system with its meshes"""
-        nucleus_item = self.model.add_nucleus(nucleus_name)
+        logger.debug(f"Adding nucleus data: {nucleus_name}")
+        try:
+            # Create nucleus header
+            nucleus_item = self.model.add_nucleus(nucleus_name)
 
-        if cloths:
-            for cloth in cloths:
-                self.model.add_cloth(nucleus_item, cloth)
+            # Track nucleus (even though not selectable)
+            self._items_map[nucleus_name] = self._current_index
+            self._current_index += 1
 
-        if rigids:
-            for rigid in rigids:
-                self.model.add_rigid(nucleus_item, rigid)
+            # Add cloth meshes
+            if cloths:
+                logger.debug(f"Adding cloth meshes: {cloths}")
+                for cloth in cloths:
+                    self.model.add_cloth(nucleus_item, cloth)
+                    self._items_map[cloth] = self._current_index
+                    self._current_index += 1
 
-        # Expand the nucleus item
-        self.tree_view.expand(nucleus_item.index())
+            # Add rigid meshes
+            if rigids:
+                logger.debug(f"Adding rigid meshes: {rigids}")
+                for rigid in rigids:
+                    self.model.add_rigid(nucleus_item, rigid)
+                    self._items_map[rigid] = self._current_index
+                    self._current_index += 1
 
-    def clear_items(self):
-        """Clear all items from the model"""
+            # Expand the nucleus item
+            self.tree_view.expand(nucleus_item.index())
+            logger.debug(f"Items map after adding nucleus: {self._items_map}")
+
+        except Exception as e:
+            logger.error(f"Error adding nucleus data: {str(e)}")
+            raise
+
+    def clear(self):
+        """Clear all items and reset tracking"""
+        logger.debug("Clearing TreeComboBox")
         self.model.clear()
         self.model.setHorizontalHeaderLabels(['Meshes'])
+        self._items_map.clear()
+        self._current_index = 0
+        self.setCurrentIndex(-1)
+        logger.debug("TreeComboBox cleared")
 
     def select_item_by_text(self, text: str) -> bool:
-        """
-        Find and select an item in the tree that matches the given text.
+        """Select item by text using tracked indices"""
+        logger.debug(f"Attempting to select item: {text}")
 
-        Args:
-            text (str): The text to match
+        if text in self._items_map:
+            index = self._items_map[text]
+            logger.debug(f"Found item {text} at index {index}")
 
-        Returns:
-            bool: True if item was found and selected, False otherwise
-        """
+            # Set both combo box and tree view selection
+            self.setCurrentIndex(index)
 
-        def find_match(parent_item):
-            # Check all rows under the parent
-            for row in range(parent_item.rowCount()):
-                child = parent_item.child(row)
-                if child:
-                    # Check if this item matches
-                    if child.text() == text and child.isSelectable():
-                        return child
-                    # Recursively check child's children
-                    if child.hasChildren():
-                        result = find_match(child)
-                        if result:
-                            return result
-            return None
+            # Set tree view selection
+            model_index = self.model.index(index, 0)
+            self.tree_view.setCurrentIndex(model_index)
 
-        # Start search from root
-        root = self.model.invisibleRootItem()
-        matching_item = find_match(root)
+            # Expand parent if needed
+            parent = model_index.parent()
+            if parent.isValid():
+                self.tree_view.expand(parent)
 
-        if matching_item:
-            # Get the model index
-            index = matching_item.index()
-
-            # Set the current index in the combo box
-            self.setCurrentIndex(self.model.indexToRow(index))
-
-            # Expand parent items to make selection visible
-            parent = matching_item.parent()
-            while parent:
-                self.tree_view.expand(parent.index())
-                parent = parent.parent()
-
+            logger.debug(f"Selected item {text} at index {index}")
             return True
 
+        logger.debug(f"Item not found: {text}")
         return False
 
-    def get_selected_text(self) -> str:
-        """Get the text of the currently selected item"""
-        current_index = self.tree_view.currentIndex()
-        if current_index.isValid():
-            item = self.model.itemFromIndex(current_index)
-            return item.text()
-        return ""
-
+    def _handle_item_clicked(self, index):
+        """Handle item clicks"""
+        item = self.model.itemFromIndex(index)
+        if item and item.isSelectable():
+            text = item.text()
+            if text in self._items_map:
+                self.setCurrentIndex(self._items_map[text])
 
 # Example usage:
 if __name__ == "__main__":
