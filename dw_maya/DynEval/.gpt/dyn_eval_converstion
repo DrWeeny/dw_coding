@@ -11,12 +11,14 @@
 │   │   ├── wgt_state_recovery.py
 │   │   ├── wgt_tree_progress.py
 │   │   ├── wgt_colortextbutton.py
+│   │   ├── wgt_combotree.py
 │   │   ├── wgt_commentary.py
 │   │   ├── wgt_maps_tree.py
 │   │   ├── wgt_paint_map.py
 │   │   ├── wgt_treewidget_toggle.py
 │   ├── sim_cmds/
 │   │   ├── __init__.py
+│   │   ├── paint_wgt_utils.py
 │   │   ├── cache_management.py
 │   │   ├── info_management.py
 │   │   ├── preset_management.py
@@ -108,4 +110,45 @@ Visual feedback for hover states
 
 
 
-The end result is a clean, user-friendly interface for managing map types in a tree view with intuitive combobox interaction.
+Here's a summary of what we've accomplished:
+
+Created a TreeComboBox widget that:
+
+Shows a hierarchy of nucleus systems and their meshes
+Nucleus headers in gray (non-selectable)
+Cloth meshes in green
+Rigid meshes in blue
+
+
+Fixed several issues:
+
+Selection syncing between tree view and combo box
+Index mapping for proper item selection
+Added textChanged signal for selection tracking
+Fixed QModelIndex creation and handling
+
+
+Key Implementation Features:
+pythonCopy# Structure of indices:
+nucleus (0,0)
+  ├── mesh1 (0,0) under nucleus
+  ├── mesh2 (1,0) under nucleus
+  └── mesh3 (2,0) under nucleus
+
+# Tracking maps
+self._items_map = {}  # {text: index}
+self._index_map = {}  # {index: text}
+
+# Signal for selection changes
+textChanged = QtCore.Signal(str)
+
+Main methods:
+
+add_nucleus_data(): Adds nucleus with cloths/rigids
+select_item_by_text(): Selects item in both tree and combo
+clear(): Resets the widget
+get_current_text(): Returns selected item text
+
+
+Debug logging is implemented throughout for troubleshooting
+select_item_by_text() doesnt work and display always nucleus1
