@@ -149,6 +149,58 @@ select_item_by_text(): Selects item in both tree and combo
 clear(): Resets the widget
 get_current_text(): Returns selected item text
 
+Core Paint Module (dw_paint/)
 
-Debug logging is implemented throughout for troubleshooting
-select_item_by_text() doesnt work and display always nucleus1
+paint_core.py - Core weight manipulation functions
+Handles weights calculation without Maya-specific logic
+
+
+Nucleus Paint Module (dw_nucleus_utils/)
+
+nucleus_paint.py - nCloth specific implementation
+Wraps core paint functionality for nucleus maps
+
+
+UI Components:
+
+TreeComboBox - Custom hierarchy view for nucleus/mesh selection
+ColoredMapComboBox - Color-coded map selection (Green=Vertex, Blue=Texture, Grey=Disabled)
+RangeSlider - Dual-handle slider for range selection
+VertexMapEditor - Main editor widget
+
+
+
+Key Features Implemented:
+
+Solver type selection (Nucleus/Deformers)
+Mesh hierarchy display and selection
+Map display with color coding
+Value editor with flood controls
+Range selection with dual slider
+Smooth controls with presets
+
+Fixed Issues:
+
+TreeComboBox text selection and signals
+Map population and categorization
+Color coding for different map types
+
+Next Steps for Implementation:
+
+Connect selection buttons (Select, Invert, Clear)
+Implement flood operations with different modes (Replace, Add, Subtract, Multiply)
+Connect paint tool functionality
+Implement smooth operations
+Add range-based selection
+Handle clamp value enforcement
+
+Current Signals Available:
+pythonCopyvalueChanged = Signal(float)
+floodRequested = Signal(float, EditMode)
+selectionModeChanged = Signal(SelectionMode)
+selectionRangeChanged = Signal(float, float)
+smoothRequested = Signal(int)
+solverChanged = Signal(SolverType)
+meshChanged = Signal(str)
+mapChanged = Signal(str)
+paintRequested = Signal()

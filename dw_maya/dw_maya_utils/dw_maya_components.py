@@ -1,5 +1,6 @@
 import re, itertools, math
 from typing import Iterable, List, Generator, Tuple, Optional, Union, Set
+from dw_maya.dw_constants.node_re_mappings import COMPONENT_PATTERN
 
 from maya import cmds
 
@@ -10,6 +11,11 @@ Point3D = Tuple[float, float, float]
 MayaComponent = str
 ComponentID = int
 ComponentRange = str
+
+def component_in_list(node_list):
+    if any([COMPONENT_PATTERN.match(name) for name in node_list]):
+        return True
+    return False
 
 def chunks(iterable: Iterable, size: int) -> Generator[List, None, None]:
     """

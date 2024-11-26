@@ -4,11 +4,24 @@ from typing import List, Optional, Union, Tuple, Literal
 from dw_logger import get_logger
 import math
 import maya.api.OpenMaya as om
+from dw_maya.dw_maya_utils import component_in_list
+from dw_maya.dw_decorators import acceptString
 
 logger = get_logger()
 
 # Type alias for weight list
 WeightList = List[float]
+
+@acceptString("mesh")
+def flood_value_on_sel(mesh, weights: list):
+
+    # get selection to check if component are in selection
+    sel = cmds.ls(sl=True)
+    components = component_in_list(sel)
+    if components:
+        arg_compare = list(set([s.split(".")[0] for s in sel]))
+
+
 
 
 def apply_falloff(weights: List[float],

@@ -11,7 +11,7 @@ from collections import defaultdict
 from dw_maya.dw_decorators import viewportOff, tmp_disable_solver, acceptString
 import dw_maya.dw_maya_utils as dwu
 import dw_maya.dw_maya_nodes as dwnn
-from .dw_nmaps import getVertexMap
+from .dw_get_uv_coord import getVertexMap
 from itertools import chain
 import re
 

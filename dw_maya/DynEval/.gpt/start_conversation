@@ -31,6 +31,15 @@ dw_coding/
 │   ├── PkF/
 │   ├── PresetTool/
 │   ├── SpanSmooth/
+│   ├── dw_pyqt_utils/
+│   │   ├── __init__.py
+│   │   ├── editor_lang.py
+│   │   ├── syntax_py.py
+│   │   ├── dw_model_iteritems.py
+│   ├── dw_paint/
+│   │   ├── __init__.py
+│   │   ├── dw_paint_core.py
+│   │   ├── dw_paint_utils.py
 │   ├── dw_deformers/
 │   │   ├── __init__.py
 │   │   ├── dw_create_wrap.py
@@ -85,6 +94,30 @@ dw_coding/
 │   │   ├── dw_mesh_utils.py
 │   │   ├── dw_uv.py
 │   │   ├── dw_vtx.py
+│   ├── dw_nucleus_utils/
+│   │   ├── __init__.py
+│   │   ├── dw_add_active_to_nsystem.py
+│   │   ├── dw_apply_maya_preset.py
+│   │   ├── dw_attach_nobject_to_hairsystem.py
+│   │   ├── dw_choice_skip.py
+│   │   ├── dw_core.py
+│   │   ├── dw_create_follicle.py
+│   │   ├── dw_create_hair_band.py
+│   │   ├── dw_create_hierarchy.py
+│   │   ├── dw_create_nucleus.py
+│   │   ├── dw_delete_entire_hairsys.py
+│   │   ├── dw_driver_methods.py
+│   │   ├── dw_localisation.py
+│   │   ├── dw_make_collide.py
+│   │   ├── dw_make_curve_dynamic.py
+│   │   ├── dw_ncache_utils.py
+│   │   ├── dw_nconstraint_class.py
+│   │   ├── dw_nconstraint_preset.py
+│   │   ├── dw_nhair_utils.py
+│   │   ├── dw_get_uv_coord.py
+│   │   ├── dw_nucleus_paint.py
+│   │   ├── dw_nx_mel.py
+│   │   ├── dw_setup_for_tear_constraint.py
 │   ├── dw_maya_nodes/
 │   │   ├── __init__.py
 │   │   ├── attr.py
@@ -139,4 +172,3 @@ Key improvements made:
 - Added test functions
 - Better organization with constants
 
-Could you help me continue refactoring the remaining packages dw_nucleus_utils and DynEval/ ?

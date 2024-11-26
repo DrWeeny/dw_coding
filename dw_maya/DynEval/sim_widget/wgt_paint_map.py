@@ -1,9 +1,10 @@
 from PySide6 import QtWidgets, QtCore, QtGui
 from dataclasses import dataclass
 from enum import Enum
-from typing import Optional, Callable, List
+from typing import Optional, Callable, List, Tuple
 
 from dw_maya.dw_nucleus_utils.dw_core import get_nucx_map_type
+from dw_maya.dw_nucleus_utils import get_nucleus_solver
 from .wgt_combotree import TreeComboBox
 from .wgt_combobox_maps import ColoredMapComboBox
 from ..sim_cmds.vtx_map_management import smooth_pervtx_map
@@ -338,8 +339,8 @@ class VertexMapEditor(QtWidgets.QWidget):
         """)
 
         # Add buttons to flood layout
-        flood_layout.addWidget(self.btn_zero)
         flood_layout.addWidget(self.value_spinbox)
+        flood_layout.addWidget(self.btn_zero)
         flood_layout.addWidget(self.flood_button)
         flood_layout.addWidget(self.btn_one)
 
@@ -479,7 +480,7 @@ class VertexMapEditor(QtWidgets.QWidget):
             }
         """)
 
-        # populate
+        # populate painting combobox
         self.populate_treecombobox()
         self.populate_map_combobox()
 
@@ -515,7 +516,7 @@ class VertexMapEditor(QtWidgets.QWidget):
         # Connect mesh and map selection signals
         self.mesh_combo.currentTextChanged.connect(self._handle_mesh_change)
         self.map_combo.currentTextChanged.connect(self._handle_map_change)
-        self.paint_button.clicked.connect(self.paintRequested.emit)
+        self.paint_button.clicked.connect(self.maya_paint)
 
     def _handle_solver_change(self, button):
         """Handle solver type selection changes"""
@@ -532,7 +533,6 @@ class VertexMapEditor(QtWidgets.QWidget):
         if mesh_name:  # Only proceed if we have a valid mesh name
             self.mesh_combo._current_text = mesh_name
             self.populate_map_combobox()  # Refresh maps
-            self.paint_button.setEnabled(True)
         else:
             logger.warning("ComboBox Mesh doesn't emit mesh")
 
@@ -585,7 +585,7 @@ class VertexMapEditor(QtWidgets.QWidget):
         if self.clamp_max_check.isChecked():
             value = min(value, self.clamp_max_spin.value())
 
-        self.floodRequested.emit(value, current_mode)
+        self.set_flood_weight(value)
 
     def _validate_clamp_ranges(self):
         """Ensure min clamp is not greater than max clamp"""
@@ -702,8 +702,33 @@ class VertexMapEditor(QtWidgets.QWidget):
                 for map_name in map_list:
                     self.map_combo.addMapItem(map_name, map_type)
 
-    def flood_smooth(self, iteration: int = 1):
+    def maya_paint(self):
+        from ..sim_cmds import paint_vtx_map
+        mesh = self.mesh_combo.get_current_text()
+        map = self.map_combo.currentText()
+        nucx_node = self.map_combo.nucx_node
+        solver = get_nucleus_solver(nucx_node)
+        paint_vtx_map(map, mesh, solver)
+
+    def smooth_flood(self, iteration: int = 1):
         smooth_pervtx_map(iteration)
+
+    def get_combo_data(self) -> Tuple[str, str, str]:
+        """
+        return nucleus_node, map name, mesh_name
+        """
+        mesh = self.mesh_combo.get_current_text()
+        map = self.map_combo.currentText()
+        nucx_node = self.map_combo.nucx_node
+        return nucx_node, map, mesh
+
+    def set_flood_weight(self):
+        from ..sim_cmds import get_vtx_map_data
+        # gather elements set in ui
+        nucx, _map, mesh = self.get_combo_data()
+        # get the weightList
+        weights = get_vtx_map_data(nucx, _map)
+
 
 
 # Example usage
