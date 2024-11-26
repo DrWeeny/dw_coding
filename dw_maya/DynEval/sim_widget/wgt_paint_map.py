@@ -513,7 +513,7 @@ class VertexMapEditor(QtWidgets.QWidget):
         self.solver_group.buttonClicked.connect(self._handle_solver_change)
 
         # Connect mesh and map selection signals
-        self.mesh_combo.textChanged.connect(self._handle_mesh_change)
+        self.mesh_combo.currentTextChanged.connect(self._handle_mesh_change)
         self.map_combo.currentTextChanged.connect(self._handle_map_change)
         self.paint_button.clicked.connect(self.paintRequested.emit)
 
@@ -528,10 +528,13 @@ class VertexMapEditor(QtWidgets.QWidget):
 
     def _handle_mesh_change(self, mesh_name):
         """Handle mesh selection changes"""
-        logger.debug("handler textChanged - Populating map combobox...")
+        logger.debug(f"handler textChanged - Populating map combobox...{mesh_name}")
         if mesh_name:  # Only proceed if we have a valid mesh name
+            self.mesh_combo._current_text = mesh_name
             self.populate_map_combobox()  # Refresh maps
             self.paint_button.setEnabled(True)
+        else:
+            logger.warning("ComboBox Mesh doesn't emit mesh")
 
     def _handle_map_change(self, map_name):
         """Handle map selection changes"""
@@ -664,7 +667,7 @@ class VertexMapEditor(QtWidgets.QWidget):
         self.map_combo.clear()
         mesh = self.mesh_combo.get_current_text()
 
-        logger.debug(f"Current mesh: {mesh}")
+        logger.debug(f"Populating map - Current TreeCombo mesh: {mesh}")
         if not mesh:
             return
 

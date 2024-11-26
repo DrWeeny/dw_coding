@@ -1,6 +1,8 @@
 from PySide6 import QtWidgets, QtCore, QtGui
 from typing import Optional, Dict, List
+from dw_logger import get_logger
 
+logger=get_logger()
 
 class MeshComboModel(QtGui.QStandardItemModel):
     """Custom model for hierarchy in combo box"""
@@ -122,6 +124,7 @@ class TreeComboBox(QtWidgets.QComboBox):
             self.setRootModelIndex(root_index.parent())
 
         # Emit signal
+        logger.debug(f"TreeComboBox textChanged emit {text}")
         self.textChanged.emit(text)
         return True
 
