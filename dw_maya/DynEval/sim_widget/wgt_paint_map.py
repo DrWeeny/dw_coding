@@ -448,7 +448,7 @@ class VertexMapEditor(QtWidgets.QWidget):
         mesh_label = QtWidgets.QLabel("Mesh:")
         self.mesh_combo = TreeComboBox()
         self.mesh_combo.setMinimumWidth(150)
-        self.populate_treecombo()
+        # self.populate_treecombo()
         mesh_layout.addWidget(mesh_label)
         mesh_layout.addWidget(self.mesh_combo)
 
