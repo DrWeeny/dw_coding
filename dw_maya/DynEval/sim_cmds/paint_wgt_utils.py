@@ -2,10 +2,12 @@ from maya import cmds, mel
 from .info_management import dw_get_hierarchy
 from ..sim_widget.wgt_combotree import TreeComboBox
 from dw_maya.dw_maya_utils import lsTr
+from dw_maya.dw_nucleus_utils.dw_core import get_nucx_node, get_pervertex_maps, get_nucx_map_type
 
 from dw_logger import get_logger
 
 logger = get_logger()
+
 
 def get_maya_sel():
     sel = lsTr(sl=True, dag=True, type="mesh")
@@ -27,6 +29,17 @@ def get_ncloth_mesh(node_list: list):
         o = cmds.listRelatives(o, p=True, f=True)[0]
         result.append(nice_name(o))
     return result
+
+def get_ncloth_from_mesh(mesh):
+    nucx = get_nucx_node(mesh)
+    return nucx
+
+def get_nucx_maps_from_mesh(mesh):
+    nucx = get_nucx_node(mesh)
+    maps = get_pervertex_maps(nucx)
+
+    maps.sort()
+    return maps, nucx
 
 def set_data_treecombo(treecombo: TreeComboBox,
                        mesh_selection:str = None):

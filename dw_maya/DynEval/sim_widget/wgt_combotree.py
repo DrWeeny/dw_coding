@@ -1,7 +1,4 @@
 from PySide6 import QtWidgets, QtCore, QtGui
-from typing import Optional, Dict, Any
-
-from PySide6 import QtWidgets, QtCore, QtGui
 from typing import Optional, Dict, List
 
 
@@ -53,6 +50,8 @@ class TreeComboBox(QtWidgets.QComboBox):
         # Setup model
         self.mesh_model = MeshComboModel()
         self.setModel(self.mesh_model)
+
+        self._current_text = ""
 
         # Setup tree view
         self.tree_view = QtWidgets.QTreeView()
@@ -114,6 +113,9 @@ class TreeComboBox(QtWidgets.QComboBox):
         # Set the current index to the selected item
         self.setCurrentIndex(index.row())
 
+        # Store current text
+        self._current_text = text  # Add this line
+
         # Reset root index to show full tree in popup
         if self._root_items:
             root_index = self.mesh_model.indexFromItem(self._root_items[0])
@@ -132,12 +134,8 @@ class TreeComboBox(QtWidgets.QComboBox):
 
     def get_current_text(self) -> str:
         """Get the currently selected item's text"""
-        index = self.currentIndex()
-        root_index = self.rootModelIndex()
-        if root_index.isValid():
-            item = self.mesh_model.itemFromIndex(self.mesh_model.index(index, 0, root_index))
-            return item.text() if item else ""
-        return ""
+        item = self.mesh_model.get_item(self._current_text) if hasattr(self, '_current_text') else None
+        return item.text() if item else ""
 
     def clear(self) -> None:
         """Clear all items and reset state"""

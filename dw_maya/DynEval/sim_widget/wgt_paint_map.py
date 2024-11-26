@@ -2,10 +2,11 @@ from PySide6 import QtWidgets, QtCore, QtGui
 from dataclasses import dataclass
 from enum import Enum
 from typing import Optional, Callable, List
-import math
-from .wgt_combotree import TreeComboBox
-from ..sim_cmds.vtx_map_management import smooth_pervtx_map
 
+from dw_maya.dw_nucleus_utils.dw_core import get_nucx_map_type
+from .wgt_combotree import TreeComboBox
+from .wgt_combobox_maps import ColoredMapComboBox
+from ..sim_cmds.vtx_map_management import smooth_pervtx_map
 
 from dw_logger import get_logger
 
@@ -448,14 +449,13 @@ class VertexMapEditor(QtWidgets.QWidget):
         mesh_label = QtWidgets.QLabel("Mesh:")
         self.mesh_combo = TreeComboBox()
         self.mesh_combo.setMinimumWidth(150)
-        # self.populate_treecombo()
         mesh_layout.addWidget(mesh_label)
         mesh_layout.addWidget(self.mesh_combo)
 
         # Map selection combo
         map_layout = QtWidgets.QHBoxLayout()
         map_label = QtWidgets.QLabel("Map:")
-        self.map_combo = QtWidgets.QComboBox()
+        self.map_combo = ColoredMapComboBox()
         self.map_combo.setMinimumWidth(150)
         map_layout.addWidget(map_label)
         map_layout.addWidget(self.map_combo)
@@ -478,6 +478,10 @@ class VertexMapEditor(QtWidgets.QWidget):
                 color: rgb(180, 180, 180);
             }
         """)
+
+        # populate
+        self.populate_treecombobox()
+        self.populate_map_combobox()
 
         # Add all elements to selection layout
         selection_layout.addLayout(mesh_layout)
@@ -509,7 +513,7 @@ class VertexMapEditor(QtWidgets.QWidget):
         self.solver_group.buttonClicked.connect(self._handle_solver_change)
 
         # Connect mesh and map selection signals
-        self.mesh_combo.currentTextChanged.connect(self._handle_mesh_change)
+        self.mesh_combo.textChanged.connect(self._handle_mesh_change)
         self.map_combo.currentTextChanged.connect(self._handle_map_change)
         self.paint_button.clicked.connect(self.paintRequested.emit)
 
@@ -524,9 +528,10 @@ class VertexMapEditor(QtWidgets.QWidget):
 
     def _handle_mesh_change(self, mesh_name):
         """Handle mesh selection changes"""
-        self.meshChanged.emit(mesh_name)
-        # Refresh available maps for selected mesh
-        self.refresh_map_list(mesh_name)
+        logger.debug("handler textChanged - Populating map combobox...")
+        if mesh_name:  # Only proceed if we have a valid mesh name
+            self.populate_map_combobox()  # Refresh maps
+            self.paint_button.setEnabled(True)
 
     def _handle_map_change(self, map_name):
         """Handle map selection changes"""
@@ -639,7 +644,7 @@ class VertexMapEditor(QtWidgets.QWidget):
         iterations = self.sender().property("smoothValue")
         self.smoothRequested.emit(iterations)
 
-    def populate_treecombo(self):
+    def populate_treecombobox(self):
         from ..sim_cmds.paint_wgt_utils import set_data_treecombo, nice_name, get_maya_sel
         sel = get_maya_sel()
         if sel:
@@ -650,6 +655,49 @@ class VertexMapEditor(QtWidgets.QWidget):
             easy_sel = None
 
         set_data_treecombo(self.mesh_combo, easy_sel)
+        self.populate_map_combobox()
+
+    def populate_map_combobox(self):
+        from ..sim_cmds.paint_wgt_utils import get_nucx_maps_from_mesh
+
+        logger.debug("Populating map combobox...")
+        self.map_combo.clear()
+        mesh = self.mesh_combo.get_current_text()
+
+        logger.debug(f"Current mesh: {mesh}")
+        if not mesh:
+            return
+
+        maps, nucx_node = get_nucx_maps_from_mesh(mesh)
+        logger.debug(f"Found maps: {maps}, nucx_node: {nucx_node}")
+
+        self.map_combo.nucx_node = nucx_node
+
+        # Sort maps by type
+        map_categories = {
+            1: [],  # Vertex maps
+            2: [],  # Texture maps
+            0: []  # Disabled maps
+        }
+
+        # Categorize maps
+        for map_name in sorted(maps):
+            map_type = get_nucx_map_type(nucx_node, f"{map_name}MapType")
+            if map_type is not None:  # Check for valid map type
+                map_categories[map_type].append(map_name)
+
+        # Add maps with separators
+        first_category = True
+        for map_type, map_list in map_categories.items():
+            if map_list:
+                # Add separator between categories (except first)
+                if not first_category:
+                    self.map_combo.insertSeparator(self.map_combo.count())
+                first_category = False
+
+                # Add maps for this category
+                for map_name in map_list:
+                    self.map_combo.addMapItem(map_name, map_type)
 
     def flood_smooth(self, iteration: int = 1):
         smooth_pervtx_map(iteration)

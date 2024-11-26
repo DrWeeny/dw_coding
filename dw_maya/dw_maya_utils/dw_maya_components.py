@@ -76,7 +76,7 @@ def get_next_free_multi_index(attr: str, max_index: int = 10000000) -> int:
     raise RuntimeError(f"No free index found for {attr} up to {max_index}")
 
 
-def get_vtx_pos(mesh: str) -> List[Tuple[float, float, float]]:
+def get_vtx_pos(mesh: str, world_space=True) -> List[Tuple[float, float, float]]:
     """
     Get the world space positions of all vertices for a given mesh.
 
@@ -91,7 +91,7 @@ def get_vtx_pos(mesh: str) -> List[Tuple[float, float, float]]:
         get_vtx_pos('pSphere1')
         [(1.0, 2.0, 3.0), (4.0, 5.0, 6.0), ...]
     """
-    positions = cmds.xform(f"{mesh}.vtx[*]", q=True, ws=True, t=True)
+    positions = cmds.xform(f"{mesh}.vtx[*]", q=True, ws=world_space, t=True)
     return list(zip(positions[0::3], positions[1::3], positions[2::3]))
 
 
