@@ -72,22 +72,14 @@ def lsTr(*args, **kwargs) -> List[str]:
             for child in children
         )
 
-    # Get initial nodes based on input method
-    if any(flag in kwargs for flag in ['sl', 'selection']):
-        # Handle selection flag
-        results = cmds.ls(sl=True) or []
-    elif args and isinstance(args[0], (list, tuple)):
-        # Handle list in first argument
-        results = args[0]
-    else:
-        # Standard ls processing
-        results = cmds.ls(*args, **kwargs) or []
+    # Standard ls processing
+    results = cmds.ls(*args, **kwargs) or []
 
     # Process all nodes to ensure they're shape transforms
     filtered_results = []
     for node in results:
-        if cmds.nodeType(node) == 'transform':
-            if is_shape_transform(node):
+        if cmds.nodeType(node.split(".")[0]) == 'transform':
+            if is_shape_transform(node.split(".")[0]):
                 filtered_results.append(node)
         else:
             # For shapes, get parent transform

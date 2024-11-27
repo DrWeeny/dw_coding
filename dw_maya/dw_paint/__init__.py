@@ -1,4 +1,4 @@
-from .dw_paint_utils import modify_weights
+from .dw_paint_utils import modify_weights, compare_two_nodes_list, guess_if_component_sel
 from .dw_paint_core import (set_vertex_weights_between_points,
                             set_vertex_weights_radial,
                             set_vertex_weights_by_vector,

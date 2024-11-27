@@ -8,6 +8,7 @@ from dw_maya.dw_nucleus_utils import get_nucleus_solver
 from .wgt_combotree import TreeComboBox
 from .wgt_combobox_maps import ColoredMapComboBox
 from ..sim_cmds.vtx_map_management import smooth_pervtx_map
+from dw_maya.dw_paint import flood_value_on_sel
 
 from dw_logger import get_logger
 
@@ -34,7 +35,7 @@ class EditorConfig:
     """Configuration for the vertex map editor"""
     min_value: float = 0.0
     max_value: float = 1.0
-    decimals: int = 4
+    decimals: int = 3
     default_value: float = 0.0
     smooth_presets: List[int] = None
 
@@ -301,9 +302,8 @@ class VertexMapEditor(QtWidgets.QWidget):
 
         # Value Editor Control
         self.value_spinbox = QtWidgets.QDoubleSpinBox()
-        self.value_spinbox.setRange(self.config.min_value, self.config.max_value)
         self.value_spinbox.setDecimals(self.config.decimals)
-        self.value_spinbox.setValue(self.config.default_value)
+        self.value_spinbox.setValue(.5)
         self.value_spinbox.setButtonSymbols(QtWidgets.QAbstractSpinBox.NoButtons)
         self.value_spinbox.setFixedWidth(80)
 
@@ -474,10 +474,6 @@ class VertexMapEditor(QtWidgets.QWidget):
             QPushButton:hover {
                 background-color: rgb(60, 60, 60);
             }
-            QPushButton:disabled {
-                background-color: rgb(100, 100, 100);
-                color: rgb(180, 180, 180);
-            }
         """)
 
         # populate painting combobox
@@ -515,7 +511,6 @@ class VertexMapEditor(QtWidgets.QWidget):
 
         # Connect mesh and map selection signals
         self.mesh_combo.currentTextChanged.connect(self._handle_mesh_change)
-        self.map_combo.currentTextChanged.connect(self._handle_map_change)
         self.paint_button.clicked.connect(self.maya_paint)
 
     def _handle_solver_change(self, button):
@@ -535,12 +530,6 @@ class VertexMapEditor(QtWidgets.QWidget):
             self.populate_map_combobox()  # Refresh maps
         else:
             logger.warning("ComboBox Mesh doesn't emit mesh")
-
-    def _handle_map_change(self, map_name):
-        """Handle map selection changes"""
-        self.mapChanged.emit(map_name)
-        # Enable/disable paint button based on selection
-        self.paint_button.setEnabled(bool(map_name))
 
     def refresh_mesh_list(self, solver_type: SolverType):
         """Refresh the mesh combo box based on solver type"""
@@ -577,15 +566,16 @@ class VertexMapEditor(QtWidgets.QWidget):
     def _handle_flood(self, value: float):
         """Handle flood button clicks"""
         # Get current edit mode
-        current_mode = self.get_current_mode()
-
-        # Apply clamping if enabled
+        clamp_min, clamp_max = None, None
         if self.clamp_min_check.isChecked():
-            value = max(value, self.clamp_min_spin.value())
+            clamp_min = float(self.clamp_min_spin.value())
         if self.clamp_max_check.isChecked():
-            value = min(value, self.clamp_max_spin.value())
+            clamp_max = float(self.clamp_max_spin.value())
 
-        self.set_flood_weight(value)
+        edit_mode = self.get_current_mode()
+        logger.debug(f"Flood Start : value:{value}, edit:{edit_mode.value}, clamp:[{clamp_min},{clamp_max}]")
+
+        self.set_flood_weight(value, edit_mode.value, clamp_min, clamp_max)
 
     def _validate_clamp_ranges(self):
         """Ensure min clamp is not greater than max clamp"""
@@ -704,11 +694,12 @@ class VertexMapEditor(QtWidgets.QWidget):
 
     def maya_paint(self):
         from ..sim_cmds import paint_vtx_map
+        # Per Vertex Method
         mesh = self.mesh_combo.get_current_text()
         map = self.map_combo.currentText()
         nucx_node = self.map_combo.nucx_node
         solver = get_nucleus_solver(nucx_node)
-        paint_vtx_map(map, mesh, solver)
+        paint_vtx_map(map+"PerVertex", mesh, solver)
 
     def smooth_flood(self, iteration: int = 1):
         smooth_pervtx_map(iteration)
@@ -722,13 +713,28 @@ class VertexMapEditor(QtWidgets.QWidget):
         nucx_node = self.map_combo.nucx_node
         return nucx_node, map, mesh
 
-    def set_flood_weight(self):
-        from ..sim_cmds import get_vtx_map_data
+    def set_flood_weight(self, value, operation, clamp_min, clamp_max):
+        from ..sim_cmds import get_vtx_map_data, set_vtx_map_data
         # gather elements set in ui
         nucx, _map, mesh = self.get_combo_data()
         # get the weightList
-        weights = get_vtx_map_data(nucx, _map)
+        weights = get_vtx_map_data(nucx, _map+"PerVertex")
 
+        logger.debug(f"Set Flood Command: mesh:{mesh}, map{_map}, nucx:{nucx}\n weights:{weights}")
+
+        if operation == "Substract":
+            value = -value
+            operation = "add"
+
+        new_weights = flood_value_on_sel(mesh,
+                                         weights,
+                                         value,
+                                         operation.lower(),
+                                         clamp_min,
+                                         clamp_max)
+        logger.debug(f"Set Flood Command: operation type:{operation.lower()}\nnew_weights={new_weights}")
+
+        set_vtx_map_data(nucx, _map + "PerVertex", new_weights)
 
 
 # Example usage

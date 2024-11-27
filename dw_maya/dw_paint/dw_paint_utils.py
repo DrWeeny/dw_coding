@@ -3,6 +3,7 @@ from typing import List, Tuple, Optional, Dict, Union, Literal
 from maya import cmds
 import math
 import numpy as np
+import dw_maya.dw_maya_utils as dwu
 from dw_logger import get_logger
 
 logger = get_logger()
@@ -20,6 +21,22 @@ def compare_two_nodes_list(node_list1,
 
     return matching, not_selected, extra_selected
 
+def guess_if_component_sel(meshes: list):
+    sel_mesh = dwu.lsTr(sl=True, dag=True, o=True, type='mesh')
+    _check_components = dwu.lsTr(sl=True)
+    is_component = dwu.component_in_list(_check_components)
+    sel_compo = []
+    if not sel_mesh and not meshes:
+        cmds.error("No mesh selected and no cloth mesh provided.")
+        return
+    if is_component:
+       match, _, _ = compare_two_nodes_list(meshes, sel_mesh)
+       if match:
+            for m in match:
+                for s in _check_components:
+                    if s.startswith(m):
+                        sel_compo.append(s)
+    return sel_compo
 
 def modify_weights(weight_list: List[Union[float, int]],
                    value: float,

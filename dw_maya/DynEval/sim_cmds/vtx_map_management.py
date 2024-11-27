@@ -1,6 +1,7 @@
 import maya.cmds as cmds
 import maya.mel as mel
 import dw_maya.dw_maya_utils as dwu
+from dw_maya.dw_paint import guess_if_component_sel
 from dw_maya.dw_decorators import acceptString
 
 def get_vtx_maps(cloth_node: str) -> list:
@@ -149,15 +150,14 @@ def get_vtx_map_data(cloth_node: str, vtx_map: str) -> list:
         return []
 
 
-
-def set_vtx_map_data(cloth_node: str, vtx_map: str, value: list, refresh: bool = False) -> bool:
+def set_vtx_map_data(cloth_node: str, vtx_map: str, values: list, refresh: bool = False) -> bool:
     """
     Sets the influence values per vertex for a given vertex map on a cloth or rigid node.
 
     Args:
         cloth_node (str): The name of the cloth or rigid node.
         vtx_map (str): The name of the vertex map attribute (must end with 'PerVertex').
-        value (list): The influence values per vertex.
+        values (list): The influence values per vertex.
         refresh (bool): Whether to refresh the Maya UI after setting the value.
 
     Returns:
@@ -185,7 +185,7 @@ def set_vtx_map_data(cloth_node: str, vtx_map: str, value: list, refresh: bool =
 
     # Set the attribute value and optionally refresh the UI
     try:
-        cmds.setAttr(map_attr, value, type='doubleArray')
+        cmds.setAttr(map_attr, values, type='doubleArray')
         if refresh:
             cmds.refresh()
         return True
@@ -207,16 +207,16 @@ def paint_vtx_map(map_attr, cloth_mesh=None, nucleus=None):
     # ======================================================================
     # Mesh Selection Handling
     # ======================================================================
-    sel_mesh = dwu.lsTr(sl=True, dag=True, o=True, type='mesh')
-    if not sel_mesh and not cloth_mesh:
-        cmds.error("No mesh selected and no cloth mesh provided.")
-        return
-    target_mesh = cloth_mesh or sel_mesh
+    sel_mesh = []
+    if not cloth_mesh:
+        sel_mesh = dwu.lsTr(sl=True, dag=True, o=True, type='mesh')
+    sel_compo = guess_if_component_sel(cloth_mesh)
 
-    components = [".vtx[", ".e[", ".f["]
-    is_component = any(comp in target_mesh[0] for comp in components)
+    # check in if input and if input = sel
+    target_mesh = sel_compo or cloth_mesh or sel_mesh
+
     # Convert selected components if vertices are selected
-    if is_component:
+    if sel_compo:
         target_mesh = cmds.polyListComponentConversion(target_mesh, tv=True)
 
     cmds.select(target_mesh, r=True)

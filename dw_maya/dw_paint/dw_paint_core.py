@@ -6,7 +6,7 @@ import math
 import maya.api.OpenMaya as om
 from dw_maya.dw_maya_utils import component_in_list
 from dw_maya.dw_decorators import acceptString
-from . import modify_weights
+from . import modify_weights, guess_if_component_sel
 from dw_maya.dw_constants.node_re_mappings import COMPONENT_PATTERN
 
 logger = get_logger()
@@ -16,7 +16,7 @@ WeightList = List[float]
 OperationType = Literal['multiply', 'add', 'replace']
 
 
-@acceptString("mesh")
+@acceptString("meshes")
 def flood_value_on_sel(meshes: List[str],
                        weights: WeightList,
                        value: float,
@@ -52,37 +52,29 @@ def flood_value_on_sel(meshes: List[str],
     # Initialize empty mask (no components selected case)
     mask = []
 
-    # Get current selection and check for components
-    sel = cmds.ls(sl=True)
-    components = component_in_list(sel)
+    # Get current selection and check for components, if it correspond to mesh, use it as mask
+    sel_compo = guess_if_component_sel(meshes)
+    logger.debug(f"flood_value_on_sel : component check : {sel_compo}")
 
 
     # TODO: check how component react when there is multiple meshes
-    if components:
-        # Get unique mesh names from selection
-        sel_meshes = list(set([s.split(".")[0] for s in sel]))
+    if sel_compo:
+        try:
+            # Extract component indices from selection
+            for component in sel_compo:
+                match = COMPONENT_PATTERN.match(component)
+                if match:
+                    start_idx = int(match.group(3))
+                    end_idx = match.group(4)
 
-        # Check if all input meshes are in selection
-        matching_meshes = list(set([mesh for mesh in meshes if mesh in sel_meshes]))
+                    if end_idx:
+                        mask.append([start_idx, int(end_idx)+1])
+                    else:
+                        mask.append([start_idx])
 
-        # Only process components if all meshes match
-        if len(matching_meshes) == len(meshes):
-            try:
-                # Extract component indices from selection
-                for component in sel:
-                    match = COMPONENT_PATTERN.match(component)
-                    if match:
-                        start_idx = int(match.group(3))
-                        end_idx = match.group(4)
-
-                        if end_idx:
-                            mask.append([start_idx, int(end_idx)+1])
-                        else:
-                            mask.append([start_idx])
-
-            except (AttributeError, ValueError) as e:
-                logger.warning(f"Error parsing component selection: {e}")
-                mask = []  # Reset mask on error
+        except (AttributeError, ValueError) as e:
+            logger.warning(f"Error parsing component selection: {e}")
+            mask = []  # Reset mask on error
 
     # Apply modification with or without mask
     try:
