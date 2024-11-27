@@ -23,7 +23,7 @@ def compare_two_nodes_list(node_list1,
 
 def modify_weights(weight_list: List[Union[float, int]],
                    value: float,
-                   operation: Literal['multiply', 'add', 'replace'] = 'multiply',
+                   operation: Literal['multiply', 'add', 'replace'] = 'replace',
                    mask: List[Union[List[int], List[float]]] = None,
                    min_value: float = None,
                    max_value: float = None) -> List[float]:

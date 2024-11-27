@@ -76,7 +76,7 @@ def flood_value_on_sel(meshes: List[str],
                         end_idx = match.group(4)
 
                         if end_idx:
-                            mask.append([start_idx, int(end_idx)])
+                            mask.append([start_idx, int(end_idx)+1])
                         else:
                             mask.append([start_idx])
 
