@@ -48,7 +48,7 @@ dendrology/nucleus_leaf/ is used to store all standarditem, treewidgetitem....et
 cache_leaf.py is another tree which display nucleus cloth maps, cache list, but can be adapted to other displayed items in cunjunction with treeview (like deformer maps)
 tree_toggle_button.py is a friendly user display button which is red or green to represent the toggle state of simulation elements, user doesn't like the default toggle coded in treeitems
 ziva_leaf.py is the standard item to represent the ziva simulation items
-
+wgt_paint_map
 
 Here's a summary of what we accomplished:
 

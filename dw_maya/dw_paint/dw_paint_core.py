@@ -6,23 +6,99 @@ import math
 import maya.api.OpenMaya as om
 from dw_maya.dw_maya_utils import component_in_list
 from dw_maya.dw_decorators import acceptString
+from . import modify_weights
+from dw_maya.dw_constants.node_re_mappings import COMPONENT_PATTERN
 
 logger = get_logger()
 
 # Type alias for weight list
 WeightList = List[float]
+OperationType = Literal['multiply', 'add', 'replace']
+
 
 @acceptString("mesh")
-def flood_value_on_sel(mesh, weights: list):
+def flood_value_on_sel(meshes: List[str],
+                       weights: WeightList,
+                       value: float,
+                       operation: OperationType = "replace",
+                       clamp_min: Optional[float] = None,
+                       clamp_max: Optional[float] = None) -> WeightList:
+    """
+    Flood a value on selected components in Maya for deformers or weightLists.
+    If components are selected, only those weights will be modified.
+    If no components are selected or selection doesn't match input meshes,
+    the operation will be applied to all weights.
 
-    # get selection to check if component are in selection
+    Args:
+        meshes: List of mesh names to check against selection
+        weights: Original weight values to modify
+        value: Value to apply (multiply, add, or replace)
+        operation: Type of operation ('multiply', 'add', 'replace')
+        clamp_min: Optional minimum value for clamping
+        clamp_max: Optional maximum value for clamping
+
+    Returns:
+        Modified list of weights
+
+    Raises:
+        ValueError: If operation is invalid or if weights list is empty
+    """
+    if not weights:
+        raise ValueError("Weights list cannot be empty")
+
+    if operation not in ['multiply', 'add', 'replace']:
+        raise ValueError(f"Invalid operation: {operation}. Must be 'multiply', 'add', or 'replace'")
+
+    # Initialize empty mask (no components selected case)
+    mask = []
+
+    # Get current selection and check for components
     sel = cmds.ls(sl=True)
     components = component_in_list(sel)
+
+
+    # TODO: check how component react when there is multiple meshes
     if components:
-        arg_compare = list(set([s.split(".")[0] for s in sel]))
+        # Get unique mesh names from selection
+        sel_meshes = list(set([s.split(".")[0] for s in sel]))
 
+        # Check if all input meshes are in selection
+        matching_meshes = list(set([mesh for mesh in meshes if mesh in sel_meshes]))
 
+        # Only process components if all meshes match
+        if len(matching_meshes) == len(meshes):
+            try:
+                # Extract component indices from selection
+                for component in sel:
+                    match = COMPONENT_PATTERN.match(component)
+                    if match:
+                        start_idx = int(match.group(3))
+                        end_idx = match.group(4)
 
+                        if end_idx:
+                            mask.append([start_idx, int(end_idx)])
+                        else:
+                            mask.append([start_idx])
+
+            except (AttributeError, ValueError) as e:
+                logger.warning(f"Error parsing component selection: {e}")
+                mask = []  # Reset mask on error
+
+    # Apply modification with or without mask
+    try:
+        new_weights = modify_weights(
+            weights,
+            value,
+            operation,
+            mask if mask else None,
+            clamp_min,
+            clamp_max
+        )
+        return new_weights
+
+    except Exception as e:
+        logger.error(f"Error modifying weights: {e}")
+        return weights  # Return original weights on error
 
 def apply_falloff(weights: List[float],
                   falloff: Literal['linear', 'quadratic', 'smooth', 'smooth2'] = 'linear') -> List[float]:

@@ -1,12 +1,6 @@
-import sys, os
 
-# ----- Edit sysPath -----#
-rdPath = 'E:\\dw_coding\\dw_open_tools'
-if not rdPath in sys.path:
-    print(f"Add {rdPath} to sysPath")
-    sys.path.insert(0, rdPath)
 
-from maya import cmds, mel
+from maya import cmds
 
 
 def getVertexMap(vertex: str, get_map_index: bool = False):

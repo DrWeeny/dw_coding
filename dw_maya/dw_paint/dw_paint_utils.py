@@ -1,11 +1,191 @@
-"""
-Generated from Claude
-"""
 
-from typing import List, Tuple, Optional, Dict
+from typing import List, Tuple, Optional, Dict, Union, Literal
 from maya import cmds
 import math
+import numpy as np
+from dw_logger import get_logger
 
+logger = get_logger()
+
+def compare_two_nodes_list(node_list1,
+                           node_list2):
+    # Find objects that are in both lists
+    matching = [mesh for mesh in node_list1 if mesh in node_list2]
+
+    # Find objects in meshes but not in selection
+    not_selected = [mesh for mesh in node_list1 if mesh not in node_list2]
+
+    # Find selected objects that aren't in meshes list
+    extra_selected = [obj for obj in node_list2 if obj not in node_list1]
+
+    return matching, not_selected, extra_selected
+
+
+def modify_weights(weight_list: List[Union[float, int]],
+                   value: float,
+                   operation: Literal['multiply', 'add', 'replace'] = 'multiply',
+                   mask: List[Union[List[int], List[float]]] = None,
+                   min_value: float = None,
+                   max_value: float = None) -> List[float]:
+    """
+    Modify an array of weights by multiplying, adding or replacing with a value.
+
+    Args:
+        weight_list: List of numerical values (float or int)
+        value: Value to multiply, add, or replace with
+        operation: 'multiply', 'add', or 'replace'
+        mask: List of index specifications, where each spec can be:
+              - Single index as [i]
+              - Range as [start, end] (end is exclusive)
+              Example: [[0,5], [9], [100,150]] will affect indices 0-4, 9, and 100-149
+        min_value: Optional minimum value to clamp results
+        max_value: Optional maximum value to clamp results
+
+    Returns:
+        List of modified weights
+    """
+    if not weight_list:
+        return []
+
+    try:
+        arr = np.array(weight_list, dtype=float)
+    except (ValueError, TypeError):
+        raise TypeError("weight_list must contain only numerical values")
+
+    if not isinstance(value, (int, float)):
+        raise TypeError("value must be a number")
+
+    if operation not in ['multiply', 'add', 'replace']:
+        raise ValueError("operation must be either 'multiply', 'add', or 'replace'")
+
+    if min_value is not None and max_value is not None and min_value > max_value:
+        raise ValueError(f"min_value ({min_value}) cannot be greater than max_value ({max_value})")
+
+    if mask is None or not mask:
+        # Apply operation to entire array
+        if operation == 'multiply':
+            arr = arr * value
+        elif operation == 'add':
+            arr = arr + value
+        else:  # replace
+            arr[:] = value
+    else:
+        try:
+            mask_arange = []
+            for m in mask:
+                if not isinstance(m, list):
+                    raise TypeError(f"Each mask element must be a list, got {type(m)}")
+
+                if len(m) not in (1, 2):
+                    raise ValueError(f"Mask elements must be [index] or [start,end], got {m}")
+
+                if len(m) == 1:
+                    if m[0] >= len(arr):
+                        raise ValueError(f"Index {m[0]} out of range for array of length {len(arr)}")
+                    mask_arange.append(np.array([m[0]]))
+                else:
+                    start, end = m
+                    if end > len(arr):
+                        raise ValueError(f"End index {end} out of range for array of length {len(arr)}")
+                    if start >= end:
+                        raise ValueError(f"Start index {start} must be less than end index {end}")
+                    mask_arange.append(np.arange(start, end))
+
+            indices = np.concatenate(mask_arange)
+            if operation == 'multiply':
+                arr[indices] *= value
+            elif operation == 'add':
+                arr[indices] += value
+            else:  # replace
+                arr[indices] = value
+
+        except Exception as e:
+            raise ValueError(f"Error processing mask: {str(e)}")
+
+    # Apply clamping if specified
+    if min_value is not None:
+        arr = np.maximum(arr, min_value)
+    if max_value is not None:
+        arr = np.minimum(arr, max_value)
+
+    return arr.tolist()
+
+
+def remap_weights(weight_list: List[Union[float, int]],
+                  old_min: float,
+                  old_max: float,
+                  new_min: float,
+                  new_max: float,
+                  mask: List[Union[List[int], List[float]]] = None,
+                  clamp: bool = True) -> List[float]:
+    """
+    Remap values from one range to another, with optional masking.
+    Formula: new_value = (value - old_min) * (new_max - new_min) / (old_max - old_min) + new_min
+
+    Args:
+        weight_list: List of numerical values to remap
+        old_min: Current minimum value in range
+        old_max: Current maximum value in range
+        new_min: Target minimum value
+        new_max: Target maximum value
+        mask: Optional list of index specifications [[0,5], [9], [100,150]]
+        clamp: If True, clamp values to new range
+
+    Returns:
+        List of remapped values
+    """
+    if not weight_list:
+        return []
+
+    try:
+        arr = np.array(weight_list, dtype=float)
+    except (ValueError, TypeError):
+        raise TypeError("weight_list must contain only numerical values")
+
+    if old_min >= old_max:
+        raise ValueError(f"old_min ({old_min}) must be less than old_max ({old_max})")
+    if new_min >= new_max:
+        raise ValueError(f"new_min ({new_min}) must be less than new_max ({new_max})")
+
+    # Prepare remapping function
+    def remap(values):
+        remapped = (values - old_min) * (new_max - new_min) / (old_max - old_min) + new_min
+        if clamp:
+            remapped = np.clip(remapped, new_min, new_max)
+        return remapped
+
+    if mask is None or not mask:
+        # Remap entire array
+        arr = remap(arr)
+    else:
+        try:
+            mask_arange = []
+            for m in mask:
+                if not isinstance(m, list):
+                    raise TypeError(f"Each mask element must be a list, got {type(m)}")
+
+                if len(m) not in (1, 2):
+                    raise ValueError(f"Mask elements must be [index] or [start,end], got {m}")
+
+                if len(m) == 1:
+                    if m[0] >= len(arr):
+                        raise ValueError(f"Index {m[0]} out of range for array of length {len(arr)}")
+                    mask_arange.append(np.array([m[0]]))
+                else:
+                    start, end = m
+                    if end > len(arr):
+                        raise ValueError(f"End index {end} out of range for array of length {len(arr)}")
+                    if start >= end:
+                        raise ValueError(f"Start index {start} must be less than end index {end}")
+                    mask_arange.append(np.arange(start, end))
+
+            indices = np.concatenate(mask_arange)
+            arr[indices] = remap(arr[indices])
+
+        except Exception as e:
+            raise ValueError(f"Error processing mask: {str(e)}")
+
+    return arr.tolist()
 
 def get_connected_vertices(mesh: str, vertex_index: int) -> List[int]:
     """Get indices of vertices connected to the given vertex."""
