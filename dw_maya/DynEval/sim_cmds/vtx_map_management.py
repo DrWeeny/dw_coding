@@ -3,6 +3,7 @@ import maya.mel as mel
 import dw_maya.dw_maya_utils as dwu
 from dw_maya.dw_paint import guess_if_component_sel
 from dw_maya.dw_decorators import acceptString
+from dw_maya.dw_nucleus_utils import artisan_nucx_update, artisan_nucx_open
 
 def get_vtx_maps(cloth_node: str) -> list:
     """
@@ -227,16 +228,15 @@ def paint_vtx_map(map_attr, cloth_mesh=None, nucleus=None):
     try:
         if 'PerVertex' in map_name:
             map_base = map_name.replace('PerVertex', '')
-            mel.eval(f'setNClothMapType("{map_base}", "", 1);')
-            mel.eval(f'artAttrNClothToolScript 3 {map_base};')
+            artisan_nucx_update(cloth_mesh[0], map_base, True)
         elif 'Map' in map_name:
             cmds.error("Map type painting is not implemented.")
     except:
         if nucleus:
-            _force_enable_nucleus(nucleus, map_name)
+            _force_enable_nucleus(cloth_mesh[0], nucleus, map_name)
         cmds.error("Please ensure the nucleus and cloth are activated, and try moving to the first frame.")
 
-def _force_enable_nucleus(nucleus, map_name):
+def _force_enable_nucleus(cloth_mesh, nucleus, map_name):
     """Helper function to force enable nucleus in case of errors."""
     cmds.setAttr(f'{nucleus}.visibility', 1)
     try:
@@ -250,21 +250,29 @@ def _force_enable_nucleus(nucleus, map_name):
     try:
         if 'PerVertex' in map_name:
             map_base = map_name.replace('PerVertex', '')
-            mel.eval(f'setNClothMapType("{map_base}", "", 1);')
-            mel.eval(f'artAttrNClothToolScript 3 {map_base};')
+            artisan_nucx_update(cloth_mesh, map_base, True)
     except:
         cmds.error("Error enabling nucleus; please ensure nucleus and cloth are active and start from the first frame.")
 
-def smooth_pervtx_map(iteration=1):
+def artisan_mode_replace():
+    cmds.artAttrCtx('artAttrNClothContext', edit=1, selectedattroper="absolute")
+
+def smooth_artisan():
+    cmds.artAttrCtx('artAttrNClothContext', edit=1, clear=1)
+    import maya.utils as mu
+    mu.executeDeferred(artisan_mode_replace)
+
+def smooth_pervtx_map(iteration:int =1):
     """ Enable maya vertex paint tool and launch smooth
         :param clothNode: Cloth node name
         :type clothNode: str
         :param mapName: Vertex map name
         :type mapName: str """
+    # artisan_nucx_open()
+
     # Set The Paint Editor and set it to Smooth Operation
     cmds.artAttrCtx('artAttrNClothContext', edit=1, selectedattroper="smooth")
-    # Make sure the Paint Editor is init otherwise it wont work
-    cmds.refresh()
     for i in range(iteration):
-        # smooth operation TODO: delay with maya threading
-        cmds.artAttrCtx('artAttrNClothContext', edit=1, clear=1)
+        # smooth operation
+        import maya.utils as mu
+        mu.executeInMainThreadWithResult(smooth_artisan)

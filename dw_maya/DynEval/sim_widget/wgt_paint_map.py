@@ -2,13 +2,15 @@ from PySide6 import QtWidgets, QtCore, QtGui
 from dataclasses import dataclass
 from enum import Enum
 from typing import Optional, Callable, List, Tuple
-
+from maya import cmds
 from dw_maya.dw_nucleus_utils.dw_core import get_nucx_map_type
-from dw_maya.dw_nucleus_utils import get_nucleus_solver
+from dw_maya.dw_nucleus_utils import get_nucleus_solver, artisan_nucx_update
 from .wgt_combotree import TreeComboBox
 from .wgt_combobox_maps import ColoredMapComboBox
 from ..sim_cmds.vtx_map_management import smooth_pervtx_map
-from dw_maya.dw_paint import flood_value_on_sel
+from dw_maya.dw_paint import flood_value_on_sel, select_vtx_info_on_mesh
+import dw_maya.dw_maya_utils as dwu
+from functools import partial
 
 from dw_logger import get_logger
 
@@ -192,9 +194,30 @@ class VertexMapEditor(QtWidgets.QWidget):
         self.selection_mode_group.addButton(self.rb_value)
         self.rb_range.setChecked(True)
 
+        # Add Slider range limit
+        # TODO add a method when combo map set to set the min and max values of slider
+        self.range_limit_min = QtWidgets.QDoubleSpinBox()
+        self.range_limit_min.setRange(-999999, 999999)
+        self.range_limit_min.setValue(0)
+        self.range_limit_min.setDecimals(1)
+        self.range_limit_min.setButtonSymbols(QtWidgets.QAbstractSpinBox.NoButtons)
+        self.range_limit_min.setFixedWidth(70)
+
+        self.range_limit_max = QtWidgets.QDoubleSpinBox()
+        self.range_limit_max.setRange(-999999, 999999)
+        self.range_limit_max.setValue(1)
+        self.range_limit_max.setDecimals(1)
+        self.range_limit_max.setButtonSymbols(QtWidgets.QAbstractSpinBox.NoButtons)
+        self.range_limit_max.setFixedWidth(70)
+
+
+
         mode_layout.addWidget(self.rb_range)
         mode_layout.addWidget(self.rb_value)
         mode_layout.addStretch()
+        mode_layout.addWidget(QtWidgets.QLabel("Slider Min/Max:"))
+        mode_layout.addWidget(self.range_limit_min)
+        mode_layout.addWidget(self.range_limit_max)
 
         # Selection Actions
         action_layout = QtWidgets.QHBoxLayout()
@@ -243,6 +266,7 @@ class VertexMapEditor(QtWidgets.QWidget):
             btn.setFixedSize(40, 20)
             btn.setProperty("smoothValue", preset)
             self.smooth_buttons[preset] = btn
+            btn.clicked.connect(partial(self.smooth_flood, preset))
             preset_layout.addWidget(btn)
 
         preset_layout.addStretch()
@@ -274,6 +298,11 @@ class VertexMapEditor(QtWidgets.QWidget):
         main_layout.addWidget(selection_group)
         main_layout.addWidget(smooth_group)
         main_layout.addStretch()
+
+        self.btn_select.clicked.connect(self.select_by_weight)
+        self.btn_invert.clicked.connect(self.invert_selection)
+        self.btn_clear.clicked.connect(self.clear_selection)
+
 
     def _setup_value_editor(self, main_layout):
         """Setup the value editor section with flood controls and edit modes"""
@@ -498,13 +527,17 @@ class VertexMapEditor(QtWidgets.QWidget):
         self.range_min_spin.valueChanged.connect(lambda v: self._handle_spin_change(v, True))
         self.range_max_spin.valueChanged.connect(lambda v: self._handle_spin_change(v, False))
 
+        # Connect range limit spinboxes
+        self.range_limit_min.valueChanged.connect(self._update_range_limits)
+        self.range_limit_max.valueChanged.connect(self._update_range_limits)
+
         # Smooth signals
         for btn in self.smooth_buttons.values():
             btn.clicked.connect(self._handle_smooth_preset)
 
         self.iter_spin.valueChanged.connect(self.iter_slider.setValue)
         self.iter_slider.valueChanged.connect(self.iter_spin.setValue)
-        self.btn_smooth.clicked.connect(lambda: self.smoothRequested.emit(self.iter_spin.value()))
+        self.btn_smooth.clicked.connect(partial(self.smooth_flood, self.iter_spin))
 
         # Connect solver selection signals
         self.solver_group.buttonClicked.connect(self._handle_solver_change)
@@ -549,7 +582,18 @@ class VertexMapEditor(QtWidgets.QWidget):
         if not mesh_name:
             return
 
-        # Implementation will be added to fetch maps for the selected mesh
+    def _update_range_limits(self):
+        """Update spinbox ranges when limits change"""
+        new_min = self.range_limit_min.value()
+        new_max = self.range_limit_max.value()
+
+        # Update the ranges of the value spinboxes
+        self.range_min_spin.setRange(new_min, new_max)
+        self.range_max_spin.setRange(new_min, new_max)
+
+        # Force update of slider positions
+        self._handle_spin_change(self.range_min_spin.value(), True)
+        self._handle_spin_change(self.range_max_spin.value(), False)
 
     def set_active_mesh(self, mesh_name: str):
         """Set the active mesh in the combo box"""
@@ -608,7 +652,7 @@ class VertexMapEditor(QtWidgets.QWidget):
     def _handle_range_change(self, min_val, max_val):
         """Handle range slider changes"""
         # Convert slider range (0-99) to value range
-        value_range = self.config.max_value - self.config.min_value
+        value_range = self.range_limit_max.value() - self.range_limit_min.value()
         min_value = self.config.min_value + (min_val / 99.0) * value_range
         max_value = self.config.min_value + (max_val / 99.0) * value_range
 
@@ -621,7 +665,7 @@ class VertexMapEditor(QtWidgets.QWidget):
     def _handle_spin_change(self, value, is_min):
         """Handle changes to range spinboxes"""
         # Convert value to slider range
-        value_range = self.config.max_value - self.config.min_value
+        value_range = self.range_limit_max.value() - self.range_limit_min.value()
         slider_value = ((value - self.config.min_value) / value_range) * 99.0
 
         # Update slider
@@ -702,7 +746,13 @@ class VertexMapEditor(QtWidgets.QWidget):
         paint_vtx_map(map+"PerVertex", mesh, solver)
 
     def smooth_flood(self, iteration: int = 1):
-        smooth_pervtx_map(iteration)
+        if not isinstance(iteration, int):
+            value = iteration.value()
+            logger.debug(f"Flood smooth x times:{value}]")
+            smooth_pervtx_map(value)
+        else:
+            logger.debug(f"Flood smooth x times:{iteration}]")
+            smooth_pervtx_map(iteration)
 
     def get_combo_data(self) -> Tuple[str, str, str]:
         """
@@ -735,6 +785,37 @@ class VertexMapEditor(QtWidgets.QWidget):
         logger.debug(f"Set Flood Command: operation type:{operation.lower()}\nnew_weights={new_weights}")
 
         set_vtx_map_data(nucx, _map + "PerVertex", new_weights)
+
+    def select_by_weight(self):
+        from ..sim_cmds import get_vtx_map_data, set_vtx_map_data
+
+        _min = self.range_min_spin.value()
+        _max = self.range_max_spin.value()
+
+        # gather elements set in ui
+        nucx, _map, mesh = self.get_combo_data()
+
+        # get the weightList
+        weights = get_vtx_map_data(nucx, _map+"PerVertex")
+
+        if self.rb_range.isChecked():
+            select_vtx_info_on_mesh(weights, mesh, "range", None, _min, _max)
+        else:
+            select_vtx_info_on_mesh(weights, mesh, "value", _min)
+
+        artisan_nucx_update(nucx, _map, True)
+
+    def invert_selection(self):
+        dwu.invert_selection()
+        # gather elements set in ui
+        nucx, _map, mesh = self.get_combo_data()
+        artisan_nucx_update(nucx, _map, True)
+
+    def clear_selection(self):
+        cmds.select(clear=True)
+        # gather elements set in ui
+        nucx, _map, mesh = self.get_combo_data()
+        artisan_nucx_update(nucx, _map, True)
 
 
 # Example usage

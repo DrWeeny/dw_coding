@@ -1,12 +1,15 @@
 
 from typing import List, Tuple, Optional, Dict, Union, Literal
-from maya import cmds
+from maya import cmds, mel
 import math
 import numpy as np
 import dw_maya.dw_maya_utils as dwu
 from dw_logger import get_logger
 
 logger = get_logger()
+
+def open_tools_window():
+    mel.eval("toolPropertyWindow;")
 
 def compare_two_nodes_list(node_list1,
                            node_list2):

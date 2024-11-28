@@ -122,10 +122,29 @@ def paint_pervertex_map(nucx_node: str, map_name: str) -> None:
         cmds.select(model)
 
     try:
-        mel.eval(f'setNClothMapType("{map_name}","",1);')
-        mel.eval(f'artAttrNClothToolScript 3 {map_name};')
+        artisan_nucx_update(nucx_node, map_name, True)
     except Exception:
         logger.error('Please activate your nucleus and cloth and/or move to first frame')
+
+def artisan_nucx_update(nucx_node_sh: str,
+                        map_name="stretch",
+                        open_tool_ui=True):
+    if open_tool_ui:
+        value_open = 3
+    else:
+        value_open = 4
+
+    conform_start = re.compile("^[a-zA-Z0-9:|_]+\.")
+    conform_end = re.compile("(PerVertex|Map|MapType)$")
+    map_name = conform_start.sub("", map_name)
+    map_name = conform_end.sub("", map_name)
+
+    mel.eval(f'setNClothMapType("{map_name}", "{nucx_node_sh}", 1);')
+    mel.eval(f'artAttrNClothToolScript {value_open} {map_name};')
+
+def artisan_nucx_open():
+    mel.eval('toolPropertyWindow;')
+    mel.eval('setToolTo "artAttrNClothContext";')
 
 def set_cfx_brush_val(val: float, mod: str = "absolute") -> None:
     """Set the value and mode for the nucleus paint brush.

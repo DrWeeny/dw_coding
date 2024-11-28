@@ -1,7 +1,6 @@
 import re, itertools, math
 from typing import Iterable, List, Generator, Tuple, Optional, Union, Set
 from dw_maya.dw_constants.node_re_mappings import COMPONENT_PATTERN
-
 from maya import cmds
 
 from dw_maya.dw_decorators import acceptString
@@ -184,3 +183,41 @@ def create_maya_ranges(indices: List[ComponentID]) -> List[ComponentRange]:
             f"{start}" if start == end else f"{start}:{end}")
 
     return ranges
+
+def invert_selection(select=True, range_opti=True):
+    """
+    Invert selection of components
+    Args:
+        select (bool): Select the inverted components
+        range_opti (bool): Use range notation for optimization
+    Returns:
+        list: Inverted component list
+    """
+    from .dw_lsTr import lsTr
+
+    sel = cmds.ls(sl=True, flatten=True)
+    objs = lsTr(sl=True, o=True)
+    if not sel and objs:
+        new_list = [f"{o}.vtx[:]" for o in objs]
+        if select:
+            cmds.select(new_list)
+        return new_list
+    compo_type = COMPONENT_PATTERN.match(sel[0]).group(2)
+    new_list = []
+    for o in objs:
+        sel_filter = f"{o}.{compo_type}[:]"
+        _all = cmds.ls(sel_filter, flatten=True)
+        inverse = list(set(_all) - set(sel))
+
+        if range_opti:
+            _range = create_maya_ranges(extract_id(inverse))
+            inverse_opti = [f"{o}.{compo_type}[{r}]" for r in _range]
+            new_list += inverse_opti
+        else:
+            new_list += inverse
+    if select:
+        cmds.select(new_list, r=True)
+    return new_list
+
+
+

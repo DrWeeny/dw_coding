@@ -1,0 +1,32 @@
+
+// ===========================================================================
+// Copyright 2024 Autodesk, Inc. All rights reserved.
+//
+// Use of this software is subject to the terms of the Autodesk license
+// agreement provided at the time of installation or download, or which
+// otherwise accompanies this software in either electronic or hard copy form.
+// ===========================================================================
+// it will set the paintable node and attribute based on the input,
+// if all the inputs are valid, the tool is ready to paint
+global proc artAttrPaintInstSelectAllDN(
+	string $nodeType,   // specify a paintable node type (e.g. "cluster", "skinCluster")
+	string $plug        // specify the plug( e.g. "skinCluster.skinWeights" )
+)
+{
+	// define the paintable obj and attr here
+	string $currTool = `currentCtx`;
+	string $cmd = ("artAttrCtx -q -asl " + $currTool );
+	string $ath = `eval $cmd`;
+
+	if ( $ath != $plug )
+	{
+		// if the plug is null use a different syntax
+		if( $plug == "\"\"" ) {
+			$cmd = "artAttrCtx -e -pas \"\" " + $currTool;
+		} else {
+			// create the nodeType.plug string and set it as attribute selected.
+			$cmd = "artAttrCtx -e -pas " + $nodeType + "." + $plug + " " + $currTool;
+		}
+		eval $cmd;
+	}
+}

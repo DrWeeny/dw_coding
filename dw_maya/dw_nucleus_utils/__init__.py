@@ -4,3 +4,4 @@ from .dw_create_follicle import create_follicles
 from .dw_driver_methods import create_surface_fol_driver
 from .dw_localisation import create_loca_cluster
 from .dw_core import get_nucleus_solver
+from .dw_nucleus_paint import artisan_nucx_update, artisan_nucx_open, flood_smooth_vtx_map, interpolate_vertex_map
