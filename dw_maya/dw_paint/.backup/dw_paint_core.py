@@ -1,13 +1,17 @@
 from maya import cmds, mel
 from dw_maya.dw_maya_utils import get_vtx_pos
-from typing import List, Optional, Union, Tuple, Literal
 from dw_logger import get_logger
 import math
 import maya.api.OpenMaya as om
-from dw_maya.dw_maya_utils import component_in_list
 from dw_maya.dw_decorators import acceptString
 from . import modify_weights, guess_if_component_sel
 from dw_maya.dw_constants.node_re_mappings import COMPONENT_PATTERN
+
+import numpy as np
+from functools import lru_cache
+from typing import List, Dict, Optional, Tuple, Literal, Union
+from dw_maya.dw_decorators import timeIt
+from dataclasses import dataclass
 
 logger = get_logger()
 
@@ -92,25 +96,17 @@ def flood_value_on_sel(meshes: List[str],
         logger.error(f"Error modifying weights: {e}")
         return weights  # Return original weights on error
 
-def apply_falloff(weights: List[float],
-                  falloff: Literal['linear', 'quadratic', 'smooth', 'smooth2'] = 'linear') -> List[float]:
-    """Apply falloff function to weight values.
 
-    Args:
-        weights: List of weight values between 0-1
-        falloff: Type of falloff curve to apply
-
-    Returns:
-        Modified weight values
-    """
+def apply_falloff(weights: np.ndarray, falloff: str) -> np.ndarray:
+    """Vectorized falloff application"""
     if falloff == 'linear':
         return weights
     elif falloff == 'quadratic':
-        return [w * w for w in weights]
+        return np.square(weights)
     elif falloff == 'smooth':
-        return [w * w * (3 - 2 * w) for w in weights]
+        return weights * weights * (3 - 2 * weights)
     elif falloff == 'smooth2':
-        return [w * w * w * (w * (6 * w - 15) + 10) for w in weights]
+        return weights * weights * weights * (weights * (6 * weights - 15) + 10)
     return weights
 
 def select_vtx_info_on_mesh(data_list: WeightList,
@@ -204,82 +200,161 @@ def mirror_vertex_map(
         return None
 
 
+@dataclass
+class MeshCache:
+    """Cache for mesh data"""
+    mesh_name: str = ""
+    vertex_count: int = 0
+    last_dag_path: Optional[om.MDagPath] = None
+    cache_hits: int = 0
+    cache_misses: int = 0
+
+
+# Global cache instance
+MESH_CACHE = MeshCache()
+
+
+def check_cache_memory(mesh_name: str = None) -> bool:
+    """Check cache memory and mesh state.
+    Returns True if cache was cleared or needs refresh.
+    """
+    cache_info = _get_mesh_data.cache_info()
+    estimated_mb = cache_info.currsize * 5  # rough estimate in MB
+
+    # Check memory threshold
+    if estimated_mb > 50:  # 50MB threshold
+        logger.warning("Cache size exceeded threshold, clearing...")
+        clear_mesh_cache()
+        return True
+
+    # Check if mesh needs refresh
+    if mesh_name and mesh_name != MESH_CACHE.mesh_name:
+        return True
+
+    # Check if mesh exists and hasn't been deleted
+    if mesh_name:
+        try:
+            sel = om.MSelectionList()
+            sel.add(mesh_name)
+            current_dag = sel.getDagPath(0)
+            mesh_fn = om.MFnMesh(current_dag)
+
+            # Check for topology changes
+            if (MESH_CACHE.last_dag_path is None or
+                    mesh_fn.numVertices != MESH_CACHE.vertex_count):
+                return True
+
+        except Exception:
+            return True
+
+    return False
+
+
+@lru_cache(maxsize=32)
+def _get_mesh_data(mesh_name: str) -> Tuple[np.ndarray, Dict[int, List[int]], int]:
+    """Cache mesh topology data, with memory optimization."""
+    try:
+        MESH_CACHE.cache_misses += 1
+
+        sel = om.MSelectionList()
+        sel.add(mesh_name)
+        mesh_dag = sel.getDagPath(0)
+        mesh_fn = om.MFnMesh(mesh_dag)
+
+        # Get vertex positions using float32
+        points = mesh_fn.getPoints(om.MSpace.kWorld)
+        vertex_positions = np.array([(p.x, p.y, p.z) for p in points], dtype=np.float32)
+
+        # Build neighbor map
+        vertex_count = mesh_fn.numVertices
+        vertex_iter = om.MItMeshVertex(mesh_dag)
+        neighbors = {}
+
+        while not vertex_iter.isDone():
+            connected_vertices = vertex_iter.getConnectedVertices()
+            neighbors[vertex_iter.index()] = list(connected_vertices)
+            vertex_iter.next()
+
+        # Update cache state
+        MESH_CACHE.mesh_name = mesh_name
+        MESH_CACHE.last_dag_path = mesh_dag
+        MESH_CACHE.vertex_count = vertex_count
+
+        return vertex_positions, neighbors, vertex_count
+
+    except Exception as e:
+        logger.error(f"Error caching mesh data for {mesh_name}: {e}")
+        return None
+
+
 def interpolate_vertex_map(
         data_list: WeightList,
         mesh: str,
         smooth_iterations: int = 1,
-        smooth_factor: float = 0.5
-) -> Optional[WeightList]:
-
-    """Interpolate vertex map values based on neighboring vertices.
-
-    Args:
-        data_list: weight list of a deformer or nucleus map
-        mesh: name of the mesh representing this data_list
-        smooth_iterations: Number of smoothing iterations
-        smooth_factor: Strength of smoothing (0-1)
-
-    Returns:
-        weight list
-
-    """
+        smooth_factor: float = 0.5) -> Optional[WeightList]:
+    """Interpolate vertex map values using vectorized operations."""
     try:
-        # Get mesh connectivity
-        vertex_count = cmds.polyEvaluate(mesh, vertex=True)
-        neighbors = {}
+        # Check cache state and memory usage
+        if check_cache_memory(mesh):
+            _get_mesh_data.cache_clear()
 
-        # Build neighbor map
-        for i in range(vertex_count):
-            # Get connected vertices through edges
-            edges = cmds.polyListComponentConversion(f"{mesh}.vtx[{i}]",
-                                                     fromVertex=True,
-                                                     toEdge=True)
-            connected_verts = cmds.polyListComponentConversion(edges,
-                                                               fromEdge=True,
-                                                               toVertex=True)
-            # Extract vertex indices
-            vert_indices = []
-            for vert in cmds.ls(connected_verts, flatten=True):
-                idx = int(vert.split('[')[1].split(']')[0])
-                if idx != i:  # Exclude self
-                    vert_indices.append(idx)
-            neighbors[i] = vert_indices
+        # Get cached mesh data
+        _, neighbors, vertex_count = _get_mesh_data(mesh)
 
-        # Perform smoothing
-        current_data = list(data_list)
+        # Convert input to numpy array
+        current_data = np.array(data_list, dtype=np.float64)
+
+        # Pre-calculate weights
+        inverse_smooth = 1 - smooth_factor
+
+        # Create neighbor averages array
+        neighbor_averages = np.zeros_like(current_data)
+
+        # Perform smoothing iterations
         for _ in range(smooth_iterations):
-            new_data = list(current_data)
+            # Calculate all neighbor averages
             for i in range(vertex_count):
-                if not neighbors[i]:
-                    continue
+                if neighbors[i]:
+                    neighbor_averages[i] = np.mean(current_data[neighbors[i]])
 
-                # Calculate average of neighbors
-                neighbor_avg = sum(current_data[j] for j in neighbors[i]) / len(neighbors[i])
-                # Interpolate between current value and neighbor average
-                new_data[i] = current_data[i] * (1 - smooth_factor) + neighbor_avg * smooth_factor
+            # Update all vertices simultaneously
+            current_data = (current_data * inverse_smooth +
+                            neighbor_averages * smooth_factor)
 
-            current_data = new_data
-
-        # return smoothed values
-        return current_data
+        return current_data.tolist()
 
     except Exception as e:
-        logger.error(f"Failed to interpolate vertex map: {str(e)}")
+        logger.error(f"Failed to interpolate vertex map: {e}")
+        return None
 
 
-def normalize_vector(vector: Tuple[float, float, float]) -> Tuple[float, float, float]:
-    """Normalize a vector to unit length.
+def get_cache_stats():
+    """Get current cache statistics"""
+    cache_info = _get_mesh_data.cache_info()
+    return {
+        "hits": cache_info.hits,
+        "misses": MESH_CACHE.cache_misses,
+        "current_size": cache_info.currsize,
+        "max_size": cache_info.maxsize,
+        "memory_estimate": f"~{cache_info.currsize * 5}MB (rough estimate)"
+    }
 
-    Args:
-        vector: Input vector as (x, y, z)
 
-    Returns:
-        Normalized vector as (x, y, z)
-    """
-    magnitude = math.sqrt(sum(x * x for x in vector))
-    if magnitude == 0:
-        return (0.0, 0.0, 0.0)
-    return tuple(x / magnitude for x in vector)
+def clear_mesh_cache():
+    """Clear all mesh caches and reset statistics"""
+    _get_mesh_data.cache_clear()
+    MESH_CACHE.mesh_name = ""
+    MESH_CACHE.last_dag_path = None
+    MESH_CACHE.vertex_count = 0
+    MESH_CACHE.cache_hits = 0
+    MESH_CACHE.cache_misses = 0
+
+
+
+def normalize_vector(vector: np.ndarray) -> np.ndarray:
+    """Normalize using numpy for better performance"""
+    magnitude = np.linalg.norm(vector)
+    return np.zeros(3) if magnitude == 0 else vector / magnitude
 
 
 def get_predefined_vector(direction: str) -> Tuple[float, float, float]:
@@ -312,39 +387,18 @@ def get_predefined_vector(direction: str) -> Tuple[float, float, float]:
 
 
 def get_distance_along_vector(
-        point: Tuple[float, float, float],
-        vector: Tuple[float, float, float],
-        origin: Optional[Tuple[float, float, float]] = None,
-        mode: Literal['projection', 'distance'] = 'projection') -> float:
-
-    """Calculate the signed distance of a point along a vector.
-
-    Args:
-        point: Point to measure from as (x, y, z)
-        vector: Direction vector as (x, y, z)
-        origin: Origin point for measurement (defaults to world origin)
-        mode: 'projection' for dot product or 'distance' for actual distance
-
-    Returns:
-        Signed distance along vector
-    """
+        points: np.ndarray,  # Shape: (N, 3)
+        vector: np.ndarray,  # Shape: (3,)
+        origin: Optional[np.ndarray] = None,
+        mode: Literal['projection', 'distance'] = 'projection') -> np.ndarray:
+    """Vectorized distance calculation"""
     if origin is None:
-        origin = (0, 0, 0)
+        origin = np.zeros(3)
 
-    # Convert to Maya vectors for easier math
-    point_vector = om.MVector(*point)
-    direction = om.MVector(*vector)
-    origin_vector = om.MVector(*origin)
-
-    # Vector from origin to point
-    to_point = point_vector - origin_vector
-
+    to_points = points - origin
     if mode == 'projection':
-        # Use dot product for projection distance
-        return to_point * direction
-    else:
-        # Use actual distance
-        return to_point.length()
+        return np.dot(to_points, vector)
+    return np.linalg.norm(to_points, axis=1)
 
 
 def set_vertex_weights_by_vector(

@@ -261,8 +261,7 @@ def find_vertex_pairs(
 
 def get_closest_vertex(
         point: Tuple[float, float, float],
-        positions: List[Tuple[float, float, float]]
-) -> int:
+        positions: List[Tuple[float, float, float]]) -> int:
     """Find the closest vertex to a given point."""
     min_dist = float('inf')
     closest_idx = -1

@@ -1,0 +1,126 @@
+dw_paint/
+    __init__.py
+    core/
+        __init__.py
+        cache.py         # Cache related functionality
+        mesh_data.py     # Mesh data operations
+        weights.py       # Weight operations
+        vectors.py       # Vector math operations
+        interpolation.py # Smoothing/interpolation
+    operations/
+        __init__.py
+        flood.py        # Flood operations
+        mirror.py       # Mirror operations
+        radial.py       # Radial weight operations
+        directional.py  # Directional weight operations
+    utils/
+        __init__.py
+        validation.py   # Input validation
+        conversion.py   # Data conversion utilities
+        falloff.py      # Falloff calculations
+
+
+# core/cache.py
+@dataclass
+class MeshCache:
+    mesh_name: str = ""
+    vertex_count: int = 0
+    last_dag_path: Optional[om.MDagPath] = None
+    cache_hits: int = 0
+    cache_misses: int = 0
+
+class MeshDataCache:
+    """Centralized mesh data caching"""
+    def __init__(self, max_size: int = 32, memory_threshold: int = 50):
+        self.cache = MeshCache()
+        self.max_size = max_size
+        self.memory_threshold = memory_threshold
+
+    @lru_cache(maxsize=32)
+    def get_mesh_data(self, mesh_name: str) -> Tuple[np.ndarray, Dict[int, List[int]], int]:
+        """Get cached mesh data"""
+        # Implementation...
+
+# core/interpolation.py
+class WeightInterpolator:
+    """Handle weight interpolation operations"""
+    def __init__(self, mesh_cache: MeshDataCache):
+        self.mesh_cache = mesh_cache
+
+    def interpolate(self, weights: np.ndarray, iterations: int, factor: float) -> np.ndarray:
+        """Interpolate weights"""
+        # Implementation...
+
+# operations/directional.py
+class DirectionalWeightGenerator:
+    """Generate weights based on directions"""
+    def __init__(self, mesh_cache: MeshDataCache):
+        self.mesh_cache = mesh_cache
+
+    def generate_weights(self, mesh: str, direction: Union[str, np.ndarray], **kwargs) -> np.ndarray:
+        """Generate directional weights"""
+        # Implementation...
+
+Additional Optimization Suggestions:
+
+pythonCopy# 1. Use typed arrays for better memory usage
+from numpy.typing import NDArray
+WeightArray = NDArray[np.float32]  # Use float32 instead of float64 where possible
+
+# 2. Add parallel processing for heavy operations
+from concurrent.futures import ThreadPoolExecutor
+
+def parallel_weight_calculation(positions: np.ndarray, chunks: int = 4) -> np.ndarray:
+    """Calculate weights in parallel for large meshes"""
+    with ThreadPoolExecutor() as executor:
+        # Split work into chunks
+        chunk_size = len(positions) // chunks
+        futures = []
+        for i in range(chunks):
+            start = i * chunk_size
+            end = start + chunk_size if i < chunks - 1 else len(positions)
+            futures.append(executor.submit(calculate_chunk, positions[start:end]))
+
+        # Combine results
+        return np.concatenate([f.result() for f in futures])
+
+# 3. Add result caching for expensive operations
+from functools import lru_cache
+
+@lru_cache(maxsize=128)
+def get_cached_weight_calculation(mesh_name: str, params_hash: str) -> WeightArray:
+    """Cache weight calculation results"""
+    # Implementation...
+These changes would:
+
+Improve performance through vectorization
+Better organize the code
+Make it more maintainable
+Add type safety
+Enable parallel processing for large meshes
+Improve memory usage
+
+------------------------------------------------------------------
+
+
+Looking at the old scripts, there are a few things we should incorporate into our modular structure:
+
+From dw_paint_utils.py:
+
+
+open_tools_window() - Could go in utils/maya_tools.py
+compare_two_nodes_list() - Could go in utils/validation.py
+guess_if_component_sel() - Could go in utils/validation.py
+get_connected_vertices(), get_vertex_shell() - Could go in core/mesh_data.py
+find_vertex_pairs() - Could go in core/mesh_data.py
+get_closest_vertex() - Could go in core/mesh_data.py
+get_vertex_normal() - Already implemented in our MeshData class
+blend_weight_lists() - Could go in core/weights.py
+remap_weights() - Could go in utils/conversion.py
+
+
+From dw_paint_core.py, a function we should add to respective modules:
+
+
+modify_weights() - Should go in core/weights.py
+The falloff implementations in apply_falloff() - Could be added to utils/falloff.py
