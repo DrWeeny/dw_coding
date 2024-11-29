@@ -6,6 +6,8 @@ from typing import Any, Callable, TypeVar, Optional
 from statistics import mean, median
 from dw_logger import get_logger
 
+logger = get_logger()
+
 
 # Type variable for generic function type
 F = TypeVar('F', bound=Callable[..., Any])
@@ -95,7 +97,6 @@ def timeIt(track_stats: bool = False) -> Callable:
 
         @wraps(func)
         def wrapper(*args: Any, **kwargs: Any) -> Any:
-            logger = get_logger()
 
             if track_stats:
                 stats.start()
@@ -108,7 +109,7 @@ def timeIt(track_stats: bool = False) -> Callable:
                 if track_stats:
                     stats.stop()
 
-                logger.info(f'{func.__name__} took {elapsed:.4f} ms to execute.')
+                logger.debug(f'{func.__name__} took {elapsed:.4f} ms to execute.')
                 return result
             except Exception as e:
                 elapsed = (time.perf_counter() - start) * 1000

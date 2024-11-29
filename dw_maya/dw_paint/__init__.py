@@ -93,7 +93,6 @@ from .utils import (
     FalloffFunction,
     CustomFalloff,
     apply_falloff,
-    create_custom_falloff,
 
     # Conversion
     to_weight_list,
@@ -126,7 +125,6 @@ __all__ = [
     'validate_component_mask', 'validate_component_name', 'validate_falloff_type',
     'validate_axis','compare_two_nodes_list','guess_if_component_sel',
     'FalloffCurve', 'FalloffFunction', 'CustomFalloff', 'apply_falloff',
-    'create_custom_falloff',
     'to_weight_list', 'to_numpy_array', 'convert_range_to_indices',
     'indices_to_range_str', 'normalize_weights', 'component_to_mesh_and_index',
     'mel_array_to_python', 'remap_weights'

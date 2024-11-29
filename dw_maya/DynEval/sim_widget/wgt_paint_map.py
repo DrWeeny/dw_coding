@@ -8,7 +8,7 @@ from dw_maya.dw_nucleus_utils import get_nucleus_solver, artisan_nucx_update
 from .wgt_combotree import TreeComboBox
 from .wgt_combobox_maps import ColoredMapComboBox
 from ..sim_cmds.vtx_map_management import smooth_pervtx_map
-from dw_maya.dw_paint import flood_value_on_sel, select_vtx_info_on_mesh
+from dw_maya.dw_paint import flood_weights, WeightDataFactory
 import dw_maya.dw_maya_utils as dwu
 from functools import partial
 
@@ -776,7 +776,7 @@ class VertexMapEditor(QtWidgets.QWidget):
             value = -value
             operation = "add"
 
-        new_weights = flood_value_on_sel(mesh,
+        new_weights = flood_weights(mesh,
                                          weights,
                                          value,
                                          operation.lower(),
@@ -797,11 +797,11 @@ class VertexMapEditor(QtWidgets.QWidget):
 
         # get the weightList
         weights = get_vtx_map_data(nucx, _map+"PerVertex")
-
+        weight_data = WeightDataFactory.create(weights, mesh)
         if self.rb_range.isChecked():
-            select_vtx_info_on_mesh(weights, mesh, "range", None, _min, _max)
+            weight_data.select_indexes_by_weights(_min, _max)
         else:
-            select_vtx_info_on_mesh(weights, mesh, "value", _min)
+            weight_data.select_indexes_by_weights(_min)
 
         artisan_nucx_update(nucx, _map, True)
 

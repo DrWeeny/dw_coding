@@ -3,6 +3,7 @@ from typing import List, Optional, Union, Dict, Tuple, Literal
 import numpy as np
 from dw_logger import get_logger
 from .mesh_data import MeshDataFactory
+from dw_maya.dw_maya_utils import create_maya_ranges
 
 logger = get_logger()
 
@@ -161,6 +162,24 @@ class WeightData:
 
         return self._weights[indices]
 
+    def get_indexes_by_weights(self, x, y=None):
+        # For values between x and y (inclusive)
+        if x and y:
+            indices = np.where((self._weights >= x) & (self._weights <= y))[0]
+        else:
+            indices = np.where(self._weights == x)[0]
+        return indices
+
+    def select_indexes_by_weights(self, x, y=None, select=True):
+        idr = self.get_indexes_by_weights(x, y).tolist()
+        # for selection, Ive tested maya api in was 10x faster
+        index_maya_str = create_maya_ranges(idr)
+        to_sel=[f"{self.mesh_name}.vtx[{id}]" for id in index_maya_str]
+        if select:
+            cmds.select(to_sel)
+        return to_sel
+
+
     def get_stats(self) -> Dict[str, float]:
         """Get weight statistics"""
         return {
@@ -286,8 +305,7 @@ def modify_weights(weight_list: List[Union[float, int]],
 def blend_weight_lists(
         weights_a: List[float],
         weights_b: List[float],
-        blend_factor: float
-) -> List[float]:
+        blend_factor: float) -> List[float]:
     """Blend between two weight lists."""
     return [
         a * (1 - blend_factor) + b * blend_factor
@@ -316,8 +334,8 @@ if __name__ == '__main__':
                 pos = cmds.xform(f"{sphere}.vtx[{i}]", q=True, ws=True, t=True)
                 test_weights[i] = (pos[1] + 1.0) / 2.0  # Normalize Y from [-1,1] to [0,1]
 
-            # Create weight data instance
-            weight_data = WeightDataFactory.create(test_weights, sphere)
+            weight_data = WeightDataFactory.create(test_weights, sphere)  # Create weight data instance
+
 
             # Test various operations
             logger.info("Testing weight operations...")

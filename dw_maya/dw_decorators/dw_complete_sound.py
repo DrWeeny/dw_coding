@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import Callable, List, Any
 from dw_logger import get_logger
 from dw_linux.dw_sound import sox_play
+from dw_ressources import get_resource_path
 
 logger = get_logger()
 
@@ -53,19 +54,9 @@ class SoundResourceManager:
     def _get_sound_path() -> Path:
         """Get the base path for sound files."""
         # Try different potential locations
-        current_file = Path(__file__)
-        potential_paths = [
-            current_file.parent.parent / 'ressources' / 'audio_files' / 'BattleblockTheater',
-            Path('E:/dw_coding/dw_open_tools/ressources/audio_files/BattleblockTheater')
-        ]
+        potential_paths = get_resource_path('audio_files/BattleblockTheater')
+        return potential_paths
 
-        # Return first existing path
-        for path in potential_paths:
-            if path.exists():
-                return path
-
-        # Default to first path if none exist
-        return potential_paths[0]
 
     def play_success(self) -> None:
         """Play a random success sound."""

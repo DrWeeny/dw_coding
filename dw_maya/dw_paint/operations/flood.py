@@ -2,6 +2,7 @@
 from typing import List, Optional, Tuple, Union
 import numpy as np
 from maya import cmds
+
 from ..core import (
     WeightData,
     MeshDataFactory,
@@ -40,7 +41,7 @@ class FloodOperation:
             Modified weights or None if failed
         """
         try:
-            # Validate operation
+            # Validate : operation exists
             operation = validate_operation_type(operation)
 
             # Get selected components

@@ -18,8 +18,7 @@ from .falloff import (
     FalloffCurve,
     FalloffFunction,
     CustomFalloff,
-    apply_falloff,
-    create_custom_falloff
+    apply_falloff
 
 )
 
@@ -52,7 +51,6 @@ __all__ = [
     'FalloffFunction',
     'CustomFalloff',
     'apply_falloff',
-    'create_custom_falloff',
 
     # Conversion
     'to_weight_list',
