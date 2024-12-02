@@ -4,6 +4,7 @@ import numpy as np
 from dw_logger import get_logger
 from .mesh_data import MeshDataFactory
 from dw_maya.dw_maya_utils import create_maya_ranges
+from maya import cmds
 
 logger = get_logger()
 

@@ -167,6 +167,70 @@ class MeshData:
         mesh_cache.clear_cache()
         self._initialize()
 
+    def get_border_edges(self) -> List[int]:
+        """Get indices of border edges (edges connected to only one face).
+
+        A border edge is an edge that is connected to only one face, meaning it lies
+        on the boundary of the mesh. This method uses Maya's API to efficiently
+        find these edges by:
+        1. Creating an edge iterator for the mesh
+        2. Checking each edge's connected face count
+        3. Collecting edges that have only one connected face
+
+        Returns:
+            List of edge indices that are on the mesh border
+        """
+        try:
+            # Get mesh through API
+            sel = om.MSelectionList()
+            sel.add(self.mesh_name)
+            mesh_dag = sel.getDagPath(0)
+
+            # Create edge iterator
+            edge_iter = om.MItMeshEdge(mesh_dag)
+            border_edges = []
+
+            # Iterate through all edges
+            while not edge_iter.isDone():
+                # Check if edge is on border (connected to only one face)
+                if edge_iter.onBoundary():
+                    border_edges.append(edge_iter.index())
+                edge_iter.next()
+
+            return border_edges
+
+        except Exception as e:
+            logger.error(f"Error getting border edges: {e}")
+            return []
+
+    def get_edge_vertices(self, edge_index: int) -> List[int]:
+        """Get vertex indices for a given edge.
+
+        Args:
+            edge_index: Index of the edge to query
+
+        Returns:
+            List containing the two vertex indices that form the edge
+        """
+        try:
+            sel = om.MSelectionList()
+            sel.add(self.mesh_name)
+            mesh_dag = sel.getDagPath(0)
+
+            # Create edge iterator and set it to the specified edge
+            edge_iter = om.MItMeshEdge(mesh_dag)
+            edge_iter.setIndex(edge_index)
+
+            # Get vertices of edge
+            vertex0 = edge_iter.vertexId(0)
+            vertex1 = edge_iter.vertexId(1)
+
+            return [vertex0, vertex1]
+
+        except Exception as e:
+            logger.error(f"Error getting edge vertices: {e}")
+            return []
+
 
 class MeshDataFactory:
     """Factory for creating and managing MeshData instances"""

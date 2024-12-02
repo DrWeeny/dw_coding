@@ -1,0 +1,33 @@
+Here's a summary of our optimization journey for mesh weight map smoothing in Maya:
+
+1. Initial Approaches:
+- Started with a basic topology-based smoothing method
+- Tested Maya's artisan tool approach
+- Implemented basic weight caching and neighbor mapping
+
+2. Hybrid Method Development:
+- Created efficient topology caching using numpy arrays
+- Implemented vectorized operations for weight calculations
+- Added options for maintaining bounds and handling zero weights
+
+3. Parallel Processing Implementation:
+- Used thread pools for parallel computation
+- Respected Maya's threading constraints (keeping Maya operations in main thread)
+- Implemented work distribution with chunk processing
+- Added memory prefetching and optimized data structures
+
+4. Key Performance Insights:
+- Maya's C++ implemented artisan tool remains very efficient (~145ms)
+- Our Python implementation achieved comparable performance (~686ms)
+- Adding more threads didn't always improve performance due to overhead
+- Memory access patterns and caching significantly impact performance
+
+5. Key Learnings:
+- Maya's native C++ operations are hard to beat for performance
+- Parallel processing in Python has overhead that needs to be considered
+- Memory layout and access patterns are crucial for performance
+- Understanding Maya's threading constraints is essential
+
+The final conclusion is that while we can optimize Python code significantly, Maya's native C++ implementations often remain more efficient for these types of operations. However, our custom implementation offers more control over the smoothing process and could be extended with additional features not available in the native tools.
+
+One case to test is real scenes where viewport is refreshed

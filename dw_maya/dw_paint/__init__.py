@@ -50,7 +50,6 @@ from .core import (
     # Interpolation
     InterpolationSettings,
     WeightInterpolator,
-    interpolate_vertex_map
 )
 
 # Operations
@@ -102,7 +101,11 @@ from .utils import (
     normalize_weights,
     component_to_mesh_and_index,
     mel_array_to_python,
-    remap_weights
+    remap_weights,
+
+    #Maya Tools
+    get_current_artisan_map,
+    open_tools_window
 )
 
 __all__ = [
@@ -111,7 +114,7 @@ __all__ = [
     'MeshData', 'MeshDataFactory', 'get_vertex_shell', 'get_connected_vertices', 'find_vertex_pairs',
     'WeightData', 'WeightDataFactory', 'WeightList', 'WeightArray', 'blend_weight_lists', 'modify_weights', 'get_closest_vertex',
     'VectorUtils', 'MayaVectorUtils', 'VectorDirection', 'Vector3D',
-    'InterpolationSettings', 'WeightInterpolator', 'interpolate_vertex_map',
+    'InterpolationSettings', 'WeightInterpolator',
 
     # Operations
     'FloodOperation', 'flood_weights',
@@ -127,9 +130,9 @@ __all__ = [
     'FalloffCurve', 'FalloffFunction', 'CustomFalloff', 'apply_falloff',
     'to_weight_list', 'to_numpy_array', 'convert_range_to_indices',
     'indices_to_range_str', 'normalize_weights', 'component_to_mesh_and_index',
-    'mel_array_to_python', 'remap_weights'
+    'mel_array_to_python', 'remap_weights', 'get_current_artisan_map', 'open_tools_window'
 ]
 
 # Version information
 __version__ = '1.0.0'
-__author__ = 'DrWee'
+__author__ = 'DrWeeny'

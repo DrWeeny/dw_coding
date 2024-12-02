@@ -139,39 +139,27 @@ class WeightInterpolator:
         return min_val + (weights - current_min) * (max_val - min_val) / (current_max - current_min)
 
 
-def interpolate_vertex_map(
-        weights: List[float],
-        mesh: str,
-        smooth_iterations: int = 1,
-        smooth_factor: float = 0.5,
-        settings: Optional[InterpolationSettings] = None) -> Optional[List[float]]:
-    """High-level function for weight interpolation
+def optimized_interpolate(weights: np.ndarray, neighbors: Dict[int, List[int]],
+                          smooth_factor: float = 0.5) -> np.ndarray:
+    """Optimized version combining benefits of both approaches"""
+    new_weights = np.zeros_like(weights, dtype=np.float32)  # Use float32
+    inverse_smooth = 1.0 - smooth_factor
 
-    Args:
-        weights: Input weight values
-        mesh: Mesh name
-        smooth_iterations: Number of smoothing iterations
-        smooth_factor: Strength of smoothing (0-1)
-        settings: Optional custom interpolation settings
+    # Process vertices individually but with optimized numpy operations
+    for vertex_id, neighbor_ids in neighbors.items():
+        if not neighbor_ids:
+            new_weights[vertex_id] = weights[vertex_id]
+            continue
 
-    Returns:
-        Smoothed weights or None if failed
-    """
-    try:
-        if settings is None:
-            settings = InterpolationSettings(
-                smooth_iterations=smooth_iterations,
-                smooth_factor=smooth_factor
-            )
+        # Use numpy's mean for efficient averaging
+        neighbor_values = weights[neighbor_ids]
+        average = np.mean(neighbor_values)
 
-        interpolator = WeightInterpolator(mesh, settings)
-        result = interpolator.interpolate(np.array(weights))
+        # Blend original and neighbor average
+        new_weights[vertex_id] = (weights[vertex_id] * inverse_smooth +
+                                  average * smooth_factor)
 
-        return result.tolist()
-
-    except Exception as e:
-        logger.error(f"Failed to interpolate vertex map: {e}")
-        return None
+    return new_weights
 
 
 if __name__ == '__main__':

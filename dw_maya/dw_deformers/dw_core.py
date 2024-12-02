@@ -170,7 +170,8 @@ def get_blendshape_info(blendshape_node: str) -> Dict[
 
 def set_deformer_weights(deformer: str,
                          weights: List[float],
-                         target_type: Literal['deformer', 'blendshape'] = 'deformer',
+                         target_type: Literal['deformer', 'blendshape']= 'deformer',
+                         index:int=0 ,
                          **kwargs) -> None:
     """
     Set weights on a deformer node, supporting both regular deformer weights
@@ -203,6 +204,17 @@ def set_deformer_weights(deformer: str,
     if not cmds.objExists(deformer):
         raise ValueError(f"Deformer '{deformer}' does not exist")
 
+    weight_attr = None
+    if cmds.listAttr(f"{deformer}.{target_type}"):
+        weight_attr = f"{deformer}.{target_type}"
+        pattern = re.compile("\[(\d+)]")
+        id = pattern.match(weight_attr).group(1)
+        if id:
+            index = int(id)
+            weight_attr = pattern.sub("", weight_attr)
+
+        target_type = None
+
     try:
         # Process weights
         processed_weights = weights.copy()  # Create a copy to avoid modifying original
@@ -216,10 +228,12 @@ def set_deformer_weights(deformer: str,
         weight_range = f"0:{weight_count - 1}"
 
         # Construct attribute path based on target type
-        if target_type == 'deformer':
-            attr_path = f'{deformer}.weightList[0].weights[{weight_range}]'
+        if weight_attr and not target_type:
+            attr_path = f"{weight_attr}[{index}].weights[{weight_range}]"
+        elif target_type == 'deformer':
+            attr_path = f'{deformer}.weightList[{index}].weights[{weight_range}]'
         elif target_type == 'blendshape':
-            attr_path = f'{deformer}.inputTarget[0].baseWeights[{weight_range}]'
+            attr_path = f'{deformer}.inputTarget[{index}].baseWeights[{weight_range}]'
         else:
             raise ValueError(f"Invalid target_type: {target_type}")
 

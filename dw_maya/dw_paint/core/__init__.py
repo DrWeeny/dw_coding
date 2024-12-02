@@ -35,7 +35,6 @@ from .vectors import (
 from .interpolation import (
     InterpolationSettings,
     WeightInterpolator,
-    interpolate_vertex_map
 )
 
 __all__ = [
@@ -69,5 +68,4 @@ __all__ = [
     # Interpolation
     'InterpolationSettings',
     'WeightInterpolator',
-    'interpolate_vertex_map'
 ]

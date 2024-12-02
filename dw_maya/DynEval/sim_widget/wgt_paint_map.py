@@ -815,6 +815,7 @@ class VertexMapEditor(QtWidgets.QWidget):
         cmds.select(clear=True)
         # gather elements set in ui
         nucx, _map, mesh = self.get_combo_data()
+        cmds.select(mesh, r=True)
         artisan_nucx_update(nucx, _map, True)
 
 

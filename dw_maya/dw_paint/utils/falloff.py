@@ -128,18 +128,39 @@ def apply_falloff(weights: WeightList,
     curve = FalloffCurve(falloff_type, **kwargs)
     return curve.evaluate(weights)
 
-def apply_falloff(weights: np.ndarray, falloff: str) -> np.ndarray:
-    """Vectorized falloff application"""
-    if falloff == 'linear':
-        return weights
-    elif falloff == 'quadratic':
-        return np.square(weights)
-    elif falloff == 'smooth':
-        return weights * weights * (3 - 2 * weights)
-    elif falloff == 'smooth2':
-        return weights * weights * weights * (weights * (6 * weights - 15) + 10)
-    return weights
 
+def create_custom_falloff(control_points: List[Tuple[float, float]]) -> FalloffCurve:
+    """Create custom falloff curve from control points using linear interpolation.
+
+    Args:
+        control_points: List of (x, y) points defining the curve
+    """
+    # Sort points by x coordinate to ensure proper interpolation
+    points = sorted(control_points)
+    x_vals = np.array([p[0] for p in points])
+    y_vals = np.array([p[1] for p in points])
+
+    def custom_falloff(x: np.ndarray) -> np.ndarray:
+        # Handle values outside the range of control points
+        result = np.zeros_like(x)
+
+        # Values below first control point
+        result[x <= x_vals[0]] = y_vals[0]
+
+        # Values above last control point
+        result[x >= x_vals[-1]] = y_vals[-1]
+
+        # Values between control points
+        for i in range(len(x_vals) - 1):
+            mask = (x > x_vals[i]) & (x <= x_vals[i + 1])
+            if np.any(mask):
+                # Linear interpolation formula: y = y1 + (x - x1) * (y2 - y1) / (x2 - x1)
+                t = (x[mask] - x_vals[i]) / (x_vals[i + 1] - x_vals[i])
+                result[mask] = y_vals[i] + t * (y_vals[i + 1] - y_vals[i])
+
+        return result
+
+    return CustomFalloff(custom_falloff)
 
 if __name__ == '__main__':
     def run_falloff_tests():

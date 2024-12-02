@@ -34,6 +34,9 @@ from .conversion import (
     remap_weights
 )
 
+from .maya_tool import (get_current_artisan_map,
+                        open_tools_window)
+
 __all__ = [
     # Validation
     'validate_operation_type',
@@ -60,5 +63,9 @@ __all__ = [
     'normalize_weights',
     'component_to_mesh_and_index',
     'mel_array_to_python',
-    'remap_weights'
+    'remap_weights',
+
+    # MAYA TOOLS
+    'get_current_artisan_map',
+    'open_tools_window'
 ]

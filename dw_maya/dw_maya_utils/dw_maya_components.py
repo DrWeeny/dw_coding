@@ -12,8 +12,11 @@ ComponentID = int
 ComponentRange = str
 
 def component_in_list(node_list):
-    if any([COMPONENT_PATTERN.match(name) for name in node_list]):
-        return True
+    for name in node_list:
+        component = COMPONENT_PATTERN.match(name)
+        if component:
+            component_type = component.group(2)
+            return component_type
     return False
 
 def chunks(iterable: Iterable, size: int) -> Generator[List, None, None]:

@@ -149,17 +149,22 @@ class MayaVectorUtils:
 
     @staticmethod
     def get_axis_vector(transform: str, axis: Literal['x', 'y', 'z']) -> np.ndarray:
-        """Get transformed axis vector from Maya transform node"""
+        """Get transformed axis vector using Maya's API."""
         try:
-            # Get world matrix
-            matrix = om.MMatrix(cmds.xform(transform, q=True, matrix=True, ws=True))
-            # Get axis index
+            # Get world matrix through API
+            sel = om.MSelectionList()
+            sel.add(transform)
+            matrix = om.MFnTransform(sel.getDagPath(0)).transformation().asMatrix()
+
+            # Map axis to column index
             axis_idx = {'x': 0, 'y': 1, 'z': 2}[axis.lower()]
-            # Extract axis vector
-            return np.array([matrix(i, axis_idx) for i in range(3)])
+
+            # Get axis vector using MMatrix element access
+            return np.array([matrix[i][axis_idx] for i in range(3)])
+
         except Exception as e:
             logger.error(f"Error getting axis vector: {e}")
-            return np.array([1, 0, 0])  # Default to X axis
+            return np.array([1, 0, 0])
 
 
 if __name__ == '__main__':

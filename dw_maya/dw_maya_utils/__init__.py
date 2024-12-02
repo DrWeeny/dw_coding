@@ -3,7 +3,7 @@ from .dw_maya_attrs import get_type_io, add_attr, lock_attr
 from .dw_maya_data import flags, unique_name, convert_list_to_mel_str, merge_two_dicts
 from .dw_lsTr import lsTr
 from .dw_maya_components import (component_in_list, chunks, mag, get_next_free_multi_index,
-                                 create_maya_ranges, get_vtx_pos, invert_selection)
+                                 create_maya_ranges, get_vtx_pos, invert_selection, extract_id)
 from .dw_maya_time import current_timerange
 from .dw_maya_message import message, warning, error
 from .dw_maya_prefs import MayaVersionInfo
