@@ -48,16 +48,78 @@ class VtxStorageButton(QtWidgets.QPushButton):
         """)
 
     def mousePressEvent(self, event: QtCore.QEvent):
-        """Handle mouse press events
-        Left click restore the data
-        Right click is used for:
-            -storing
-            -clear
-            -operations with current storage"""
+        """Handle mouse press events based on position and button state
+        For dual-colored buttons with diagonal split:
+        - Upper-right area (green): Restore only weights
+        - Lower-left area (tan): Restore only selection
+        - Middle near diagonal: Restore both
+        """
         if event.button() == QtCore.Qt.LeftButton:
-            self._handle_left_click()
+            # Only do position check if we have both weights and selection
+            if self.storage["weights"] and self.storage["selection"]:
+                # Get click position relative to button
+                x = event.pos().x()
+                y = event.pos().y()
+
+                # Convert to normalized coordinates (0-1)
+                norm_x = x / self.width()
+                norm_y = y / self.height()
+
+                # Define tolerance for middle zone
+                tolerance = 0.1  # Adjust this value to make middle zone larger/smaller
+
+                # Check if click is near diagonal (y = -x + 1)
+                if abs((1 - norm_x) - norm_y) < tolerance:
+                    # Click is near diagonal - restore both
+                    self.restore_data(selection=True, weight_node=self.current_weight_node)
+                # Check if click is above diagonal (green area - top right)
+                elif norm_y < (1 - norm_x):
+                    # Upper-right area - restore only weights
+                    self.restore_data(selection=False, weight_node=self.current_weight_node)
+                else:
+                    # Lower-left area - restore only selection
+                    self.restore_data(selection=True, weight_node=None)
+            else:
+                # Single color button - normal restore
+                self.restore_data()
+
         elif event.button() == QtCore.Qt.RightButton:
             self._handle_right_click()
+
+    def mouseMoveEvent(self, event: QtCore.QEvent):
+        """Update tooltip based on which diagonal area mouse is over"""
+        if self.storage["weights"] and self.storage["selection"]:
+            # Calculate normalized positions
+            norm_x = event.pos().x() / self.width()
+            norm_y = event.pos().y() / self.height()
+            tolerance = 0.1
+
+            # Update tooltip based on position
+            if abs((1 - norm_x) - norm_y) < tolerance:
+                self.setToolTip("Restore Both")
+                self.setCursor(QtCore.Qt.PointingHandCursor)
+            elif norm_y < (1 - norm_x):
+                self.setToolTip("Restore Weights Only")
+                self.setCursor(QtCore.Qt.PointingHandCursor)
+            else:
+                self.setToolTip("Restore Selection Only")
+                self.setCursor(QtCore.Qt.PointingHandCursor)
+        else:
+            self.setCursor(QtCore.Qt.ArrowCursor)
+            self.setToolTip("")
+
+    def enterEvent(self, event: QtCore.QEvent):
+        """Show zone tooltips when mouse enters button"""
+        if self.storage["weights"] and self.storage["selection"]:
+            self.setToolTip(
+                "Left: Restore Selection Only\n"
+                "Middle: Restore Both\n"
+                "Right: Restore Weights Only"
+            )
+
+    def leaveEvent(self, event: QtCore.QEvent):
+        """Reset tooltip when mouse leaves"""
+        self.setToolTip("")
 
     def _handle_left_click(self):
         """Handle left click - restore stored data"""
@@ -280,6 +342,8 @@ class VtxStorageButton(QtWidgets.QPushButton):
         """should be a deformer or a ncloth map type
         can handle node.attr or just the node"""
         self._current_weight_node = node
+
+
 
 
     def _update_button_state(self, has_data: bool):
