@@ -144,11 +144,12 @@ class VtxStorageButton(QtWidgets.QPushButton):
         if self.storage['weights'] or self.storage['selection']:
             menu.addSeparator()
             add_action = menu.addAction("Add Op")
-            sub_action = menu.addAction("Substract Op")
+            sub_action = menu.addAction("Remove Op")
             intersect = menu.addAction("Intersect Op")
         if self.storage['weights']:
-            mult_action = menu.addAction("Mult Op")
-            div_action = menu.addAction("Divide Op")
+            menu.addSeparator()
+            mult_action = menu.addAction("Mult Op Weight")
+            div_action = menu.addAction("Divide Op Weight")
 
         # Enable/disable actions based on state
         clear_action.setEnabled(bool(self.storage['weights'] or self.storage['selection']))
@@ -172,6 +173,11 @@ class VtxStorageButton(QtWidgets.QPushButton):
             self.combine_data(mode="sub")
         elif action == intersect:
             self.combine_data(mode="intersect")
+
+        elif action == mult_action:
+            self.combine_data(mode="multiply")
+        elif action == div_action:
+            self.combine_data(mode="divide")
 
     def store_current_data(self, weight_node:str=None, sel_store = True, weight_store=True):
         """Store current weights and selection"""
