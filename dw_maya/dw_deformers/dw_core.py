@@ -544,6 +544,30 @@ def is_deformer(node: str) ->bool:
     # Return True if 'geometryFilter' is in the list of inherited types, otherwise False
     return "geometryFilter" in test
 
+@acceptString("node")
+def listDeformers(node:str, _type:str=None) -> list:
+    """
+    Get all deformers from a mesh node, optionally filtered by type.
+
+    Args:
+       node (str): Path to mesh node
+       _type (str, optional): Filter deformers by specific type
+
+    Returns:
+       list: Deformers found on the mesh
+
+    Example:
+       >>> list_deformers('pSphere1')  # List all deformers
+       >>> list_deformers('pSphere1', 'skinCluster')  # List only skin clusters
+    """
+    if not node:
+        logger.warning("Please Provide a node input")
+        return []
+    from ..dw_maya_utils import lsTr
+    mesh = lsTr(node, dag=True, type="mesh")
+    deformers = [h for h in cmds.listHistory(mesh, pruneDagObjects=True) if is_deformer(h)]
+    return [d for d in deformers if cmds.nodeType(d) == _type] if _type else deformers
+
 @acceptString('object_list')
 def maya_edit_sets(deformer_name: str, object_list: list, **kwargs):
     """

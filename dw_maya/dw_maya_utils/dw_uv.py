@@ -256,3 +256,31 @@ def closest_uv_on_mesh(shape: str,
 
     # Return UV as a list [u, v]
     return UVPoint(u, v)
+
+@acceptString("obj")
+def move_uv_to_pos(obj:str=None, u:int=None, v:int=None):
+    """ polyEditUV doesn't set the uv values to a location but move the coordinate from a value
+    In order to set the u and v, we have to calculate the relative current position to move them to the set place
+
+    # https://forums.autodesk.com/t5/maya-programming/change-object-u-v-position-by-python/td-p/10868797"""
+
+    # getting selection
+    if not obj:
+        obj = cmds.ls(selection=True)
+    obj = obj[0]
+    if '.' in obj:
+        obj = obj.split('.')[0]
+
+    shape = cmds.listRelatives(obj, s=True)
+    # get total number of UV's
+    num_uv = cmds.polyEvaluate(obj, uv=True)
+    # selecting UV's to assure UVPivot position
+    cmds.select('{0}.map[0:{1}]'.format(obj, num_uv))
+    # getting current uvPivot position
+    uvp = cmds.getAttr('{0}.uvPivot'.format(shape[0]))
+    # calculating distance that needs to be moved
+    u_new = uvp[0][0] - u
+    v_ew = uvp[0][1] - v
+    # moving UV's and uvPivot
+    cmds.polyEditUV('{0}.map[0:{1}]'.format(obj, num_uv), relative=True, u=u_new * (-1), v=v_ew * (-1))
+    cmds.setAttr('{0}.uvPivot'.format(shape[0]), u, v)

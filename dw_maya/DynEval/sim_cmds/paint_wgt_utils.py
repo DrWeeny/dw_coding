@@ -1,4 +1,5 @@
 from maya import cmds, mel
+from typing import List
 from .info_management import dw_get_hierarchy
 from ..sim_widget.wgt_combotree import TreeComboBox
 from dw_maya.dw_maya_utils import lsTr
@@ -17,6 +18,23 @@ def nice_name(name:str, ns=False):
     if not ns:
         return name.split("|")[-1].split(":")[-1]
     return name.split("|")[-1]
+
+def set_weights(node: str, weights: List[float], is_deformer: bool = False):
+    """Set weights on either nucleus map or deformer
+
+    Args:
+        node: Full node path (node.attribute for nucleus, node for deformer)
+        weights: List of weight values
+        is_deformer: Whether this is a deformer node
+    """
+    if is_deformer:
+        from dw_maya.dw_deformers.dw_core import set_deformer_weights
+        set_deformer_weights(node, weights)
+    else:
+        # Nucleus map case
+        node_name, attr = node.split('.')
+        from dw_maya.dw_nucleus_utils.dw_core import set_nucx_map_data
+        set_nucx_map_data(node_name, attr, weights)
 
 def get_ncloth_mesh(node_list: list):
     result = []
@@ -45,9 +63,6 @@ def set_data_treecombo(treecombo: TreeComboBox,
                        mesh_selection:str = None):
     cloth_nodes, nrigid_nodes = [], []
     system = dw_get_hierarchy()
-
-    # Clear existing items first
-    treecombo.clear()
 
     found_selection = False
 

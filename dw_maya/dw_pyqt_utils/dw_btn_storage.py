@@ -66,19 +66,19 @@ class VtxStorageButton(QtWidgets.QPushButton):
                 norm_y = y / self.height()
 
                 # Define tolerance for middle zone
-                tolerance = 0.1  # Adjust this value to make middle zone larger/smaller
+                tolerance = .5  # Adjust this value to make middle zone larger/smaller
 
                 # Check if click is near diagonal (y = -x + 1)
                 if abs((1 - norm_x) - norm_y) < tolerance:
                     # Click is near diagonal - restore both
-                    self.restore_data(selection=True, weight_node=self.current_weight_node)
+                    self.restore_data(selection=True)
                 # Check if click is above diagonal (green area - top right)
                 elif norm_y < (1 - norm_x):
                     # Upper-right area - restore only weights
-                    self.restore_data(selection=False, weight_node=self.current_weight_node)
+                    self.restore_data(selection=False)
                 else:
                     # Lower-left area - restore only selection
-                    self.restore_data(selection=True, weight_node=None)
+                    self.restore_data(selection=True, weights=False)
             else:
                 # Single color button - normal restore
                 self.restore_data()
@@ -200,13 +200,20 @@ class VtxStorageButton(QtWidgets.QPushButton):
             logger.error(f"Failed to store data: {e}")
 
     def _get_selection_for_storage(self, weight_node=None):
+        # get object selected
+        # if there are component selected, let's store them
         sel = cmds.ls(sl=True)
+        # check component type vtx e f
         _compo_type = component_in_list(sel)
+        # if compoment type is not vertex and we are working on a map
+        # lets convert the selection (otherwise lets keep selection as is)
         if _compo_type != "vtx" and weight_node:
             sel = cmds.polyListComponentConversion(sel, tv=True)
             _compo_type = "vtx"
+        # remove any component to have a flat list of object
         obj_list = list(set([o.split(".")[0] for o in sel]))
         self.storage["selection"] = {}
+        # if there was no component in the list, store selection
         if not _compo_type:
             obj_list = sel[:]
         for o in obj_list:
@@ -273,7 +280,7 @@ class VtxStorageButton(QtWidgets.QPushButton):
 
             self._set_selection()
 
-    def restore_data(self, selection=True):
+    def restore_data(self, selection=True, weights=True):
         """Restore stored weights and selection
         selection is always the same meshes
         weight_node, the weight list can be retargeted on the current selected maps/weightList"""
@@ -282,7 +289,7 @@ class VtxStorageButton(QtWidgets.QPushButton):
                 if selection:
                     self._set_selection()
 
-                if self.current_weight_node:
+                if self.current_weight_node and weights:
                     self._set_weights()
                 logger.info("Data restored successfully")
         except Exception as e:

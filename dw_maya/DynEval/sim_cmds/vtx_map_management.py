@@ -254,13 +254,13 @@ def _force_enable_nucleus(cloth_mesh, nucleus, map_name):
     except:
         cmds.error("Error enabling nucleus; please ensure nucleus and cloth are active and start from the first frame.")
 
-def artisan_mode_replace():
-    cmds.artAttrCtx('artAttrNClothContext', edit=1, selectedattroper="absolute")
+def artisan_mode_replace(context):
+    cmds.artAttrCtx(context, edit=1, selectedattroper="absolute")
 
-def smooth_artisan():
-    cmds.artAttrCtx('artAttrNClothContext', edit=1, clear=1)
+def smooth_artisan(context):
+    cmds.artAttrCtx(context, edit=1, clear=1)
     import maya.utils as mu
-    mu.executeDeferred(artisan_mode_replace)
+    mu.executeDeferred(artisan_mode_replace, context)
 
 def smooth_pervtx_map(iteration:int =1):
     """ Enable maya vertex paint tool and launch smooth
@@ -268,11 +268,14 @@ def smooth_pervtx_map(iteration:int =1):
         :type clothNode: str
         :param mapName: Vertex map name
         :type mapName: str """
-    # artisan_nucx_open()
+    context = cmds.currentCtx()
 
-    # Set The Paint Editor and set it to Smooth Operation
-    cmds.artAttrCtx('artAttrNClothContext', edit=1, selectedattroper="smooth")
-    for i in range(iteration):
-        # smooth operation
-        import maya.utils as mu
-        mu.executeInMainThreadWithResult(smooth_artisan)
+    if context in ["artAttrNClothContext",
+                           "artAttrContext"]:
+
+        # Set The Paint Editor and set it to Smooth Operation
+        cmds.artAttrCtx(context, edit=1, selectedattroper="smooth")
+        for i in range(iteration):
+            # smooth operation
+            import maya.utils as mu
+            mu.executeInMainThreadWithResult(smooth_artisan, context)

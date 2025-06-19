@@ -8,9 +8,11 @@ from dw_maya.dw_nucleus_utils import get_nucleus_solver, artisan_nucx_update
 from .wgt_combotree import TreeComboBox
 from .wgt_combobox_maps import ColoredMapComboBox
 from ..sim_cmds.vtx_map_management import smooth_pervtx_map
-from dw_maya.dw_paint import flood_weights, WeightDataFactory
+from dw_maya.dw_paint import flood_weights, WeightDataFactory, get_current_artisan_map
 import dw_maya.dw_maya_utils as dwu
 from functools import partial
+from dw_maya.dw_pyqt_utils import VtxStorageButton
+from dw_maya.dw_deformers import listDeformers
 
 from dw_logger import get_logger
 
@@ -299,10 +301,32 @@ class VertexMapEditor(QtWidgets.QWidget):
         main_layout.addWidget(smooth_group)
         main_layout.addStretch()
 
+        # Button Storage
+        self._setup_storage_buttons(main_layout)
+
+
         self.btn_select.clicked.connect(self.select_by_weight)
         self.btn_invert.clicked.connect(self.invert_selection)
         self.btn_clear.clicked.connect(self.clear_selection)
 
+    def _setup_storage_buttons(self, main_layout):
+        """Setup the storage buttons section"""
+        storage_group = QtWidgets.QGroupBox("Weight Storage")
+        storage_layout = QtWidgets.QGridLayout(storage_group)
+
+        # Create 4 storage buttons in a 2x2 grid
+        self.storage_buttons = []
+        for i in range(4):
+            row = 1
+            col = i % 4
+            btn = VtxStorageButton()
+            btn.setFixedSize(60, 60)
+            storage_layout.addWidget(btn, row, col)
+            self.storage_buttons.append(btn)
+
+        storage_layout.setSpacing(4)
+        storage_layout.setContentsMargins(4, 4, 4, 4)
+        main_layout.addWidget(storage_group)
 
     def _setup_value_editor(self, main_layout):
         """Setup the value editor section with flood controls and edit modes"""
@@ -544,7 +568,19 @@ class VertexMapEditor(QtWidgets.QWidget):
 
         # Connect mesh and map selection signals
         self.mesh_combo.currentTextChanged.connect(self._handle_mesh_change)
+        self.map_combo.currentIndexChanged.connect(self._update_storage_buttons)
         self.paint_button.clicked.connect(self.maya_paint)
+
+    def _update_storage_buttons(self):
+        """Update all storage buttons with current weight node"""
+        current_node = None
+        if hasattr(self.map_combo, 'nucx_node') and self.map_combo.currentText():
+            map_name = self.map_combo.currentText()
+            if map_name:
+                current_node = f"{self.map_combo.nucx_node}.{map_name}PerVertex"
+                logger.debug(f"Updating storage buttons with node: {current_node}")
+        for btn in self.storage_buttons:
+            btn.current_weight_node = current_node
 
     def _handle_solver_change(self, button):
         """Handle solver type selection changes"""
@@ -557,10 +593,42 @@ class VertexMapEditor(QtWidgets.QWidget):
 
     def _handle_mesh_change(self, mesh_name):
         """Handle mesh selection changes"""
-        logger.debug(f"handler textChanged - Populating map combobox...{mesh_name}")
-        if mesh_name:  # Only proceed if we have a valid mesh name
+        logger.debug(f"handler textChanged - Processing mesh: {mesh_name}")
+        from ..sim_cmds.paint_wgt_utils import get_nucx_maps_from_mesh
+
+        if mesh_name == "- viewport selection -":
+            # Clear map combo
+            self.map_combo.clear()
+
+            # Get current artisan context if active
+            node, attr, node_type = get_current_artisan_map()
+            if node and attr:
+                # Already in paint mode, use current context
+                self.map_combo.nucx_node = node
+                return
+
+            # Get selected mesh
+            sel = cmds.ls(sl=True, type="transform")
+            if not sel:
+                return
+
+            mesh = sel[0]
+            # Check for nucleus maps
+            maps, nucx_node = get_nucx_maps_from_mesh(mesh)
+            if maps:
+                self.map_combo.nucx_node = nucx_node
+                self.maya_paint()  # Enter paint mode
+            else:
+                # Check for deformers
+                deformers = listDeformers(mesh)
+                if deformers:
+                    # Store first deformer for paint mode
+                    self.map_combo.nucx_node = deformers[0]
+                    self.maya_paint()
+
+        elif mesh_name:  # Regular mesh selection
             self.mesh_combo._current_text = mesh_name
-            self.populate_map_combobox()  # Refresh maps
+            self.populate_map_combobox()
         else:
             logger.warning("ComboBox Mesh doesn't emit mesh")
 
@@ -684,6 +752,12 @@ class VertexMapEditor(QtWidgets.QWidget):
     def populate_treecombobox(self):
         from ..sim_cmds.paint_wgt_utils import set_data_treecombo, nice_name, get_maya_sel
         sel = get_maya_sel()
+        self.mesh_combo.clear()
+
+        # Add viewport selection item at the top
+        self.mesh_combo.addItem("- viewport selection -")
+
+        # Add regular items
         if sel:
             easy_sel = nice_name(sel[0])
         elif self.mesh_selected:
@@ -699,6 +773,7 @@ class VertexMapEditor(QtWidgets.QWidget):
 
         logger.debug("Populating map combobox...")
         self.map_combo.clear()
+
         mesh = self.mesh_combo.get_current_text()
 
         logger.debug(f"Populating map - Current TreeCombo mesh: {mesh}")
@@ -736,7 +811,15 @@ class VertexMapEditor(QtWidgets.QWidget):
                 for map_name in map_list:
                     self.map_combo.addMapItem(map_name, map_type)
 
+        # Update storage buttons when map changes
+        self._update_storage_buttons()
+
     def maya_paint(self):
+        """
+        todo: if it is in viewport selection, it should paint
+        automatically when the map combobox is selected
+        :return:
+        """
         from ..sim_cmds import paint_vtx_map
         # Per Vertex Method
         mesh = self.mesh_combo.get_current_text()
@@ -746,6 +829,7 @@ class VertexMapEditor(QtWidgets.QWidget):
         paint_vtx_map(map+"PerVertex", mesh, solver)
 
     def smooth_flood(self, iteration: int = 1):
+        """ should be okay with both deformers and nucx"""
         if not isinstance(iteration, int):
             value = iteration.value()
             logger.debug(f"Flood smooth x times:{value}]")
@@ -759,32 +843,51 @@ class VertexMapEditor(QtWidgets.QWidget):
         return nucleus_node, map name, mesh_name
         """
         mesh = self.mesh_combo.get_current_text()
-        map = self.map_combo.currentText()
-        nucx_node = self.map_combo.nucx_node
-        return nucx_node, map, mesh
+        if mesh != "- viewport selection -":
+            map = self.map_combo.currentText()
+            nucx_node = self.map_combo.nucx_node
+            return nucx_node, map, mesh
+        else:
+            # Get current artisan context if active
+            node, attr, node_type = get_current_artisan_map()
+            return node, attr, node_type
 
     def set_flood_weight(self, value, operation, clamp_min, clamp_max):
-        from ..sim_cmds import get_vtx_map_data, set_vtx_map_data
-        # gather elements set in ui
-        nucx, _map, mesh = self.get_combo_data()
-        # get the weightList
-        weights = get_vtx_map_data(nucx, _map+"PerVertex")
+        """Unified flood weight function for both nucleus and deformers"""
+        from ..sim_cmds.paint_wgt_utils import set_weights
 
-        logger.debug(f"Set Flood Command: mesh:{mesh}, map{_map}, nucx:{nucx}\n weights:{weights}")
+        # Get current context if in paint mode
+        node, attr, node_type = get_current_artisan_map()
 
-        if operation == "Substract":
-            value = -value
-            operation = "add"
+        if node and attr:
+            # Use current paint context
+            target_node = f"{node}.{attr}"
+            is_deformer = node_type not in ["nCloth", "nRigid"]
+            mesh = cmds.ls(sl=True)[0]
+        else:
+            # Use combo selection
+            nucx, _map, mesh = self.get_combo_data()
+            target_node = f"{nucx}.{_map}PerVertex"
+            is_deformer = False
 
+        # Get current weights
+        if is_deformer:
+            from dw_maya.dw_deformers.dw_core import get_deformer_weights
+            weights = get_deformer_weights(target_node)['weightList']
+        else:
+            from ..sim_cmds import get_vtx_map_data
+            weights = get_vtx_map_data(target_node.split('.')[0], target_node.split('.')[1])
+
+        # Apply flood operation
         new_weights = flood_weights(mesh,
-                                         weights,
-                                         value,
-                                         operation.lower(),
-                                         clamp_min,
-                                         clamp_max)
-        logger.debug(f"Set Flood Command: operation type:{operation.lower()}\nnew_weights={new_weights}")
+                                    weights,
+                                    value,
+                                    operation.lower(),
+                                    clamp_min,
+                                    clamp_max)
 
-        set_vtx_map_data(nucx, _map + "PerVertex", new_weights)
+        # Set the weights
+        set_weights(target_node, new_weights, is_deformer)
 
     def select_by_weight(self):
         from ..sim_cmds import get_vtx_map_data, set_vtx_map_data

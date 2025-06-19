@@ -1,17 +1,8 @@
-import sys, os
+import dw_maya.dw_maya_utils as dwu
+from dw_maya.dw_deformers import listDeformers, editDeformer
+from maya import cmds
 
-# ----- Edit sysPath -----#
-rdPath = '/home/abtidona/private/PycharmProjects/RND/dw_tools/maya/RFX'
-if not os.path.isdir(rdPath):
-    rdPath = '/people/abtidona/public/dw_tools/maya/'
-if not rdPath in sys.path:
-    print "Add %r to sysPath" % rdPath
-    sys.path.insert(0, rdPath)
-import maya.cmds as cmds
-import dw_maya_utils as dwu
-import dw_presets_io as dwpresets
-
-def isDeformable(i):
+def is_deformable(i):
     meshes = dwu.lsTr(i, dag=True, type='mesh')
     nurbs = dwu.lsTr(i, dag=True, type='nurbsCurve')
     if meshes:
@@ -21,13 +12,13 @@ def isDeformable(i):
     return meshes + nurbs
 
 sel = cmds.ls(sl=True, fl=True)
-deformer = [i for i in sel if dwpresets.is_deformer(i)][0]
+deformer = listDeformers(sel)[0]
 components = [i for i in sel if '.' in sel]
 if not components:
-    objs = [isDeformable(i)[0] for i in sel if isDeformable(i)]
+    objs = [is_deformable(i)[0] for i in sel if is_deformable(i)]
 if components:
-    dwpresets.editDeformer(deformer, components, add=True)
+    editDeformer(deformer, components, add=True)
 else:
-    dwpresets.editDeformer(deformer, objs, add=True)
+    editDeformer(deformer, objs, add=True)
 
 
