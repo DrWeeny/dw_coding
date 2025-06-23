@@ -16,7 +16,7 @@ Functional Overview:
 The models are designed to work with Qt-based views (`QTableView`, `QListView`, etc.) and
 integrate into a larger UI application, facilitating interaction with file data.
 
-Author: np-alexis
+Author: drweeny
 """
 
 from PySide2 import QtCore, QtGui, QtWidgets

@@ -15,7 +15,7 @@ Main Features:
 - Customizable completer logic and styling.
 - Emits signals when filters are updated for easy integration with other tools.
 
-author:  np-c-alexis
+author:  drweeny
 """
 
 from PySide2 import QtCore, QtGui, QtWidgets

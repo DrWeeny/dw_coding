@@ -15,7 +15,7 @@ Functions:
 - load_otl(fullpath: str) -> None
 - merge_file(filepath: str) -> None
 
-author : np-alexis
+author : drweeny
 """
 
 import os

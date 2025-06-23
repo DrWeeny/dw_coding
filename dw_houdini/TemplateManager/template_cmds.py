@@ -20,7 +20,7 @@ Functions in this module include:
 
 This module is integral to managing and maintaining template data in a structured way, supporting asset versioning, backup management, and ensuring data integrity during asset operations.
 
-author : np-alexis
+author : drweeny
 """
 
 import os

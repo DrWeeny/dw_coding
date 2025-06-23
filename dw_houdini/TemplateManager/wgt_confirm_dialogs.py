@@ -11,7 +11,7 @@ The dialogs include basic validation for user input, such as ensuring only valid
 todo:
     - Add to TemplateConfirmationDialog a field to change the default name of the template (default is {category}_template)
 
-author: np-alexis
+author: drweeny
 """
 
 from PySide2 import QtCore, QtGui, QtWidgets

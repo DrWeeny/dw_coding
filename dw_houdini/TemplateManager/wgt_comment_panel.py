@@ -6,7 +6,7 @@ Classes:
 - CustomTextEdit: A subclass of QTextEdit that adds custom context menu actions.
 - CommentPanel: A QWidget that displays a panel with user information, comment text, and metadata.
 
-author : np-alexis
+author : drweeny
 """
 import webbrowser
 from PySide2 import QtCore, QtGui, QtWidgets

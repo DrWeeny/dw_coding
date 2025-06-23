@@ -3,7 +3,7 @@ GLOBALS for the manager
 """
 
 # hardcoded project path and json names
-template_path = "C:\\template_path"
+template_path = "C:\\template_path\\hou_template"
 template_json_path = template_path + "\\template_data.json"
 template_json_archive_name = "template_data_archive.json"
 

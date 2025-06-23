@@ -15,12 +15,10 @@ Core Features:
 
 Designed for use within a PyQt5 or PySide2-based Houdini pipeline tool.
 
-Author: np-c-alexis
+Author: drweeny
 """
-try:
-    from PySide2 import QtCore, QtGui, QtWidgets
-except:
-    from PySide6 import QtCore, QtGui, QtWidgets
+
+from PySide6 import QtCore, QtGui, QtWidgets
 from .wgt_action_separator import ActionTextSeparator
 import hou
 from . import template_path, template_json_path
