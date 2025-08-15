@@ -25,6 +25,30 @@ def get_node_instances(category, node_name):
             result.extend(node_type.instances())
     return result
 
+def find_upstream_nodes_type(rop_node:hou.Node, node_type=["alembic"])->list:
+    """
+    :return: list of houdini nodes matching alembic
+    """
+    visited = set()
+    alembic_nodes = []
+
+    def traverse(node):
+        if node in visited:
+            return
+        visited.add(node)
+
+        # Check if the node is an Alembic node
+        if node.type().name() in node_type:
+            alembic_nodes.append(node)
+
+        # Traverse inputs
+        for input_node in node.inputs():
+            if input_node:
+                traverse(input_node)
+
+    traverse(rop_node)
+    return alembic_nodes
+
 def str_to_category(category:str)->hou.NodeTypeCategory:
     """
     We can pass this “vopnet”, or “VopNET” and it’ll still give us the vopNetNodeTypeCategory
