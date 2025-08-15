@@ -178,7 +178,6 @@ def find_all_non_node_network_items(node_list:list, children:bool=True):
 def get_network_movable_item(node_list:list):
     return [n for n in node_list if isinstance(n ,hou.NetworkMovableItem)]
 
-
 def save_as_decorator_recipe(node_list:list,
                              title:str,
                              namespace:str,
@@ -239,19 +238,10 @@ def save_as_decorator_recipe(node_list:list,
 
     movable_items = find_all_non_node_network_items(node_list)
 
-    # set default options for saving decoration preset
-    if not "central_children" in kwargs:
-        kwargs["central_children"] = True
-    if not "central_editables" in kwargs:
-        kwargs["central_editables"] = True
-
     # bug fix
-    if "central_children" in kwargs:
-        kwargs["target_children"] = kwargs["central_children"]
-    if "central_editables" in kwargs:
-        kwargs["target_editables"] = kwargs["central_editables"]
-    if "central_parms" in kwargs:
-        kwargs["target_parms"] = kwargs["central_parms"]
+    kwargs["target_children"] = kwargs.get("central_children", True)
+    kwargs["target_editables"] = kwargs.get("central_editables", True)
+    kwargs["target_parms"] = kwargs.get("central_parms", True)
 
     hou.data.saveDecorationRecipe(name=name,
                                   label=label,
@@ -261,5 +251,83 @@ def save_as_decorator_recipe(node_list:list,
                                   comment=comment,
                                   selected_node=selected_node,
                                   **kwargs)
+
+    set_hda_version_from_definition(definition_filename, name, version)
+
+def save_as_tabtool_recipe(node_list:list,
+                           title:str,
+                           namespace:str,
+                           definition_filename:str,
+                           version:str,
+                           anchor_node:hou.OpNode,
+                           tab_submenu="Recipes",
+                           icon="BUTTONS_recipe",
+                           comment="",
+                           selected_node = None,
+                           **kwargs):
+    """
+
+    Args:
+        title : nice name
+        namespace : namespace of the hda
+        definition_filename : filename of the Recipe hda
+        version : version of the hda
+        version:
+        anchor_node:
+        tab_submenu:
+        icon:
+        comment:
+        selected_node:
+        **kwargs:
+
+    Bug :
+        self.target_parms = self.anchor_parms
+        self.target_children = self.anchor_children
+        self.target_editables = self.anchor_editables
+        self.target_name_in_data = ""
+
+    """
+
+    name = f"{namespace}::{title.lower()}"
+    label = title.lower()
+
+    if version:
+        try:
+            version = float(version)
+        except ValueError:
+            raise ValueError(f"Invalid version: {version}")
+
+    # bug fix
+    kwargs["target_children"] = kwargs.get("anchor_children", True)
+    kwargs["target_editables"] = kwargs.get("anchor_editables", True)
+    kwargs["target_parms"] = kwargs.get("anchor_parms", True)
+
+    default_options =  {
+        "nodes_only": False,
+        "anchor_children": True,
+        "children": True,
+        "anchor_editables": True,
+        "editables": True,
+        "flags": False,
+        "parms": True,
+        "parms_as_brief": True,
+        "evaluate_parmvalues": False,
+        "parmtemplates": "spare_only",
+        "metadata": False,
+        "verbose": False
+    }
+
+    default_options.update(kwargs)
+
+    hou.data.saveTabToolRecipe(name=name,
+                               label=label,
+                               location=definition_filename,
+                               anchor_node=anchor_node,
+                               items=node_list,
+                               tab_submenu=tab_submenu,
+                               icon=icon,
+                               comment=comment,
+                               selected_node=selected_node,
+                                **default_options)
 
     set_hda_version_from_definition(definition_filename, name, version)
