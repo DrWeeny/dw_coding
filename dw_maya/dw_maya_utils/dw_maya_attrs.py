@@ -54,10 +54,10 @@ Version: 1.0.0
 
 from typing import Union, List, Any, Optional, Literal, Dict
 from maya import cmds, mel
-from .dw_maya_data import flags
-from .dw_maya_components import get_next_free_multi_index
-from ..dw_decorators import acceptString
-from dw_maya.dw_constants.node_attr_mappings import NODE_IO_MAPPING
+from .data import flags
+from .components import get_next_free_multi_index
+from ..decorators import acceptString
+from cfx_maya.constants.node_attr_mappings import NODE_IO_MAPPING
 
 # Type aliases
 NodeName = AttrName = AttrPath = AttrType = str
@@ -196,7 +196,7 @@ def add_attr(node: NodeName,
         readable/r (bool): Is readable
         storable/s (bool): Is storable
         writable/w (bool): Is writable
-        channelBox (bool): Show in channel box
+        channelbox (bool): Show in channel box
 
     Returns:
         Full attribute path (node.attr)
@@ -212,7 +212,7 @@ def add_attr(node: NodeName,
 
     attr_path = f'{node}.{long_name}'
 
-    attr_path = f'{node}.{long_name}'
+    channelbox_flag = flags(kwargs, None, 'channelbox', 'chb')
 
     # Check if attribute already exists
     if not cmds.attributeQuery(long_name, node=node, exists=True):
@@ -230,8 +230,8 @@ def add_attr(node: NodeName,
             ('storable', 's'),
             ('writable', 'w')
         ]:
-            if value := flags(kwargs, None, long, short):
-                attr_data[long] = value
+            if flag_value := flags(kwargs, None, long, short):
+                attr_data[long] = flag_value
 
         # Handle attribute type specific setup
         if attr_type == "string":
@@ -274,10 +274,7 @@ def add_attr(node: NodeName,
             cmds.addAttr(node, longName=long_name, **attr_data)
 
             # Handle channelBox for non-keyable attrs
-            if (
-                    not attr_data.get('keyable', True) and
-                    flags(kwargs, False, 'channelBox')
-            ):
+            if not attr_data.get('keyable', True) and channelbox_flag:
                 cmds.setAttr(
                     attr_path,
                     channelBox=True
@@ -302,6 +299,22 @@ def add_attr(node: NodeName,
             raise RuntimeError(
                 f"Failed to set value on {attr_path}: {str(e)}"
             )
+
+    if channelbox_flag is not None:
+        if not cmds.getAttr(attr_path, lock=True):
+            try:
+                cmds.setAttr(attr_path, channelBox=channelbox_flag)
+            except Exception as e:
+                print(f"Warning: Could not set channelBox for {attr_path}: {e}")
+        else:
+            _node, _attr = attr_path.split('.')
+            try:
+                lock_attr(_node, _attr, False)
+                cmds.setAttr(attr_path, channelBox=channelbox_flag)
+            except Exception as e:
+                print(f"Warning: Could not set channelBox for {attr_path}: {e}")
+            finally:
+                lock_attr(_node, _attr, True)
 
     return attr_path
 
