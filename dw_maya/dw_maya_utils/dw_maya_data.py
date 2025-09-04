@@ -157,34 +157,106 @@ def merge_two_dicts(x, y):
         return z
 
 
-def flags(kwargs: dict,
-          default: Any = None,
-          long_name: str = "",
-          short_name: str = "") -> Any:
+def flags(kwarg_dic: dict,
+          default_value=None,
+          label_long: str = "",
+          label_short: str = "",
+          *args,
+          **kwargs):
     """
-    Get flag value from kwargs, supporting Maya-style short/long flags.
+    Advanced flag handler supporting merging, key selection, and duplicate checks.
 
     Args:
-        kwargs: Keyword arguments dictionary
-        long_name: Long version of flag name
-        short_name: Short version of flag name
-        default: Default value if flag not found
-
+        kwarg_dic: Dictionary containing flags
+        default_value: Default value if flag not found
+        label_long: Long name of the flag
+        label_short: Short name of the flag
+        dic or dictionnary : for merging
+        k or key : for key selection
+        *args: Additional flag name aliases
+        **kwargs
     Returns:
-        Flag value or default
+        Flag value, or dictionary with merged values
 
-    Example:
-        >>> flags({'l': True}, 'long', 'l', False)
-        True
+    Examples:
+        # Basic flag lookup
+        flags({'name': 'sphere1'}, None, 'name')  # Returns 'sphere1'
+
+        # Using short name alternative
+        flags({'n': 'sphere1'}, 'default', 'name', 'n')  # Returns 'sphere1'
+
+        # Dictionary merging
+        flags({'name': 'sphere1'}, None, 'name', dic={'material': 'lambert'})
+        # Returns {'name': 'sphere1', 'material': 'lambert'}
+
+        # Key renaming
+        flags({'name': 'sphere1'}, None, 'name', key='object_name', dic={})
+        # Returns {'object_name': 'sphere1'}
     """
-    # Check for long name first
-    if long_name in kwargs:
-        if short_name in kwargs:
-            raise ValueError(f"Flag used twice: {long_name} and {short_name}")
-        return kwargs[long_name]
 
-    # Check short name
-    if short_name in kwargs:
-        return kwargs[short_name]
+    flags = {}
+    used_key = None
+    CURRENT_KEY = None
 
-    return default
+    # Handle key/dic logic
+    keyKey = kwargs.get('key') or kwargs.get('k')
+    keyDic = kwargs.get('dic') or kwargs.get('dictionnary')
+    if keyKey and not keyDic:
+        kwargs['dic'] = {}
+
+    # Dictionary merging functionality
+    if 'dic' in kwargs or 'dictionnary' in kwargs:
+        used_key = 'dic' if 'dic' in kwargs else 'dictionnary'
+        all_labels = [label_long, label_short] + list(args)
+        all_labels = [lb for lb in all_labels if lb]
+        detected = []
+        for lb in all_labels:
+            if lb and lb in kwargs[used_key]:
+                value = kwargs[used_key].get(lb)
+                CURRENT_KEY = keyKey or lb
+                flags[CURRENT_KEY] = value
+                detected.append(lb)
+        if len(detected) > 1:
+            cmds.error('Found multiple keys to update')
+    if not flags:
+        CURRENT_KEY = keyKey or label_long
+
+    # Merge dictionary input
+    if used_key:
+        if CURRENT_KEY:
+            dic_input = kwargs.get(used_key) or {}
+            flags = merge_two_dicts(dic_input, flags)
+        else:
+            cmds.error('You must specify a key with "key" or "k"')
+
+    # Check flags or return default
+    if label_long and label_long in kwarg_dic:
+        if used_key:
+            if kwarg_dic.get(label_long) is not None:
+                flags[CURRENT_KEY] = kwarg_dic.get(label_long)
+                return flags
+        else:
+            return kwarg_dic.get(label_long)
+    elif label_short and label_short in kwarg_dic:
+        if used_key:
+            if kwarg_dic.get(label_short) is not None:
+                flags[CURRENT_KEY] = kwarg_dic.get(label_short)
+                return flags
+        else:
+            return kwarg_dic.get(label_short)
+    elif any([a in kwarg_dic for a in args if a]):
+        for a in args:
+            if a and a in kwarg_dic:
+                if not flags and not used_key:
+                    return kwarg_dic.get(a)
+                else:
+                    if kwarg_dic.get(a) is not None:
+                        flags[CURRENT_KEY] = kwarg_dic.get(a)
+                    return flags
+
+    if not flags and not used_key:
+        return default_value
+    else:
+        if default_value is not None and CURRENT_KEY and CURRENT_KEY not in flags:
+            flags[CURRENT_KEY] = default_value
+        return flags

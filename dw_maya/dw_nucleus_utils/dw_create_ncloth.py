@@ -62,12 +62,14 @@ def create_ncloth(meshes: List[str],
     _iter = 0
     regex = re.compile('_ncloth', re.IGNORECASE)
 
-    out_mesh_name = "outputCloth#"
-    if '_' in cloth_name and not regex.search(cloth_name):
-        part = cloth_name.split('_')[0]
-        out_mesh_name = f"{part}_outputcloth_mshShape"
+    if '_' in cloth_name:
+        if not regex.search(cloth_name):
+            part = cloth_name.split('_')[0]
+            out_mesh_name = f"{part}_outputcloth_mshShape"
+        else:
+            out_mesh_name = regex.sub('_outputcloth_mshShape', cloth_name)
     else:
-        out_mesh_name = regex.sub('_outputcloth_mshShape', cloth_name)
+        out_mesh_name = f"{cloth_name}_outputcloth_mshShape"
 
     new_cloth_nodes = []
 

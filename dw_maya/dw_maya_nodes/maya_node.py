@@ -55,7 +55,7 @@ class MayaNode(ObjPointer):
                  preset: Optional[Dict] = None,
                  blend_value: float = 1.0):
         """Initialize MayaNode with optional preset loading."""
-        super(MayaNode, self).__init__(name)
+        super().__init__(name)
 
         # this dict method is used to avoid calling __getattr __
         _input = self.name()

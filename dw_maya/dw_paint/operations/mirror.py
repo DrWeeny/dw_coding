@@ -1,4 +1,3 @@
-# operations/mirror.py
 from typing import List, Optional, Tuple, Union, Literal
 import numpy as np
 from maya import cmds

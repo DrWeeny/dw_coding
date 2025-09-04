@@ -28,6 +28,10 @@ def create_render_layer(name:str, renderable:bool=True)->RenderLayer:
 
     Note: Autodesk Maya automatically adds the 'rs_' prefix to the layer name.
     For example, if you provide 'occlusion_layer', the actual name will be 'rs_occlusion_layer'.
+    they make this to differenciate between :
+    "renderSetupLayer" node type which are the new way and
+    "renderLayer" node which was the old way
+
 
     :param name: Name of the render layer (without 'rs_' prefix).
     :param renderable: Whether the layer is renderable.
@@ -37,4 +41,3 @@ def create_render_layer(name:str, renderable:bool=True)->RenderLayer:
     render_layer = maya.app.renderSetup.model.renderLayer.create(name)
     render_layer.setRenderable(renderable)
     return render_layer
-

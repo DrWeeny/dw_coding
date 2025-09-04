@@ -31,7 +31,7 @@ def add_active_to_nsystem(active: str, nucleus: str) -> int:
     start_attr = f"{nucleus}.inputActiveStart[{{}}]"
 
     # Get the next available index for multi-attribute connections
-    nindex = get_next_free_multi_index(attr)
+    nindex = get_next_free_multi_index(f"{nucleus}.inputActive")
 
     try:
         # Connect the current state and start state of the active object
