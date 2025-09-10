@@ -37,8 +37,35 @@ def validNodeTypeAttrForCurrentPreset(node_type: str, attr: str) -> bool:
     return True
 
 
+def filter_channelbox_attrs(node):
+    """Return only attributes visible in the channel box for the given node."""
+    return cmds.listAttr(node, keyable=True, visible=True, read=True, settable=True, unlocked=True)
+
+
+def filter_attributes(attr_list, filter_match=None, filter_exclude=None):
+    import fnmatch
+
+    if isinstance(attr_list, str):
+        attr_list = [attr_list]
+    if isinstance(filter_match, str):
+        filter_match = [filter_match]
+    if isinstance(filter_exclude, str):
+        filter_exclude = [filter_exclude]
+
+    # Include only attributes matching filter_include patterns
+    if filter_match:
+        attr_list = [a for a in attr_list if any(fnmatch.fnmatch(a, pat) for pat in filter_match)]
+    # Exclude attributes matching filter_exclude patterns
+    if filter_exclude:
+        attr_list = [a for a in attr_list if not any(fnmatch.fnmatch(a, pat) for pat in filter_exclude)]
+    return attr_list
+
 @dwdeco.acceptString('nodeName')
-def createAttrPreset(nodeName: list, stripNamespace: bool = True) -> dict:
+def createAttrPreset(nodeName: list,
+                     stripNamespace: bool = True,
+                     filter_match:list=None,
+                     filter_exclude:list=None,
+                     in_channelbox:bool=False) -> dict:
     """
     Derived from a Maya procedure to create attribute presets for the given nodes.
 
@@ -47,24 +74,44 @@ def createAttrPreset(nodeName: list, stripNamespace: bool = True) -> dict:
         stripNamespace (bool): Whether to strip namespaces from node names (default: True).
 
     Returns:
+
         dict: A nested dictionary with node attributes and their corresponding values.
-               Attrs[nodeName]['nodeType'] : The node type.
-               Attrs[nodeName][attr] : Attribute values.
+               attr_data[nodeName]['nodeType'] : The node type.
+               attr_data[nodeName][attr] : Attribute values.
     """
 
-    Attrs = {}
+    attr_data = {}
 
     for n in nodeName:
         # Strip namespace if necessary
         key_n = n.split(':')[-1] if stripNamespace else n
+        attr_data[key_n] = {}
+
+        # if this option is enable it will filter all visible/keyable attributes
+        if in_channelbox:
+            _future_filter = filter_channelbox_attrs(n)
+            if _future_filter:
+                if not filter_match:
+                    filter_match = []
+                filter_match.extend(_future_filter)
 
         # Initialize node dictionary
-        Attrs[key_n] = {}
         node_type = cmds.nodeType(n)
-        Attrs[key_n]['nodeType'] = node_type
+        if filter_match or filter_exclude:
+            _node_type = filter_attributes(node_type,
+                                           filter_match=filter_match,
+                                           filter_exclude=filter_exclude)
+            if _node_type:
+                attr_data[key_n]['nodeType'] = _node_type[0]
+        else:
+            attr_data[key_n]['nodeType'] = node_type
 
         # Fetch string attributes
         string_attrs = cmds.listAttr(n, multi=True, read=True, write=True, visible=True, hasData=True)
+        if filter_match or filter_exclude:
+            string_attrs = filter_attributes(string_attrs,
+                                             filter_match=filter_match,
+                                             filter_exclude=filter_exclude)
         if string_attrs:
             for attr in string_attrs:
                 obj_attr = f"{n}.{attr}"
@@ -73,19 +120,24 @@ def createAttrPreset(nodeName: list, stripNamespace: bool = True) -> dict:
                     if attr_type == "string":
                         # Skip null string data
                         if not cmds.listAttr(obj_attr, hasNullData=True):
-                            Attrs[key_n][attr] = cmds.getAttr(obj_attr)
+                            attr_data[key_n][attr] = cmds.getAttr(obj_attr)
+
 
         # Fetch scalar attributes (floats, ints, bools, enums)
         scalar_attrs = cmds.listAttr(n, multi=True, write=True, scalar=True, visible=True, hasData=True)
+        if filter_match or filter_exclude:
+            scalar_attrs = filter_attributes(scalar_attrs,
+                                             filter_match=filter_match,
+                                             filter_exclude=filter_exclude)
         if scalar_attrs:
             for attr in scalar_attrs:
                 # Skip invalid attributes for current node type
                 if not validNodeTypeAttrForCurrentPreset(node_type, attr):
                     continue
                 obj_attr = f"{n}.{attr}"
-                Attrs[key_n][attr] = cmds.getAttr(obj_attr)
+                attr_data[key_n][attr] = cmds.getAttr(obj_attr)
 
-    return Attrs
+    return attr_data
 
 
 @dwdeco.acceptString('nodeName')
@@ -253,6 +305,61 @@ def blendAttrDic(srcNode=str, targetNode=None, preset=dict, blendValue=1):
             else:
                 applyAttrDirectly(targetAttr, value, attrType)
 
+def blend_attr_dic(src_node:str, target_node:str=None, preset:dict=None, blend_value:int=1, rm_keyframe:bool=False):
+    """
+    Blends attributes from srcNode to targetNode using values from the preset dictionary.
+
+    Args:
+        src_node (str): The source node from which attributes are blended.
+        target_node (str): The target node to which attributes are applied (defaults to srcNode).
+        preset (dict): Dictionary containing attribute presets.
+        blend_value (float): Blending factor (default: 1).
+    """
+    if not preset:
+        print(f"no preset found for {src_node}")
+        return
+
+    if not target_node:
+        target_node = src_node
+
+    # Skip processing if the source node isn't in the preset
+    if src_node not in preset:
+        return
+
+    # Get node type to determine whether to use transform or shape
+    node_type = preset[src_node].get('nodeType')
+
+    # Process attributes
+    for attr, value in preset[src_node].items():
+        # Skip nodeType and legacy *_nodeType attributes
+        if attr == 'nodeType' or attr.endswith('_nodeType'):
+            continue
+
+        # Determine the correct target node (transform or shape)
+        if node_type == "transform":
+            # For transform attributes, use the transform node
+            target_obj = target_node
+        else:
+            # For shape or other node types, try to get the shape
+            shapes = cmds.listRelatives(target_node, shapes=True)
+            target_obj = shapes[0] if shapes else target_node
+
+        targetAttr = f"{target_obj}.{attr}"
+
+        # Check if attribute exists and is settable
+        if cmds.objExists(targetAttr) and cmds.getAttr(targetAttr, se=True):
+            # Check for and delete any existing animation keys
+            if rm_keyframe:
+                if cmds.keyframe(targetAttr, query=True, keyframeCount=True):
+                    cmds.cutKey(targetAttr)
+
+            attrType = cmds.getAttr(targetAttr, type=True)
+
+            # Handle blending for numeric values
+            if blend_value < 0.999 and isinstance(value, (int, float, bool)):
+                blendNumericAttr(targetAttr, value, attrType, blend_value)
+            else:
+                applyAttrDirectly(targetAttr, value, attrType)
 
 def blendNumericAttr(targetAttr, value, attrType, blendValue):
     """

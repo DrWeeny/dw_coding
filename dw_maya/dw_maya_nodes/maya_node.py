@@ -227,64 +227,67 @@ class MayaNode(ObjPointer):
             logger.error(f"Failed to add attribute {long_name}: {e}")
             raise
 
-    def listAttr(self, attr: str = None):
-
-
-        """ list all the attr of the node or if the attr exist
+    def listAttr(self, node_index=None, attr=None):
+        """List all attributes of the node or check if a specific attribute exists.
 
         Args:
-            attr (str, optional): name of an attribute
+            attr (str, optional): name of an attribute to check
 
         Returns:
-            list: it gives the list of attributes existing
-
+            list: list of attributes, or list containing the attribute if it exists
         """
-
         current = self.node
         tr = self.tr
         sh = self.sh
 
         attr_list_tr = []
         if tr:
-            attr_list_tr += cmds.listAttr(tr)
-            attr_list_tr += cmds.listAttr(tr, shortNames = True)
+            attr_list_tr += cmds.listAttr(tr) or []
+            attr_list_tr += cmds.listAttr(tr, shortNames=True) or []
+            attr_list_tr = list(set(attr_list_tr))  # Remove duplicates
 
         attr_list_sh = []
         if sh:
-            attr_list_sh += cmds.listAttr(sh)
-            attr_list_sh += cmds.listAttr(sh, shortNames = True)
+            attr_list_sh += cmds.listAttr(sh) or []
+            attr_list_sh += cmds.listAttr(sh, shortNames=True) or []
+            attr_list_sh = list(set(attr_list_sh))  # Remove duplicates
 
-        # current state of the class is on transform
-        if current == tr:
-            if attr:
-                if attr in attr_list_tr and attr in attr_list_sh:
-                    if sh != tr:
-                        cmds.warning(f'Attribute `{attr}` exists in both shape and transform, returning transform value.')
-                        return True
+        # If checking for a specific attribute
+        if attr is not None:
+            # Check existence in transform and shape nodes
+            exists_in_tr = attr in attr_list_tr
+            exists_in_sh = attr in attr_list_sh
 
-                elif attr not in attr_list_tr:
-                    if attr in attr_list_sh:
-                        self.__dict__['item'] = 1
-                        return True
-                else:
-                    return False
-            else:
+            # Return list containing attribute if it exists, otherwise empty list
+            if current == tr:
+                if exists_in_tr:
+                    if exists_in_sh and sh != tr:
+                        cmds.warning(f"attribute `{attr}` exists in both shape and transform, using: {current}.{attr}")
+                    return [attr]
+                elif exists_in_sh:
+                    self.__dict__['item'] = 1  # Switch to shape
+                    return [attr]
+                return []
+            else:  # current == sh
+                if exists_in_sh:
+                    if exists_in_tr and sh != tr:
+                        cmds.warning(f"attribute `{attr}` exists in both shape and transform, using: {current}.{attr}")
+                    return [attr]
+                elif exists_in_tr:
+                    self.__dict__['item'] = 0  # Switch to transform
+                    return [attr]
+                return []
+
+        # No specific attribute requested, return all for current node
+        if node_index is not None:
+            if node_index == 0:
                 return attr_list_tr
-        # current state of the class is shape
-        elif current == sh:
-            if attr:
-                if attr in attr_list_tr and attr in attr_list_sh:
-                    if sh != tr:
-                        cmds.warning(f'Attribute `{attr}` exists in both shape and transform, returning shape value.')
-                        return True
-                elif attr not in attr_list_sh:
-                    if attr in attr_list_tr:
-                        self.__dict__['item'] = 0
-                        return True
-                else:
-                    return False
             else:
                 return attr_list_sh
+        else:
+            all_attr = attr_list_tr + attr_list_sh
+            all_attr = list(set(all_attr))
+            return all_attr
 
     def getAttr(self, attr) -> "MAttr":
         """Get attribute wrapper for given name.
@@ -307,7 +310,32 @@ class MayaNode(ObjPointer):
         short_name = self.node.split('|')[-1]
         return short_name.rsplit(':', 1)[0] if ":" in short_name else ':'
 
-    def attrPreset(self, node: Optional[int] = None) -> dict:
+    def stripNamespace(self, node_index: int = None) -> str:
+        """Strip namespace from node name.
+
+        Args:
+            node_index: Optional node index (0=transform, 1=shape)
+
+        Returns:
+            Node name without namespace
+        """
+        if node_index is None:  # Properly check for None instead of truthiness
+            short_name = self.node.split('|')[-1]
+        else:
+            __current_index = self.__dict__['item']
+            if node_index != __current_index:
+                self.set_node(node_index)
+                short_name = self.node.split('|')[-1]
+                self.set_node(__current_index)
+            else:
+                short_name = self.node.split('|')[-1]
+
+        return short_name.split(':')[-1]
+
+    def attrPreset(self, node: Optional[int] = None,
+                   filter_match:list=None,
+                   filter_exclude:list=None,
+                   in_channelbox:bool=False) -> dict:
         """Create attribute preset dictionary from node.
 
         Args:
@@ -318,25 +346,33 @@ class MayaNode(ObjPointer):
         """
         try:
             if node is not None:
-                return dwpreset.createAttrPreset(
-                    self.transform if node == 0 else self.shape
-                )
+                _node_preset = self.tr if node == 0 else self.sh
+                preset = dwpreset.dw_preset.createAttrPreset(_node_preset,
+                                                              filter_match=filter_match,
+                                                              filter_exclude=filter_exclude,
+                                                              in_channelbox=in_channelbox)
+                return preset
 
             # Handle both transform and shape
-            if self.transform == self.shape:
-                return dwpreset.createAttrPreset(self.node)
+            if self.tr == self.sh:
+                preset = dwpreset.dw_preset.createAttrPreset(self.node,
+                                                            filter_match=filter_match,
+                                                            filter_exclude=filter_exclude,
+                                                              in_channelbox=in_channelbox)
+                return preset
 
             # Combine transform and shape presets
-            tr_preset = dwpreset.createAttrPreset(self.transform)
-            sh_preset = dwpreset.createAttrPreset(self.shape)
+            tr_preset = dwpreset.dw_preset.createAttrPreset(self.tr,
+                                                            filter_match=filter_match,
+                                                            filter_exclude=filter_exclude,
+                                                             in_channelbox=in_channelbox)
+            sh_preset = dwpreset.dw_preset.createAttrPreset(self.sh,
+                                                            filter_match=filter_match,
+                                                            filter_exclude=filter_exclude,
+                                                             in_channelbox=in_channelbox)
             combined_preset = dwu.merge_two_dicts(tr_preset, sh_preset)
 
-            # Create output dictionary
-            key = self.transform.split(':')[-1]
-            return {
-                key: combined_preset,
-                f'{key}_nodeType': self.node_type
-            }
+            return combined_preset
         except Exception as e:
             logger.error(f"Failed to create preset: {e}")
             raise
@@ -502,8 +538,8 @@ class MayaNode(ObjPointer):
             raise
 
     def loadNode(self, preset: Union[str, dict],
-                blend: float = 1.0,
-                namespace: str = ':'):
+                 blend: float = 1.0,
+                 namespace: str = ':'):
         """Load node from preset, optionally blending attributes.
 
         Args:
@@ -512,45 +548,92 @@ class MayaNode(ObjPointer):
             namespace: Target namespace
 
         Example:
-            >>> node.loadNode(preset_dict, blend=0.5)
+            {'pCube1': {'rotateX': 0.0,
+               'nodeType': 'transform',
+               'rotateY': 1.0,
+               'translateX': 100,
+               'translateY': 0.0,
+               'translateZ': 0.0},
+            'pSphere1': {'nodeType': 'transform',
+                       'scaleX': 0.5,
+                       'translateX': 1,
+                       'translateY': 0,
+                       'rotateY': 50}}
+
         """
         try:
             # Handle string preset
             if isinstance(preset, str):
                 self.createNode(preset)
+                return
 
             # Process dictionary preset
-            if not isinstance(preset, str):
-                # Process dictionary preset
-                for key, value in preset.items():
-                    if key.endswith('_nodeType'):
-                        continue
+            for node_name, attributes in preset.items():
+                # Skip if no nodeType attribute
+                if 'nodeType' not in attributes:
+                    logger.warning(f"No nodeType found for {node_name}, skipping")
+                    continue
 
-                    # Handle namespace
-                    node_name = (f"{namespace}:{key}" if namespace not in [':', '']
-                                 else key)
-                    node_type = preset[f"{key}_nodeType"]
+                # Handle namespace
+                full_node_name = (f"{namespace}:{node_name}" if namespace not in [':', '']
+                                  else node_name)
+                node_type = attributes['nodeType']
 
-                    if node_name  == self.__dict__['node']:
-                        # Create or use existing node
-                        if not cmds.objExists(node_name):
-                            new_name = self.createNode(preset, namespace)
-                        else:
-                            new_name = key
+                # Check if this is the node we're looking for, handling namespace correctly
+                self_node_basenames = []
+                # Get transform node basename if it exists
+                if self.tr:
+                    self_node_basenames.append(self.stripNamespace(0))  # 0 for transform
+                # Get shape node basename if it exists and is different from transform
+                if self.sh and self.sh != self.tr:
+                    self_node_basenames.append(self.stripNamespace(1))  # 1 for shape
 
-                        # Apply attributes
-                        dwpreset.blendAttrDic(key, new_name, preset[key], blend)
+                current_node_basename = node_name
 
-                        # Handle different node types
-                        main_type = preset[key][key]['nodeType']
-                        if main_type != node_type:
-                            for shape in preset[key]:
-                                if ('nodeType' in preset[key][shape] and
-                                    preset[key][shape]['nodeType'] == node_type):
-                                    dwpreset.blendAttrDic(shape, self.shape,
-                                                        preset[key], blend)
-                                    break
-                        break
+                # Check using full names or base names
+                if full_node_name == self.__dict__['node'] or current_node_basename in self_node_basenames:
+                    print(f"debug : it should process the node: {full_node_name}")
+                    # Create or use existing node
+                    if not cmds.objExists(self.__dict__['node']):
+                        # Create new node with the specified node type
+                        self.createNode(node_type, namespace, name=full_node_name)
+
+                    # Create a copy of attributes without the nodeType for blending
+                    attrs_to_apply = attributes.copy()
+                    attrs_to_apply.pop('nodeType', None)
+
+                    # Apply attributes
+                    for attr, value in attrs_to_apply.items():
+                        try:
+                            # With this type-specific targeting:
+                            if node_type == "transform":
+                                target_attr = f"{self.tr}.{attr}"
+                            else:
+                                target_attr = f"{self.sh}.{attr}"
+
+                            if not cmds.ls(target_attr):
+                                print(f"skipping attribute {attr} for node {full_node_name}")
+                                continue
+
+                            # Check for and delete any existing animation keys
+                            if cmds.keyframe(target_attr, query=True, keyframeCount=True):
+                                cmds.cutKey(target_attr)
+
+                            current_value = cmds.getAttr(target_attr)
+
+                            # Apply blending if needed
+                            if blend < 0.999 and isinstance(value, (int, float, bool)):
+                                blended_value = value * blend + current_value * (1 - blend)
+                                cmds.setAttr(target_attr, blended_value)
+                            else:
+                                if isinstance(value, str):
+                                    cmds.setAttr(target_attr, value, type='string')
+                                else:
+                                    cmds.setAttr(target_attr, value)
+                        except Exception as e:
+                            logger.warning(f"Failed to set attribute {attr}: {e}")
+
+                    break
         except Exception as e:
             logger.error(f"Failed to load node preset: {e}")
             raise
