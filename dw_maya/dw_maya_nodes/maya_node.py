@@ -615,6 +615,11 @@ class MayaNode(ObjPointer):
                                 print(f"skipping attribute {attr} for node {full_node_name}")
                                 continue
 
+                            # Check if value is a special token that needs evaluation
+                            from dw_maya.dw_constants import SPECIAL_TOKENS
+                            if isinstance(value, str) and value in SPECIAL_TOKENS:
+                                value = SPECIAL_TOKENS[value]()
+
                             # Check for and delete any existing animation keys
                             if cmds.keyframe(target_attr, query=True, keyframeCount=True):
                                 cmds.cutKey(target_attr)

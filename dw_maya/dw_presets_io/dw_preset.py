@@ -346,6 +346,11 @@ def blend_attr_dic(src_node:str, target_node:str=None, preset:dict=None, blend_v
 
         targetAttr = f"{target_obj}.{attr}"
 
+        # Check if value is a special token that needs evaluation
+        from dw_maya.dw_constants import SPECIAL_TOKENS
+        if isinstance(value, str) and value in SPECIAL_TOKENS:
+            value = SPECIAL_TOKENS[value]()
+
         # Check if attribute exists and is settable
         if cmds.objExists(targetAttr) and cmds.getAttr(targetAttr, se=True):
             # Check for and delete any existing animation keys

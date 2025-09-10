@@ -1,3 +1,5 @@
+import maya.cmds as cmds
+
 gAEAttrPresetExcludeAttrs = ["doubleSided",
                              "rotateQuaternionX",
                              "rotateQuaternionY",
@@ -94,3 +96,10 @@ gAEAttrPresetExcludeNodeAttrs = [
                                     "nCloth.windDirectionY",
                                     "nCloth.windDirectionZ",
                                     "nCloth.collisionDrag"]
+
+SPECIAL_TOKENS = {
+    "$RFSTART": lambda: cmds.playbackOptions(q=True, minTime=True),
+    "$RFEND": lambda: cmds.playbackOptions(q=True, maxTime=True),
+    "$RCURRENTFRAME": lambda: cmds.currentTime(q=True),
+    # Add more tokens as needed
+}
