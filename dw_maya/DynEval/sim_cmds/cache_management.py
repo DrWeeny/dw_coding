@@ -1,14 +1,12 @@
 import os
 import maya.cmds as cmds
-import maya.mel as mel
-from collections import defaultdict
-from operator import itemgetter
-import dw_maya.dw_presets_io as dw_json
+import maya.utils as mu
+
 import dw_maya.dw_maya_utils as dwu
+import dw_maya.dw_nucleus_utils
 import dw_maya.dw_nucleus_utils as dwnx
 import dw_maya.dw_duplication as dwdup
 import dw_maya.dw_maya_nodes as dwnn
-import dw_maya.dw_presets_io as dwpreset
 from dw_maya.dw_decorators import acceptString
 
 
@@ -130,7 +128,7 @@ def cache_is_attached(nxnode: str, cache_name: str) -> bool:
     return False
 
 
-def create_cache(ncloth_shapes: list, cache_dir: str, time_range: list = [], **kwargs) -> list:
+def create_cache(ncloth_shapes: list, cache_dir: str, time_range: list = None, **kwargs) -> list:
     """
     Creates an nCache file for the specified nCloth shapes over a given time range.
 
@@ -177,7 +175,8 @@ def create_cache(ncloth_shapes: list, cache_dir: str, time_range: list = [], **k
         'doubleToFloat': kwargs.get('doubleToFloat', 1),
     })
     # Optional file name
-    if fileName := kwargs.get('fileName'):
+    fileName = kwargs.get('fileName')
+    if fileName:
         feed['fileName'] = fileName
 
     # Execute cache command
@@ -188,6 +187,25 @@ def create_cache(ncloth_shapes: list, cache_dir: str, time_range: list = [], **k
         return []
 
     return cache_files
+
+
+def cache_all_simple():
+    ncloth_shapes = cmds.ls(type="nCloth")
+
+    cmds.waitCursor(state=1)
+    dw_maya.nucleus_utils.cache_management.delete_caches(ncloth_shapes)
+    cmds.waitCursor(state=0)
+
+    cache_list = dw_maya.nucleus_utils.cache_management.create_cache(ncloth_shapes, distribution="OneFilePerFrame")
+
+    for ncloth, cache_name in zip(ncloth_shapes, cache_list):
+        cache_dir = dw_maya.nucleus_utils.cache_management.get_project_cache_directory()
+        cache_path = os.path.join(cache_dir, cache_name)
+        cache_xml = f"{cache_path}.xml"
+
+        mu.executeDeferred(dw_maya.nucleus_utils.cache_management.attach_ncache,
+                           cache_xml,
+                           ncloth)
 
 
 def materialize(mesh: str, cache_path: str) -> str:
