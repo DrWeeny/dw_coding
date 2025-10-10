@@ -1,0 +1,8 @@
+// point wrangle
+
+vector sample_p = @P + @N * chf("offset");
+float dist = volume_sample(1,0,sample_p);
+if (dist<0){
+    f@intersect = 1; // if we want to post process those points
+    @P -= @N * chf("amp");
+}

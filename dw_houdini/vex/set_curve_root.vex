@@ -1,0 +1,5 @@
+i@root = (vertexprimindex(0, @vtxnum) == 0);
+i@tip = (vertexprimindex(0, @vtxnum) == (@numvtx - 1));
+
+setpointgroup(0, "roots", @ptnum, @root, "set");
+setpointgroup(0, "tips", @ptnum, @tip, "set");

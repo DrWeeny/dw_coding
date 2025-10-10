@@ -1,0 +1,23 @@
+// PRIM WRANGLE
+
+// Get total number of points
+int total_points = npoints(0);
+
+// Counter for root points found
+int root_count = 0;
+
+// Process each point
+for (int pt = 0; pt < total_points; pt++) {
+
+    // Check if point is in roots group (adjust group name as needed)
+    if (inpointgroup(0, "root", pt)) {
+
+        // Get the position vector of the root point
+        vector root_pos = point(0, "P", pt);
+
+        // Also store the point number for reference
+        setdetailattrib(0, "root_pos", root_pos);
+
+    }
+}
+

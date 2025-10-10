@@ -1,0 +1,15 @@
+// PRIM WRANGLE
+
+string name = split(s@path, "/")[-1];
+string suffix[] = split(name, "_")[0:-1];
+string basename =join(suffix, "_");
+if (re_find(r"[a-z0-9_][A-Z]{1}$", basename)){
+    basename=re_replace(r"[_]?[A-Z]{1}$", "", basename);
+}
+string prefix = "m_";
+if (re_find(r"CrvShape$", s@path)){
+    prefix="crv_";}
+
+string grpname = prefix + re_replace(r"\d{4}", "", basename) + "_grp";
+
+setprimgroup( 0, grpname, @primnum, 1);

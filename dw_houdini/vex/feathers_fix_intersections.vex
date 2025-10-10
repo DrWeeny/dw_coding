@@ -1,0 +1,154 @@
+// help docstring
+
+// usually using method 2
+int fix_method = chi("fix_method");
+float blend_factor = clamp(chf("blend_factor"), 0.0, 1.0);
+// points which need processing
+string invalid_group_name = chs("invalid_pts_grp");
+string rachis_group = chs("rachis_grp"); // Add this parameter for rachis group
+
+if (rachis_group == ""){
+    rachis_group = "rachis_grp";
+}
+
+// used to displace the point toward his valid pt direction after the fix
+float post_fix_correction = chf("post_fix_correction");
+
+// placeholder for direction the point need to go
+int attraction_pt_id;
+
+// Check if this point needs fixing
+int needs_fixing = 0;
+needs_fixing = inpointgroup(0, invalid_group_name, @ptnum);
+
+if (needs_fixing) {
+    vector original_pos = @P;
+    vector new_pos = @P;
+
+    //debug color for better visualisation
+    @Cd = {0,0,0};
+
+    // find connected points
+    int original_connected_pts[] = neighbours(0, @ptnum);
+    int indices_to_remove[];
+
+    // filter out rachis points and build array of valid reference points
+    int valid_reference_pts[];
+
+    foreach (int connected_pt; original_connected_pts) {
+    // Skip if point is in rachis group
+    if (inpointgroup(0, rachis_group, connected_pt)){
+        append(indices_to_remove, connected_pt);
+        continue;
+        }
+
+    // Skip if point is in invalid group
+    if (inpointgroup(0, invalid_group_name, connected_pt)){
+        continue;
+        }
+
+    // This is a valid reference point
+    append(valid_reference_pts, connected_pt);
+    removevalue(original_connected_pts, connected_pt);
+    }
+
+    // Then remove them in reverse order to maintain correct indices
+    for (int i = len(indices_to_remove) - 1; i >= 0; i--) {
+        removevalue(original_connected_pts, indices_to_remove[i]);
+    }
+
+    attraction_pt_id = valid_reference_pts[0];
+
+    // Maximum number of iterations to prevent infinite loops
+    int max_iterations = 10;
+    int current_iteration = 0;
+
+    // Continue searching until we find at least 2 valid reference points
+    while (len(valid_reference_pts) < 2 && current_iteration < max_iterations) {
+        current_iteration++;
+        int found_new_point = 0;
+
+        // For each connected point (even invalid ones)
+        foreach (int connected_pt; original_connected_pts) {
+
+            // Skip if it's already a valid reference point
+            if (find(valid_reference_pts, connected_pt) >= 0) continue;
+
+            // Get neighbors of this connected point
+            int secondary_neighbors[] = neighbours(0, connected_pt);
+
+            foreach (int secondary_pt; secondary_neighbors) {
+                // Skip if point is already in our references
+                if (find(valid_reference_pts, secondary_pt) >= 0) continue;
+
+                // Skip if point is in rachis group
+                if (inpointgroup(0, rachis_group, secondary_pt)) continue;
+
+                // Skip if point is in invalid group
+                // but store them to loop again on those and find neighbours in case we dont find new points
+                if (inpointgroup(0, invalid_group_name, secondary_pt)){
+                    if (find(original_connected_pts, connected_pt) < 0) {
+                        append(original_connected_pts, connected_pt);
+                    }
+                    continue;
+                    }
+
+                // Add this secondary neighbor as valid reference
+                append(valid_reference_pts, secondary_pt);
+                found_new_point = 1;
+
+                // Stop if we have at least 2 reference points
+                if (len(valid_reference_pts) >= 2) break;
+            }
+            if (len(valid_reference_pts) >= 2) break;
+        }
+        // If we didn't find any new points in this iteration, we won't find any more
+        if (found_new_point == 0) break;
+    }
+    i[]@debug_pairs = valid_reference_pts;
+
+    // Apply fix method if we have enough reference points
+    if (len(valid_reference_pts) >= 2) {
+        // Get positions of reference points
+        vector pos1 = point(0, "P", valid_reference_pts[0]);
+        vector pos2 = point(0, "P", valid_reference_pts[1]);
+
+        if (fix_method == 1) {
+            // Method 1: median of the two points
+            new_pos = (pos1 + pos2) * 0.5;
+        }
+        else if (fix_method == 2) {
+            // Method 2: Distance-weighted average
+            float dist1 = distance(original_pos, pos1);
+            float dist2 = distance(original_pos, pos2);
+            float total_dist = dist1 + dist2;
+
+            if (total_dist > 0) {
+                // Invert weights so closer points have more influence
+                float w1 = dist2 / total_dist;
+                float w2 = dist1 / total_dist;
+                new_pos = pos1 * w1 + pos2 * w2;
+            } else {
+                // Equal weights if distances are zero
+                new_pos = (pos1 + pos2) * 0.5;
+            }
+        }
+        else if (fix_method == 3) {
+            // Method 3: Project onto line between two closest points
+            vector line_dir = normalize(pos2 - pos1);
+            vector to_point = original_pos - pos1;
+            float proj_dist = dot(to_point, line_dir);
+            new_pos = pos1 + line_dir * proj_dist;
+        }
+
+        // Apply post-fix correction toward valid direction
+        if (post_fix_correction != 0) {
+            vector attraction_point_pos = point(0, "P", attraction_pt_id);
+            vector valid_pt_direction = normalize(attraction_point_pos - new_pos);
+            new_pos += valid_pt_direction * post_fix_correction;
+        }
+
+        // Apply blend factor between original and new position
+        @P = lerp(original_pos, new_pos, blend_factor);
+    }
+}

@@ -1,0 +1,11 @@
+// input 0 : point you want to stick rest
+// input 1 : rest geometry
+// input 2 : animated geometry
+
+int prim;
+vector uv;
+
+// closest point
+xyzdist(1, @P, prim, uv);
+// set the new pos
+@P = primuv(2, "P", prim, uv);

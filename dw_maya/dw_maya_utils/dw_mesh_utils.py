@@ -20,14 +20,23 @@ Author:
 """
 
 from typing import List, Optional, Union
-from pathlib import Path
-
+from dw_maya.dw_decorators import acceptString
 from maya import cmds
 
 from dw_logger import get_logger
 
 logger = get_logger()
 
+@acceptString('nodes')
+def set_outliner_node_colour(nodes:list, color:list, use:bool=True):
+    for n in nodes:
+        cmds.setAttr(n + ".useOutlinerColor", use)
+        cmds.setAttr(n + ".outlinerColor", *color)
+
+@acceptString('nodes')
+def set_hidden_in_outliner(nodes:list, value:bool=True):
+    for n in nodes:
+        cmds.setAttr('{}.hiddenInOutliner'.format(n), value)
 
 def extract_faces(faces: Union[List[str], str],
                   source_mesh: str,

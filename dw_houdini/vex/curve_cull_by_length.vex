@@ -1,0 +1,11 @@
+// work with nurbs
+vector2 u1 = {0,0};
+vector2 u2 = {1,0};
+
+f@arclength = primarclen(1, u1, u2, @primnum);
+
+float threshold = chf("length");
+
+if (@arclength < threshold){
+    removeprim(0, @primnum, 1);
+}

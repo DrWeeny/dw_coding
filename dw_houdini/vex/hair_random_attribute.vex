@@ -1,0 +1,7 @@
+if (i@idc%5==0){
+    setpointgroup(0, "random_curves", @ptnum, 1);
+
+    @rand_rest = fit01(random(@class), 0.8, ch("max_rest"));
+    @rand_mass = fit01(random(@class+10), 0.1, ch("max_mass"));
+}
+

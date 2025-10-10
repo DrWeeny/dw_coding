@@ -1,0 +1,34 @@
+// DETAIL WRANGLE
+
+string input_uv_id = ch("../uv_sel");
+string result = "";
+
+// Find all intervals using re_findall (e.g., '90-96', '102-115')
+string intervals[] = re_findall(r"\d+-\d+", input_uv_id);
+
+// Add each interval as its own @class_uv= block
+foreach (string interval; intervals)
+{
+    result += "@class_uv=" + interval + " ";
+}
+
+// Remove the processed intervals from input_uv_id
+input_uv_id = re_replace(r"\d+-\d+", "", input_uv_id);
+
+// Find all remaining single digits
+string singles[] = re_findall(r"\b\d+\b", input_uv_id);
+
+// If there are any singles, add them as one @class_uv= block
+if (len(singles) > 0)
+{
+    string singles_str = join(singles, ",");
+    result += "@class_uv=" + singles_str;
+}
+else
+{
+    // Remove trailing space if no singles
+    result = strip(result);
+}
+
+// Store result
+s@result = strip(result); // Final trim just in case

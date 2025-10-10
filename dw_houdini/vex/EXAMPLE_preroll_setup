@@ -1,0 +1,35 @@
+// ===== FIRST DETAIL WRANGLE =======
+
+i@sst = `chs("../sim_start_frame")` //
+i@st = `chs("../preroll_start_frame")`
+
+i[]@ptnumber = expandpointgroup(0, "point_displace");
+v@pt_n=point(0, "N", @ptnumber[0]);
+v@pt_pos=point(0, "P", @ptnumber[0]);
+v@pt_v=normalize(@pt_pos-@pt_n);
+
+// create an animated value from 1 to 0 so we can use this attribute in blendshape
+@anim_preroll = fit(@Frame, @sst, @st, 1, 0);
+
+
+// ===== SECOND POINT WRANGLE =====
+// create an invert motion to give an initial velocity
+// connect in input 1 the first wrangle :
+v@pt_n=detail(1, "pt_n");
+@anim_preroll=detail(1, "anim_preroll");
+v@P+=@anim_preroll*(-v@pt_n * chf("distance"));
+
+
+// ==== THIRD POINT WRANGLE =====
+// for hair same as second but inverted to have also a velocity info and avoid collision
+v@pt_n=detail(1, "pt_n");
+@anim_preroll=detail(1, "anim_preroll");
+vector3 dist = @anim_preroll*(v@pt_n * chf("distance"));
+v@P+=dist;
+
+@wind_preroll = dist; // save the direction to create a wind direction vector
+
+// ===== NODE ATTR USAGE =====
+// ON A NULL NODE CREATE FLOAT
+// detail(0, "pt_n", 0)
+
