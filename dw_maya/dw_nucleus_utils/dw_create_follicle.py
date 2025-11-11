@@ -11,21 +11,25 @@ from dw_maya.dw_decorators import acceptString
 import dw_maya.dw_maya_utils as dwu
 
 @acceptString("surface")
-def create_follicles(surface, uv_input: list = None, uvthreshold: float = 0.05, **kwargs) -> str:
+def create_follicles(surface, uv_input = None, uvthreshold: float = 0.05, **kwargs) -> str:
     """
     Creates a follicle on the given surface (mesh or nurbsSurface) based on UV input.
 
     Args:
         surface (str): The surface on which to create the follicle.
-        uv_input (list): UV coordinates [u, v] where the follicle should be created.
+        uv_input: UV coordinates [u, v] or UVPoint object where the follicle should be created.
         uvthreshold (float): Threshold for adjusting the UV when it is not valid.
         **kwargs: Optional arguments for follicle creation (e.g., name).
 
     Returns:
         str: Name of the created follicle transform.
     """
+    # Handle UVPoint objects by converting to list
+    if uv_input is not None and hasattr(uv_input, 'to_list'):
+        uv_input = uv_input.to_list()
+
     if uv_input is None or len(uv_input) != 2:
-        raise ValueError("uv_input must be a list with two elements [u, v].")
+        raise ValueError("uv_input must be a list with two elements [u, v] or a UVPoint object.")
 
     u, v = uv_input
     flags = dwu.flags(kwargs, None, 'name', 'n', dic={})
