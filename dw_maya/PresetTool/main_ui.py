@@ -101,7 +101,8 @@ class PresetManager(QtWidgets.QMainWindow):
         self.le_preset_name.setFixedWidth(_width_01)
         self.le_preset_name.setText('defaultPreset')
         p_maya = QtCore.QRegularExpression("[A-Za-z_0-9]{1,20}")
-        validator_maya = QtGui.QRegularExpressionValidator(p_maya, self)
+        from dw_utils.qt_utils import make_validator
+        validator_maya = make_validator(p_maya)
         self.le_preset_name.setValidator(validator_maya)
         vl_save.addWidget(self.le_preset_name)
 
