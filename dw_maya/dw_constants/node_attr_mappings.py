@@ -76,7 +76,14 @@ NODE_IO_MAPPING = {
         ['targetGeometry', 'targetPosition'],
         ['output', 'nucleusId']
     ],
-
+    'nConstraint': [
+        ['startFrame', 'currentTime'],
+        ['nucleusId', 'outputObjects[0]']
+    ],
+    'dynamicConstraint': [
+        ['componentIds[0]', 'currentTime'],  # Inputs: from nComponent and time
+        ['evalCurrent[0]', 'evalStart[0]']   # Outputs: to nucleus.inputCurrent and inputStart
+    ],
     # Hair system
     'hairSystem': [
         ['inputHair[0]'],

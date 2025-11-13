@@ -69,7 +69,7 @@ class MayaNode(ObjPointer):
         # Handle preset if provided
         if preset:
             namespace = name.rsplit(':', 1)[0] if ':' in name else ''
-            self.load_node(preset, blend_value, namespace)
+            self.loadNode(preset, blend_value, namespace)
 
     def __getitem__(self, index: int):
         """Access transform (0) or shape (1) nodes.

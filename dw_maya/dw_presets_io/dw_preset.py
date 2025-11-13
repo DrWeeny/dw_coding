@@ -159,6 +159,11 @@ def createConnectionPreset(nodeName: list, future: int = 0) -> dict:
         # Get node history (future if specified)
         history = cmds.listHistory(node, ac=True, f=future, pdo=True)
 
+        # Skip if history is None (can happen with certain node types like nConstraint, follicle)
+        if history is None:
+            cmds.warning(f"Could not get history for node: {node}. Skipping connection preset for this node.")
+            continue
+
         for idx, hist_node in enumerate(history):
             # List connections: for first node, only source connections, for others, all connections
             connections = cmds.listConnections(hist_node, p=True, s=True, d=False) if not idx else cmds.listConnections(

@@ -67,7 +67,7 @@ def createAllConstraintPresets(dataDic, targ_ns=':'):
         list: A list of created dynamicConstraint node names.
     """
     if isinstance(dataDic, str):  # Check if it's a file path
-        if os.path.isfile(dataDic):
+        if pyu.path.isfile(dataDic):
             dataDic = dwpreset.load_json(dataDic)
         else:
             raise ValueError('Invalid JSON file path provided.')
@@ -78,7 +78,16 @@ def createAllConstraintPresets(dataDic, targ_ns=':'):
             node_name = key.rsplit('_', 1)[0]
             namespace = targ_ns if targ_ns != ':' else ''
             constraint_name = f"{namespace}:{node_name}" if namespace else node_name
-            constraint = nConstraint(constraint_name, dataDic)
+
+            # Extract the specific preset for this constraint node
+            node_preset = {
+                node_name: dataDic[node_name],
+                f'{node_name}_nodeType': dataDic[f'{node_name}_nodeType']
+            }
+
+            # Use the inherited MayaNode functionality to create and load the node
+            # Pass the preset dict to __init__ which will trigger loadNode() automatically
+            constraint = nConstraint(constraint_name, preset=node_preset, blendValue=1.0)
             output.append(constraint.tr)
 
     return output

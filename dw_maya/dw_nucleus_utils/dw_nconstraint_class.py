@@ -11,6 +11,7 @@ import dw_maya.dw_maya_nodes as dwnn
 import dw_maya.dw_maya_utils as dwu
 from dw_maya.dw_decorators import acceptString, viewportOff
 import dw_maya.dw_presets_io as dwpreset
+import dw_maya
 
 class nConstraint(dwnn.MayaNode):
     """This class represents a dynamic constraint (nConstraint) in Maya.
@@ -96,7 +97,7 @@ class nConstraint(dwnn.MayaNode):
             maps_agnostic = {k.split('.')[-1]: v.split('.')[-1] if v else None for k, v in maps.items()}
             if maps_agnostic:
                 network_dict[f'nComponent_{key_id}_maps'] = maps_agnostic
-                map_connections = dwpreset.createConnectionPreset([v.split('.')[0] for v in maps_agnostic.values() if v])
+                map_connections = dwpreset.dw_preset.createConnectionPreset([v.split('.')[0] for v in maps_agnostic.values() if v])
                 network_dict[f'nComponent_{key_id}_maps_connections'] = map_connections
 
         return network_dict
@@ -131,87 +132,154 @@ class nConstraint(dwnn.MayaNode):
                 components += component
         return components
 
-    def loadNode(self, preset: dict, blend: float = 1, targ_ns: str = ':') -> None:
+    def _build_network(self,
+                       src_node_name:str,
+                       node_preset:dict=None,
+                       target_node_name:str=None,
+                       namespace:str=None):
+        # look first if the dictionnary entry exists
+        network_key = f"{src_node_name}_network"
+        if not node_preset.get(network_key, None):
+            return
+
+        # Validate the cloth/hair/nucleus elements exist
+        nBase = [f'{namespace}:{i.split(".")[-1]}'.replace('::', ':') for i in node_preset[network_key]['nBases']]
+        if not all(cmds.objExists(j) for j in nBase):
+            invalid_input = ', '.join(nBase)
+            cmds.warning(
+                f'Cannot create dynamicConstraint node "{target_node_name}" due to missing elements: {invalid_input}')
+            return
+
+        # Connect to nucleus using the shape node
+        nucleus = [f'{namespace}:{n}' if namespace not in [':', ''] else n for n in node_preset[network_key]['nBases'] if
+                   cmds.nodeType(n) == 'nucleus'][0]
+        # connect to nucleus next available slots : multi = 2
+        for out_attr, in_attr in zip(dwu.get_type_io(target_node_name), dwu.get_type_io(nucleus, io=0, multi=2)):
+            cmds.connectAttr(out_attr, in_attr, f=True)
+
+        # Look for nComponents :
+        component_connections_list = node_preset[network_key].get('nComponent', None)
+        # if there are nothing, do nothing
+        if not component_connections_list:
+            return
+
+        # lets check if components exists, if not, lets create them
+        component_final_list = []
+        for component in component_connections_list:
+            if not cmds.objExists(component[0]):
+                component_node = dwnn.MayaNode(component.split(".")[0],
+                                               preset='nComponent')
+            else:
+                component_node = dwnn.MayaNode(component)
+            component_final_list.append(component_node)
+
+        # lets iterate with the component list
+        for ccl, cf in zip(component_connections_list, component_final_list):
+            # seek the id number in bracket for destination connection
+            idx = ccl[1].split('[')[-1][:-1]
+            suffix = self.tr.rsplit(':', 1)[-1].replace('dynamicConstraint', 'dynC')
+            ncomp_name = f'{namespace}:nComp{idx}_{suffix}' if namespace not in [':',
+                                                                                 ''] else f'nComp{idx}_{suffix}'
+
+            # Set attributes
+            component_key = f'nComponent_{idx}'
+            component_attr_dic = node_preset[network_key].get(component_key, None)
+            if component_attr_dic:
+                src_component = component_attr_dic.keys()[0]
+                dwpreset.dw_preset.blend_attr_dic(src_component, cf.tr, component_attr_dic)
+
+            # Connect nComponent to nConstraint using the shape
+            for out_attr, in_attr in zip(dwu.get_type_io(cf.tr), dwu.get_type_io(self.sh, io=0, index=0, multi=2)):
+                cmds.connectAttr(out_attr, in_attr, f=True)
+            # connect time :
+            cmds.connectAttr("time1.outTime", f"{self.sh}.currentTime", f=True)
+
+
+            # Connect nBase to nComponent
+            nbase_dic_connections = node_preset[network_key].get(f'nComponent_{idx}_nbase', None)
+            nmesh_out = nbase_dic_connections[0]
+            cmds.connectAttr(f'{namespace}:{nmesh_out}', f'{cf.tr}.objectId', f=True)
+
+            # Create and connect maps
+            map_key = f'nComponent_{idx}_maps'
+            map_dic = node_preset[network_key].get(map_key, None)
+            if map_key in map_dic:
+                for x, np in enumerate(map_dic):
+                    if map_dic[np]:
+                        texture = map_dic[np]
+                        map_connections = map_dic.get(f'{map_key}_connections', None)
+                        correspondance = dw_maya.dw_presets_io.dw_preset.reconnectPreset(map_connections, True)
+
+                        if texture in correspondance:
+                            texture = correspondance[texture]
+
+                        cmds.connectAttr(f'{texture}.{np}Map', f'{cf.tr}.{np}')
+
+    def loadNode(self, preset: dict, blend: float = 1, namespace: str = ':') -> None:
         """Load the dynamic constraint node based on a preset.
 
         Args:
             preset (dict): The preset data.
             blend (float, optional): The blend value. Defaults to 1.
-            targ_ns (str, optional): Target namespace for the node. Defaults to ':'.
+            namespace (str, optional): Target namespace for the node. Defaults to ':'.
         """
         if isinstance(preset, str):
             self.createNode(preset)
+            return
 
-        if not isinstance(preset, str):
-            for key in preset:
-                if not key.endswith('_nodeType'):
-                    nodename = f'{targ_ns}:{key}' if targ_ns not in [':', ''] else key
-                    if nodename != self.node:
-                        continue
+        if isinstance(preset, dict):
+            # preset should have two parts : node with all his network and node_nodeType
+            # theorically inside the main node dictionnary, you can find in saved attributes :
+            # nodeType = "node_name_type"
+            # so you should find transform if there is one and shapes under this transform
+            # name provided to this node can be different from the one inside the class
+            # if the node exists already, it should apply the preset to it
+            # if it doesnt it should first create the node
 
-                    if not cmds.objExists(nodename):
-                        new_name = self.createNode(preset, targ_ns)
-                    else:
-                        new_name = key
+            # future name of the node
+            futur_node_name_transform = self.__dict__['node']
 
-                    if new_name:
-                        dwpreset.blendAttrDic(key, new_name, preset[key], blend)
-                        if preset[key][key]['nodeType'] != preset[key]['nodeType']:
-                            for sh in preset[key]:
-                                if 'nodeType' in preset[key][sh]:
-                                    if preset[key][sh]['nodeType'] == preset[key]['nodeType']:
-                                        dwpreset.blendAttrDic(sh, self.sh, preset[key], blend)
-                                        break
+            preset_node_type_key = [pname for pname in preset if pname.endswith("_nodeType")]
 
-                    # Special case for dynamic constraints, handle their network creation
-                    if f'{sh}_network' in preset[key]:
-                        net_preset = preset[key][f'{sh}_network']
+            node_type = None
+            if preset_node_type_key:
+                node_type = preset[preset_node_type_key[0]]
 
-                        # Validate the cloth/hair/nucleus elements
-                        nBase = [f'{targ_ns}:{i.split(".")[-1]}'.replace('::', ':') for i in net_preset['nBases']]
-                        if not all(cmds.objExists(j) for j in nBase):
-                            invalid_input = ', '.join(nBase)
-                            cmds.warning(f'Cannot create dynamicConstraint node "{new_name}" due to missing elements: {invalid_input}')
-                            continue
+            if not node_type or node_type != "dynamicConstraint":
+                return
 
-                        # Connect to nucleus
-                        nucleus = [f'{targ_ns}:{n}' if targ_ns not in [':', ''] else n for n in net_preset['nBases'] if cmds.nodeType(n) == 'nucleus'][0]
-                        for out_attr, in_attr in zip(dwu.get_type_io(self.sh), dwu.get_type_io(nucleus, io=0, multi=2)):
-                            cmds.connectAttr(out_attr, in_attr, f=True)
+            if not cmds.objExists(futur_node_name_transform):
+                self.createNode(node_type, targ_ns=namespace, name=futur_node_name_transform)
 
-                        # Create nComponents and connect them
-                        for src_con, dest_con in net_preset['nComponent']:
-                            idx = dest_con.split('[')[-1][:-1]
-                            suffix = new_name.rsplit(':', 1)[-1].replace('dynamicConstrain', 'dynC')
-                            cls_ncomp = nComponent(f'{targ_ns}:nComp{idx}_{suffix}', 'nComponent')
+            # find the key name of the main dictionnary provided
+            node_preset_key = preset_node_type_key[0].rsplit('_', 1)[0]
+            # get the sub dic with all the network and attributes per node
+            sub_dic = preset[node_preset_key]
 
-                            # Set attributes
-                            key = f'nComponent_{idx}'
-                            if key in net_preset:
-                                for np in net_preset[key]:
-                                    dwpreset.blendAttrDic(np, cls_ncomp.tr, net_preset[key])
+            for key in sub_dic:
+                # find dictrionnaries for transform and shape
+                sub_nt = sub_dic[key].get("nodeType", None)
+                if sub_nt == "transform":
+                    dwpreset.dw_preset.blend_attr_dic(src_node=key,
+                                            target_node=self.tr,
+                                            preset=sub_dic,
+                                            blend_value=blend)
 
-                            # Connect nComponent to nConstraint
-                            for out_attr, in_attr in zip(dwu.get_type_io(cls_ncomp.tr), dwu.get_type_io(self.sh, io=0, multi=2)):
-                                cmds.connectAttr(out_attr, in_attr, f=True)
+                    self._build_network(src_node_name=key,
+                                        node_preset=sub_dic,
+                                        target_node_name=self.tr,
+                                        namespace=namespace)
 
-                            # Connect nBase to nComponent
-                            out_attr, in_attr = net_preset[f'nComponent_{idx}_nbase']
-                            cmds.connectAttr(f'{targ_ns}:{out_attr}', f'{cls_ncomp.tr}.{in_attr.split(".")[-1]}', f=True)
+                elif sub_nt == "dynamicConstraint":
+                    dwpreset.dw_preset.blend_attr_dic(src_node=key,
+                                            target_node=self.sh,
+                                            preset=sub_dic,
+                                            blend_value=blend)
 
-                            # Create and connect maps
-                            key = f'nComponent_{idx}_maps'
-                            if key in net_preset:
-                                for x, np in enumerate(net_preset[key]):
-                                    if np_map := net_preset[key][np]:
-                                        texture = net_preset[key][np]
-                                        map_connections = net_preset[f'{key}_connections']
-                                        correspondance = dwpreset.reconnectPreset(map_connections, True)
-
-                                        if texture in correspondance:
-                                            texture = correspondance[texture]
-
-                                        cmds.connectAttr(f'{texture}.{np}Map', f'{cls_ncomp.tr}.{np}')
+                    self._build_network(src_node_name=key,
+                                        node_preset=sub_dic,
+                                        target_node_name=self.sh,
+                                        namespace=namespace)
 
 
 
@@ -298,13 +366,13 @@ class nComponent(dwnn.MayaNode):
         if attr and attr != [None]:
             for a in attr:
                 if a not in self._maps_dic:
-                    error_msg = f"This map '{a}' doesn't exist. Pick one of these: {self._maps_dic.keys()}."
+                    error_msg = f"This map '{a}' doesn't exist. Pick one of these: {list(self._maps_dic.keys())}."
                     cmds.error(error_msg)
         else:
-            attr = self._maps_dic.keys()
+            attr = list(self._maps_dic.keys())
 
         for a in attr:
-            map_type = self._maps_dic[a].get()
+            map_type = self._maps_dic[a].getAttr()
             if map_type == 0:
                 out = None
             elif map_type == 1:
