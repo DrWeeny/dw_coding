@@ -40,7 +40,7 @@ class ObjPointer(object):
         _node (om.MFnDependencyNode): A function set for the Maya node.
     """
 
-    def __init__(self, node_name: str):
+    def __init__(self, node_name: str, warning: bool = True):
         """
         Initialize the ObjPointer with the given node name.
 
@@ -52,7 +52,8 @@ class ObjPointer(object):
         self.__dict__['_node'] = om.MFnDependencyNode()
 
         if not cmds.objExists(node_name):
-            logger.error(f"Node '{node_name}' does not exist")
+            if warning:  # Only log if warning flag is True
+                logger.error(f"Node '{node_name}' does not exist")
             return
 
         selection = om.MSelectionList()
@@ -64,9 +65,10 @@ class ObjPointer(object):
             if cmds.ls(node_name, dag=True):
                 selection.getDagPath(0, self.__dict__['_mdagpath'], om.MObject())
         except Exception as e:
-            logger.error(f"Failed to initialize {node_name}: {e}")
+            if warning:
+                logger.error(f"Failed to initialize {node_name}: {e}")
 
-    def setDAG(self, node_name):
+    def setDAG(self, node_name, warning:bool=True):
         """
         Set the DAG path for the given node name.
 
@@ -85,7 +87,8 @@ class ObjPointer(object):
             self.__dict__['_node'] = om.MFnDependencyNode(self.__dict__['_mobject'])
             selection.getDagPath(0, self.__dict__['_mdagpath'], om.MObject())
         except Exception as e:
-            print(f"Failed to initialize node {node_name}: {e}")
+            if warning:
+                logger.debug(f"Failed to initialize node {node_name}: {e}")
 
     def name(self, long: bool = False) -> str:
         """

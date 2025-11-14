@@ -55,7 +55,11 @@ class MayaNode(ObjPointer):
                  preset: Optional[Dict] = None,
                  blend_value: float = 1.0):
         """Initialize MayaNode with optional preset loading."""
-        super().__init__(name)
+        # Check if we're creating a new node
+        creating_new = isinstance(preset, (dict, str)) and not cmds.objExists(name)
+
+        # Initialize parent with silent mode if creating new node
+        super().__init__(name, warning=not creating_new)
 
         # this dict method is used to avoid calling __getattr __
         _input = self.name()
@@ -415,7 +419,7 @@ class MayaNode(ObjPointer):
         else:
             cmds.parent(self.tr, target)
 
-    def rename(self, name: str) -> str:
+    def rename(self, name: str):
         """Rename node maintaining Maya naming conventions.
 
         Handles both transform and shape renaming, maintaining
@@ -462,11 +466,11 @@ class MayaNode(ObjPointer):
                     self.__dict__['node'] = name
                     cmds.rename(self.sh, name+'Shape')
             self.__dict__['node'] = name
-            return self.tr
+            return self
         except Exception as e:
             print(f"Failed to rename the node: {e}")
 
-    def createNode(self, preset, targ_ns=':'):
+    def createNode(self, preset, targ_ns=':', name=""):
         """Create new node from preset or type.
 
         Args:
@@ -511,7 +515,10 @@ class MayaNode(ObjPointer):
 
         if flags:
             new_name = self.rename(**flags)
-            return new_name
+            return self
+        if name:
+            new_name = self.rename(name)
+            return self
 
     def saveNode(self, path: str, file: str):
         """Save node preset to JSON file.
