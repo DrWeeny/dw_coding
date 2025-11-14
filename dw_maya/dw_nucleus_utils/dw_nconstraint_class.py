@@ -167,10 +167,10 @@ class nConstraint(dwnn.MayaNode):
         component_final_list = []
         for component in component_connections_list:
             if not cmds.objExists(component[0]):
-                component_node = dwnn.MayaNode(component.split(".")[0],
+                component_node = dwnn.MayaNode(component[0].split(".")[0],
                                                preset='nComponent')
             else:
-                component_node = dwnn.MayaNode(component)
+                component_node = dwnn.MayaNode(component[0])
             component_final_list.append(component_node)
 
         # lets iterate with the component list
@@ -185,12 +185,14 @@ class nConstraint(dwnn.MayaNode):
             component_key = f'nComponent_{idx}'
             component_attr_dic = node_preset[network_key].get(component_key, None)
             if component_attr_dic:
-                src_component = component_attr_dic.keys()[0]
+                src_component = list(component_attr_dic.keys())[0]
                 dwpreset.dw_preset.blend_attr_dic(src_component, cf.tr, component_attr_dic)
 
             # Connect nComponent to nConstraint using the shape
-            for out_attr, in_attr in zip(dwu.get_type_io(cf.tr), dwu.get_type_io(self.sh, io=0, index=0, multi=2)):
-                cmds.connectAttr(out_attr, in_attr, f=True)
+            out_attr = dwu.get_type_io(cf.tr)
+            in_attr = dwu.get_type_io(self.sh, io=0, index=0, multi=2)
+            # connect component id
+            cmds.connectAttr(out_attr, in_attr, f=True)
             # connect time :
             cmds.connectAttr("time1.outTime", f"{self.sh}.currentTime", f=True)
 
@@ -429,7 +431,7 @@ class nComponent(dwnn.MayaNode):
 
                     m_sel = []
                     for i in ids:
-                        curve_id = min(curve_ranges.keys(), key=lambda x: abs(x - i))
+                        curve_id = min(list(curve_ranges.keys()), key=lambda x: abs(x - i))
                         m_sel.append(f'{curve_ranges[curve_id][0]}.cv[{i - curve_ranges[curve_id][1]}]')
                     return m_sel
 
