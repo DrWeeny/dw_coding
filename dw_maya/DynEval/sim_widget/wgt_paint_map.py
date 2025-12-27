@@ -1,22 +1,26 @@
+"""
+Vertex Map Editor Widget with DataHub Integration
+
+Advanced paint/flood controls for vertex maps.
+Subscribes to selection changes to update mesh/map combos.
+"""
+
 from PySide6 import QtWidgets, QtCore, QtGui
 from dataclasses import dataclass
 from enum import Enum
-from typing import Optional, Callable, List, Tuple
-from maya import cmds
-from dw_maya.dw_nucleus_utils.dw_core import get_nucx_map_type
-from dw_maya.dw_nucleus_utils import get_nucleus_solver, artisan_nucx_update
-from .wgt_combotree import TreeComboBox
-from .wgt_combobox_maps import ColoredMapComboBox
-from ..sim_cmds.vtx_map_management import smooth_pervtx_map
-from dw_maya.dw_paint import flood_weights, WeightDataFactory, get_current_artisan_map
-import dw_maya.dw_maya_utils as dwu
+from typing import Optional, List, Tuple
 from functools import partial
-from dw_maya.dw_pyqt_utils import VtxStorageButton
-from dw_maya.dw_deformers import listDeformers
+
+from maya import cmds
 
 from dw_logger import get_logger
 
+# Local imports
+from ..hub_keys import HubKeys, PaintContext
+from .wgt_base import DynEvalWidget
+
 logger = get_logger()
+
 
 class EditMode(Enum):
     REPLACE = "Replace"
@@ -24,19 +28,15 @@ class EditMode(Enum):
     ADD = "Add"
     MULTIPLY = "Multiply"
 
+
 class SelectionMode(Enum):
     RANGE = "Range"
     VALUE = "Value"
 
-class SolverType(Enum):
-    """Types of solvers supported by the editor"""
-    NUCLEUS = "Nucleus"
-    DEFORMER = "Deformers"
-    ZIVA = "Ziva"  # Will be disabled for now
 
 @dataclass
 class EditorConfig:
-    """Configuration for the vertex map editor"""
+    """Configuration for the vertex map editor."""
     min_value: float = 0.0
     max_value: float = 1.0
     decimals: int = 3
@@ -47,8 +47,9 @@ class EditorConfig:
         if self.smooth_presets is None:
             self.smooth_presets = [2, 5, 10, 25, 50]
 
+
 class RangeSlider(QtWidgets.QSlider):
-    """Custom double-handled range slider"""
+    """Custom double-handled range slider."""
 
     rangeChanged = QtCore.Signal(float, float)
 
@@ -59,684 +60,473 @@ class RangeSlider(QtWidgets.QSlider):
         self.setMinimum(0)
         self.setMaximum(99)
 
-        # Visual settings
         self.offset = 10
         self.movement = 0
         self.isSliderDown = False
 
-        # Style
-        self.setStyleSheet("""
-            QSlider::groove:horizontal {
-                border: 1px solid #999999;
-                height: 4px;
-                background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #B1B1B1, stop:1 #c4c4c4);
-                margin: 2px 0;
-            }
-
-            QSlider::handle:horizontal {
-                background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #b4b4b4, stop:1 #8f8f8f);
-                border: 1px solid #5c5c5c;
-                width: 10px;
-                margin: -8px 0;
-                border-radius: 3px;
-            }
-        """)
-
     def mousePressEvent(self, event):
         if event.button() == QtCore.Qt.LeftButton:
-            but = event.pos().x()
-            val = self.minimum() + ((self.maximum() - self.minimum()) * but) / self.width()
+            pos_x = event.pos().x()
+            val = self.minimum() + ((self.maximum() - self.minimum()) * pos_x) / self.width()
 
             if abs(self.first_position - val) < abs(self.second_position - val):
                 self.first_position = val
-                self.isSliderDown = True
                 self.movement = 1
             else:
                 self.second_position = val
-                self.isSliderDown = True
                 self.movement = 2
 
+            self.isSliderDown = True
             self.update()
-            self.rangeChanged.emit(min(self.first_position, self.second_position),
-                                   max(self.first_position, self.second_position))
+            self._emit_range()
 
     def mouseMoveEvent(self, event):
         if self.isSliderDown:
-            but = event.pos().x()
-            val = self.minimum() + ((self.maximum() - self.minimum()) * but) / self.width()
+            pos_x = event.pos().x()
+            val = self.minimum() + ((self.maximum() - self.minimum()) * pos_x) / self.width()
+
             if self.movement == 1:
-                self.first_position = val
+                self.first_position = max(0, min(val, self.second_position - 1))
             else:
-                self.second_position = val
+                self.second_position = min(99, max(val, self.first_position + 1))
+
             self.update()
-            self.rangeChanged.emit(min(self.first_position, self.second_position),
-                                   max(self.first_position, self.second_position))
+            self._emit_range()
 
     def mouseReleaseEvent(self, event):
         self.isSliderDown = False
+        self.movement = 0
+
+    def _emit_range(self):
+        """Emit the current range as normalized values."""
+        min_val = self.first_position / 99.0
+        max_val = self.second_position / 99.0
+        self.rangeChanged.emit(min_val, max_val)
 
     def paintEvent(self, event):
         painter = QtGui.QPainter(self)
         painter.setRenderHint(QtGui.QPainter.Antialiasing)
 
-        # Draw the range
-        rect = self.rect()
-        x_left = (rect.width() - 2 * self.offset) * (self.first_position / self.maximum()) + self.offset
-        x_right = (rect.width() - 2 * self.offset) * (self.second_position / self.maximum()) + self.offset
-
-        # Background track
-        track_rect = QtCore.QRectF(self.offset, rect.height() / 2 - 2, rect.width() - 2 * self.offset, 4)
-        painter.setPen(QtCore.Qt.NoPen)
-        painter.setBrush(QtGui.QColor(200, 200, 200))
-        painter.drawRoundedRect(track_rect, 2, 2)
+        # Track
+        track_rect = QtCore.QRect(
+            self.offset, self.height() // 2 - 2,
+                         self.width() - 2 * self.offset, 4
+        )
+        painter.fillRect(track_rect, QtGui.QColor(80, 80, 80))
 
         # Selected range
-        range_rect = QtCore.QRectF(x_left, rect.height() / 2 - 2, x_right - x_left, 4)
-        painter.setBrush(QtGui.QColor(100, 150, 255))
-        painter.drawRoundedRect(range_rect, 2, 2)
+        x1 = int(self.offset + (self.first_position / 99.0) * (self.width() - 2 * self.offset))
+        x2 = int(self.offset + (self.second_position / 99.0) * (self.width() - 2 * self.offset))
+
+        range_rect = QtCore.QRect(x1, self.height() // 2 - 2, x2 - x1, 4)
+        painter.fillRect(range_rect, QtGui.QColor(100, 180, 100))
 
         # Handles
-        handle_rect = QtCore.QRectF(-5, -10, 10, 20)
-        painter.setBrush(QtGui.QColor(255, 255, 255))
-        painter.setPen(QtGui.QPen(QtGui.QColor(100, 100, 100), 1))
+        for pos in [self.first_position, self.second_position]:
+            x = int(self.offset + (pos / 99.0) * (self.width() - 2 * self.offset))
+            handle_rect = QtCore.QRect(x - 5, self.height() // 2 - 8, 10, 16)
+            painter.setBrush(QtGui.QColor(200, 200, 200))
+            painter.setPen(QtGui.QColor(100, 100, 100))
+            painter.drawRoundedRect(handle_rect, 3, 3)
 
-        handle_rect.moveCenter(QtCore.QPointF(x_left, rect.height() / 2))
-        painter.drawRoundedRect(handle_rect, 3, 3)
+    def setRange(self, min_val: float, max_val: float):
+        """Set range from normalized values (0-1)."""
+        self.first_position = int(min_val * 99)
+        self.second_position = int(max_val * 99)
+        self.update()
 
-        handle_rect.moveCenter(QtCore.QPointF(x_right, rect.height() / 2))
-        painter.drawRoundedRect(handle_rect, 3, 3)
 
-class VertexMapEditor(QtWidgets.QWidget):
+class VertexMapEditor(DynEvalWidget):
     """
-    Modern vertex map editor widget with flood controls and clamping
+    Advanced editor for vertex map painting and flooding.
+
+    Subscribes to:
+        - HubKeys.SELECTED_ITEM: Update combo boxes
+        - HubKeys.SELECTED_MESH: Current mesh
+        - HubKeys.MAP_SELECTED: Currently selected map
+
+    Publishes:
+        - HubKeys.PAINT_ACTIVE: Paint tool state
+        - HubKeys.PAINT_CONTEXT: Current paint context
     """
 
-    valueChanged = QtCore.Signal(float)  # Emitted when the main value changes
-    floodRequested = QtCore.Signal(float, EditMode)  # Emitted when flood is requested
-    selectionModeChanged = QtCore.Signal(SelectionMode)  # Emitted when selection mode changes
-    selectionRangeChanged = QtCore.Signal(float, float)  # Emitted when range values change
-    smoothRequested = QtCore.Signal(int)  # Emitted when smoothing is requested
-
-    solverChanged = QtCore.Signal(SolverType)  # Emitted when solver type changes
-    meshChanged = QtCore.Signal(str)  # Emitted when mesh selection changes
-    mapChanged = QtCore.Signal(str)  # Emitted when map selection changes
-    paintRequested = QtCore.Signal()  # Emitted when paint button is clicked
+    # Qt Signals
+    floodRequested = QtCore.Signal(float, str)  # value, mode
+    smoothRequested = QtCore.Signal(int)  # iterations
+    selectionRequested = QtCore.Signal(float, float)  # min, max
 
     def __init__(self, config: EditorConfig = None, parent=None):
         super().__init__(parent)
-        self.mesh_selected = None
-        self.map_selected = None
+
         self.config = config or EditorConfig()
+
+        # Current state
+        self._current_mesh = None
+        self._current_map = None
+        self._is_painting = False
+
+        # Setup
         self._setup_ui()
         self._connect_signals()
+        self._setup_hub_subscriptions()
 
     def _setup_ui(self):
-        main_layout = QtWidgets.QVBoxLayout(self)
-        main_layout.setSpacing(4)
+        """Initialize UI components."""
+        layout = QtWidgets.QVBoxLayout(self)
+        layout.setContentsMargins(4, 4, 4, 4)
+        layout.setSpacing(6)
 
-        # Add solver type selection at the top
-        self._setup_solver_selection(main_layout)
+        # Mesh/Map Selection
+        selection_group = QtWidgets.QGroupBox("Selection")
+        selection_layout = QtWidgets.QFormLayout(selection_group)
 
-        # Add mesh and map selection
-        self._setup_map_selection(main_layout)
+        self.mesh_combo = QtWidgets.QComboBox()
+        self.mesh_combo.setPlaceholderText("Select mesh...")
+        selection_layout.addRow("Mesh:", self.mesh_combo)
 
-        # Value Editor Group (from previous implementation)
-        self._setup_value_editor(main_layout)
+        self.map_combo = QtWidgets.QComboBox()
+        self.map_combo.setPlaceholderText("Select map...")
+        selection_layout.addRow("Map:", self.map_combo)
 
-        # Selection Range Group
-        selection_group = QtWidgets.QGroupBox("Vertex Selection")
-        selection_layout = QtWidgets.QVBoxLayout(selection_group)
+        layout.addWidget(selection_group)
 
-        # Selection Mode
+        # Flood Section
+        flood_group = QtWidgets.QGroupBox("Flood")
+        flood_layout = QtWidgets.QVBoxLayout(flood_group)
+
+        # Value input
+        value_layout = QtWidgets.QHBoxLayout()
+        value_layout.addWidget(QtWidgets.QLabel("Value:"))
+
+        self.flood_value = QtWidgets.QDoubleSpinBox()
+        self.flood_value.setRange(self.config.min_value, self.config.max_value)
+        self.flood_value.setDecimals(self.config.decimals)
+        self.flood_value.setValue(self.config.default_value)
+        self.flood_value.setSingleStep(0.1)
+        value_layout.addWidget(self.flood_value)
+
+        self.flood_btn = QtWidgets.QPushButton("Flood")
+        self.flood_btn.setFixedWidth(60)
+        value_layout.addWidget(self.flood_btn)
+
+        flood_layout.addLayout(value_layout)
+
+        # Edit mode
         mode_layout = QtWidgets.QHBoxLayout()
-        self.selection_mode_group = QtWidgets.QButtonGroup(self)
-        self.rb_range = QtWidgets.QRadioButton("Range")
-        self.rb_value = QtWidgets.QRadioButton("Value")
-        self.selection_mode_group.addButton(self.rb_range)
-        self.selection_mode_group.addButton(self.rb_value)
-        self.rb_range.setChecked(True)
+        mode_layout.addWidget(QtWidgets.QLabel("Mode:"))
 
-        # Add Slider range limit
-        # TODO add a method when combo map set to set the min and max values of slider
-        self.range_limit_min = QtWidgets.QDoubleSpinBox()
-        self.range_limit_min.setRange(-999999, 999999)
-        self.range_limit_min.setValue(0)
-        self.range_limit_min.setDecimals(1)
-        self.range_limit_min.setButtonSymbols(QtWidgets.QAbstractSpinBox.NoButtons)
-        self.range_limit_min.setFixedWidth(70)
+        self.mode_group = QtWidgets.QButtonGroup(self)
+        for mode in EditMode:
+            rb = QtWidgets.QRadioButton(mode.value)
+            rb.setProperty("editMode", mode)
+            self.mode_group.addButton(rb)
+            mode_layout.addWidget(rb)
+            if mode == EditMode.REPLACE:
+                rb.setChecked(True)
 
-        self.range_limit_max = QtWidgets.QDoubleSpinBox()
-        self.range_limit_max.setRange(-999999, 999999)
-        self.range_limit_max.setValue(1)
-        self.range_limit_max.setDecimals(1)
-        self.range_limit_max.setButtonSymbols(QtWidgets.QAbstractSpinBox.NoButtons)
-        self.range_limit_max.setFixedWidth(70)
+        flood_layout.addLayout(mode_layout)
 
+        # Clamp controls
+        clamp_layout = QtWidgets.QHBoxLayout()
+        self.clamp_check = QtWidgets.QCheckBox("Clamp")
+        self.clamp_min = QtWidgets.QDoubleSpinBox()
+        self.clamp_min.setRange(-10, 10)
+        self.clamp_min.setValue(0)
+        self.clamp_max = QtWidgets.QDoubleSpinBox()
+        self.clamp_max.setRange(-10, 10)
+        self.clamp_max.setValue(1)
 
+        clamp_layout.addWidget(self.clamp_check)
+        clamp_layout.addWidget(self.clamp_min)
+        clamp_layout.addWidget(QtWidgets.QLabel("-"))
+        clamp_layout.addWidget(self.clamp_max)
+        clamp_layout.addStretch()
 
-        mode_layout.addWidget(self.rb_range)
-        mode_layout.addWidget(self.rb_value)
-        mode_layout.addStretch()
-        mode_layout.addWidget(QtWidgets.QLabel("Slider Min/Max:"))
-        mode_layout.addWidget(self.range_limit_min)
-        mode_layout.addWidget(self.range_limit_max)
+        flood_layout.addLayout(clamp_layout)
+        layout.addWidget(flood_group)
 
-        # Selection Actions
-        action_layout = QtWidgets.QHBoxLayout()
-        self.btn_select = QtWidgets.QPushButton("Select")
-        self.btn_invert = QtWidgets.QPushButton("Invert")
-        self.btn_clear = QtWidgets.QPushButton("Clear")
-
-        for btn in [self.btn_select, self.btn_invert, self.btn_clear]:
-            btn.setFixedHeight(24)
-            action_layout.addWidget(btn)
-
-        # Range Controls
-        range_layout = QtWidgets.QHBoxLayout()
-
-        self.range_min_spin = QtWidgets.QDoubleSpinBox()
-        self.range_min_spin.setRange(self.config.min_value, self.config.max_value)
-        self.range_min_spin.setDecimals(self.config.decimals)
-        self.range_min_spin.setButtonSymbols(QtWidgets.QAbstractSpinBox.NoButtons)
-
-        self.range_slider = RangeSlider(QtCore.Qt.Horizontal)
-
-        self.range_max_spin = QtWidgets.QDoubleSpinBox()
-        self.range_max_spin.setRange(self.config.min_value, self.config.max_value)
-        self.range_max_spin.setDecimals(self.config.decimals)
-        self.range_max_spin.setValue(self.config.max_value)
-        self.range_max_spin.setButtonSymbols(QtWidgets.QAbstractSpinBox.NoButtons)
-
-        range_layout.addWidget(self.range_min_spin)
-        range_layout.addWidget(self.range_slider)
-        range_layout.addWidget(self.range_max_spin)
-
-        selection_layout.addLayout(mode_layout)
-        selection_layout.addLayout(action_layout)
-        selection_layout.addLayout(range_layout)
-
-        # Smoothing Group
-        smooth_group = QtWidgets.QGroupBox("Smooth Values")
-        smooth_layout = QtWidgets.QVBoxLayout(smooth_group)
-
-        # Preset Buttons
-        preset_layout = QtWidgets.QHBoxLayout()
-        self.smooth_buttons = {}
+        # Smooth Section
+        smooth_group = QtWidgets.QGroupBox("Smooth")
+        smooth_layout = QtWidgets.QHBoxLayout(smooth_group)
 
         for preset in self.config.smooth_presets:
             btn = QtWidgets.QPushButton(str(preset))
-            btn.setFixedSize(40, 20)
+            btn.setFixedWidth(40)
             btn.setProperty("smoothValue", preset)
-            self.smooth_buttons[preset] = btn
-            btn.clicked.connect(partial(self.smooth_flood, preset))
-            preset_layout.addWidget(btn)
+            btn.clicked.connect(self._on_smooth_preset)
+            smooth_layout.addWidget(btn)
 
-        preset_layout.addStretch()
+        layout.addWidget(smooth_group)
 
-        # Custom Iterations
-        iter_layout = QtWidgets.QHBoxLayout()
-        iter_layout.addWidget(QtWidgets.QLabel("Iterations:"))
+        # Selection by Weight Section
+        selection_group = QtWidgets.QGroupBox("Select by Weight")
+        selection_layout = QtWidgets.QVBoxLayout(selection_group)
 
-        self.iter_spin = QtWidgets.QSpinBox()
-        self.iter_spin.setRange(1, 500)
-        self.iter_spin.setValue(100)
-        self.iter_spin.setFixedWidth(60)
+        # Range limits
+        limits_layout = QtWidgets.QHBoxLayout()
+        limits_layout.addWidget(QtWidgets.QLabel("Limits:"))
 
-        self.iter_slider = QtWidgets.QSlider(QtCore.Qt.Horizontal)
-        self.iter_slider.setRange(1, 500)
-        self.iter_slider.setValue(100)
+        self.range_limit_min = QtWidgets.QDoubleSpinBox()
+        self.range_limit_min.setRange(-100, 100)
+        self.range_limit_min.setValue(0)
+        self.range_limit_min.setDecimals(2)
+        limits_layout.addWidget(self.range_limit_min)
 
-        self.btn_smooth = QtWidgets.QPushButton("Smooth")
-        self.btn_smooth.setFixedWidth(60)
+        limits_layout.addWidget(QtWidgets.QLabel("-"))
 
-        iter_layout.addWidget(self.iter_spin)
-        iter_layout.addWidget(self.iter_slider)
-        iter_layout.addWidget(self.btn_smooth)
+        self.range_limit_max = QtWidgets.QDoubleSpinBox()
+        self.range_limit_max.setRange(-100, 100)
+        self.range_limit_max.setValue(1)
+        self.range_limit_max.setDecimals(2)
+        limits_layout.addWidget(self.range_limit_max)
 
-        smooth_layout.addLayout(preset_layout)
-        smooth_layout.addLayout(iter_layout)
+        selection_layout.addLayout(limits_layout)
 
-        # Add all groups to main layout
-        main_layout.addWidget(selection_group)
-        main_layout.addWidget(smooth_group)
-        main_layout.addStretch()
+        # Range slider
+        self.range_slider = RangeSlider()
+        self.range_slider.setMinimumHeight(30)
+        selection_layout.addWidget(self.range_slider)
 
-        # Button Storage
-        self._setup_storage_buttons(main_layout)
+        # Range values
+        range_layout = QtWidgets.QHBoxLayout()
 
+        self.range_min_spin = QtWidgets.QDoubleSpinBox()
+        self.range_min_spin.setRange(0, 1)
+        self.range_min_spin.setDecimals(3)
+        self.range_min_spin.setValue(0)
+        range_layout.addWidget(self.range_min_spin)
 
-        self.btn_select.clicked.connect(self.select_by_weight)
-        self.btn_invert.clicked.connect(self.invert_selection)
-        self.btn_clear.clicked.connect(self.clear_selection)
+        range_layout.addStretch()
 
-    def _setup_storage_buttons(self, main_layout):
-        """Setup the storage buttons section"""
+        self.range_max_spin = QtWidgets.QDoubleSpinBox()
+        self.range_max_spin.setRange(0, 1)
+        self.range_max_spin.setDecimals(3)
+        self.range_max_spin.setValue(1)
+        range_layout.addWidget(self.range_max_spin)
+
+        selection_layout.addLayout(range_layout)
+
+        # Selection mode
+        mode_sel_layout = QtWidgets.QHBoxLayout()
+        self.rb_range = QtWidgets.QRadioButton("Range")
+        self.rb_range.setChecked(True)
+        self.rb_value = QtWidgets.QRadioButton("≥ Value")
+        mode_sel_layout.addWidget(self.rb_range)
+        mode_sel_layout.addWidget(self.rb_value)
+        mode_sel_layout.addStretch()
+        selection_layout.addLayout(mode_sel_layout)
+
+        # Selection buttons
+        sel_btn_layout = QtWidgets.QHBoxLayout()
+
+        self.select_btn = QtWidgets.QPushButton("Select")
+        self.select_btn.clicked.connect(self._select_by_weight)
+        sel_btn_layout.addWidget(self.select_btn)
+
+        self.invert_btn = QtWidgets.QPushButton("Invert")
+        self.invert_btn.clicked.connect(self._invert_selection)
+        sel_btn_layout.addWidget(self.invert_btn)
+
+        self.clear_btn = QtWidgets.QPushButton("Clear")
+        self.clear_btn.clicked.connect(self._clear_selection)
+        sel_btn_layout.addWidget(self.clear_btn)
+
+        selection_layout.addLayout(sel_btn_layout)
+        layout.addWidget(selection_group)
+
+        # Storage Section
         storage_group = QtWidgets.QGroupBox("Weight Storage")
-        storage_layout = QtWidgets.QGridLayout(storage_group)
+        storage_layout = QtWidgets.QHBoxLayout(storage_group)
 
-        # Create 4 storage buttons in a 2x2 grid
-        self.storage_buttons = []
-        for i in range(4):
-            row = 1
-            col = i % 4
-            btn = VtxStorageButton()
-            btn.setFixedSize(60, 60)
-            storage_layout.addWidget(btn, row, col)
-            self.storage_buttons.append(btn)
+        self.store_btn = QtWidgets.QPushButton("Store")
+        self.store_btn.clicked.connect(self._store_weights)
+        storage_layout.addWidget(self.store_btn)
 
-        storage_layout.setSpacing(4)
-        storage_layout.setContentsMargins(4, 4, 4, 4)
-        main_layout.addWidget(storage_group)
+        self.recall_btn = QtWidgets.QPushButton("Recall")
+        self.recall_btn.clicked.connect(self._recall_weights)
+        storage_layout.addWidget(self.recall_btn)
 
-    def _setup_value_editor(self, main_layout):
-        """Setup the value editor section with flood controls and edit modes"""
-        # Value Editor Group
-        value_group = QtWidgets.QGroupBox("Vertex Value Editor")
-        value_layout = QtWidgets.QVBoxLayout(value_group)
+        self.blend_slider = QtWidgets.QSlider(QtCore.Qt.Horizontal)
+        self.blend_slider.setRange(0, 100)
+        self.blend_slider.setValue(100)
+        storage_layout.addWidget(self.blend_slider)
 
-        # Flood Controls with 0/1 shortcuts
-        flood_layout = QtWidgets.QHBoxLayout()
+        self.blend_label = QtWidgets.QLabel("100%")
+        storage_layout.addWidget(self.blend_label)
 
-        # Set 0 button
-        self.btn_zero = QtWidgets.QPushButton("0")
-        self.btn_zero.setFixedWidth(40)
-        self.btn_zero.setStyleSheet("""
-            QPushButton {
-                background-color: rgb(42, 42, 42);
-                color: white;
-                font-weight: bold;
-                padding: 4px;
-                border-radius: 2px;
-            }
-            QPushButton:hover {
-                background-color: rgb(60, 60, 60);
-            }
-        """)
+        layout.addWidget(storage_group)
 
-        # Value Editor Control
-        self.value_spinbox = QtWidgets.QDoubleSpinBox()
-        self.value_spinbox.setDecimals(self.config.decimals)
-        self.value_spinbox.setValue(.5)
-        self.value_spinbox.setButtonSymbols(QtWidgets.QAbstractSpinBox.NoButtons)
-        self.value_spinbox.setFixedWidth(80)
-
-        # Main Flood Button
-        self.flood_button = QtWidgets.QPushButton("Flood")
-        self.flood_button.setStyleSheet("""
-            QPushButton {
-                background-color: rgb(42, 42, 42);
-                color: white;
-                font-weight: bold;
-                padding: 4px;
-                border-radius: 2px;
-            }
-            QPushButton:hover {
-                background-color: rgb(60, 60, 60);
-            }
-        """)
-
-        # Set 1 button
-        self.btn_one = QtWidgets.QPushButton("1")
-        self.btn_one.setFixedWidth(40)
-        self.btn_one.setStyleSheet("""
-            QPushButton {
-                background-color: rgb(242, 242, 242);
-                color: black;
-                font-weight: bold;
-                padding: 4px;
-                border-radius: 2px;
-            }
-            QPushButton:hover {
-                background-color: rgb(220, 220, 220);
-            }
-        """)
-
-        # Add buttons to flood layout
-        flood_layout.addWidget(self.value_spinbox)
-        flood_layout.addWidget(self.btn_zero)
-        flood_layout.addWidget(self.flood_button)
-        flood_layout.addWidget(self.btn_one)
-
-        # Edit Mode Section
-        mode_layout = QtWidgets.QHBoxLayout()
-        mode_layout.setSpacing(8)
-        mode_label = QtWidgets.QLabel("Edit Mode:")
-        mode_layout.addWidget(mode_label)
-
-        # Create radio buttons for edit modes
-        self.mode_group = QtWidgets.QButtonGroup(self)
-        self.mode_buttons = {}
-
-        for mode in EditMode:
-            btn = QtWidgets.QRadioButton(mode.value)
-            self.mode_buttons[mode] = btn
-            self.mode_group.addButton(btn)
-            mode_layout.addWidget(btn)
-
-        self.mode_buttons[EditMode.REPLACE].setChecked(True)
-        mode_layout.addStretch()
-
-        # Clamp Controls
-        clamp_layout = QtWidgets.QHBoxLayout()
-        clamp_label = QtWidgets.QLabel("Clamp Values:")
-        clamp_layout.addWidget(clamp_label)
-
-        # Min Clamp
-        self.clamp_min_check = QtWidgets.QCheckBox("Min")
-        self.clamp_min_check.setChecked(True)
-        self.clamp_min_spin = QtWidgets.QDoubleSpinBox()
-        self.clamp_min_spin.setRange(self.config.min_value, self.config.max_value)
-        self.clamp_min_spin.setDecimals(self.config.decimals)
-        self.clamp_min_spin.setValue(self.config.min_value)
-        self.clamp_min_spin.setButtonSymbols(QtWidgets.QAbstractSpinBox.NoButtons)
-
-        # Max Clamp
-        self.clamp_max_check = QtWidgets.QCheckBox("Max")
-        self.clamp_max_check.setChecked(True)
-        self.clamp_max_spin = QtWidgets.QDoubleSpinBox()
-        self.clamp_max_spin.setRange(self.config.min_value, self.config.max_value)
-        self.clamp_max_spin.setDecimals(self.config.decimals)
-        self.clamp_max_spin.setValue(self.config.max_value)
-        self.clamp_max_spin.setButtonSymbols(QtWidgets.QAbstractSpinBox.NoButtons)
-
-        # Add clamp controls to layout
-        clamp_layout.addWidget(self.clamp_min_check)
-        clamp_layout.addWidget(self.clamp_min_spin)
-        clamp_layout.addStretch()
-        clamp_layout.addWidget(self.clamp_max_check)
-        clamp_layout.addWidget(self.clamp_max_spin)
-        clamp_layout.addStretch()
-
-        # Add layouts to group
-        value_layout.addLayout(flood_layout)
-        value_layout.addLayout(mode_layout)
-        value_layout.addLayout(clamp_layout)
-
-        # Add value editor group to main layout
-        main_layout.addWidget(value_group)
-
-        # Connect value editor signals
-        self.value_spinbox.valueChanged.connect(self.valueChanged.emit)
-        self.btn_zero.clicked.connect(lambda: self._handle_flood(0.0))
-        self.btn_one.clicked.connect(lambda: self._handle_flood(1.0))
-        self.flood_button.clicked.connect(lambda: self._handle_flood(self.value_spinbox.value()))
-
-        # Connect clamp value changes
-        self.clamp_min_spin.valueChanged.connect(self._validate_clamp_ranges)
-        self.clamp_max_spin.valueChanged.connect(self._validate_clamp_ranges)
-
-    def _setup_solver_selection(self, main_layout):
-        """Setup the solver type selection section"""
-        solver_group = QtWidgets.QGroupBox("Solver Type")
-        solver_layout = QtWidgets.QHBoxLayout(solver_group)
-
-        # Create radio buttons for solver types
-        self.solver_group = QtWidgets.QButtonGroup(self)
-        self.solver_buttons = {}
-
-        # Create and style each radio button
-        for solver_type in SolverType:
-            btn = QtWidgets.QRadioButton(solver_type.value)
-            self.solver_buttons[solver_type] = btn
-            self.solver_group.addButton(btn)
-            solver_layout.addWidget(btn)
-
-            # Disable Ziva button
-            if solver_type == SolverType.ZIVA:
-                btn.setEnabled(False)
-                btn.setStyleSheet("color: gray;")
-
-            # Set Nucleus as default
-            if solver_type == SolverType.NUCLEUS:
-                btn.setChecked(True)
-
-        solver_layout.addStretch()
-        main_layout.addWidget(solver_group)
-
-    def _setup_map_selection(self, main_layout):
-        """Setup the mesh and map selection section"""
-        selection_group = QtWidgets.QGroupBox("Map Selection")
-        selection_layout = QtWidgets.QHBoxLayout(selection_group)
-
-        # Mesh selection combo
-        mesh_layout = QtWidgets.QHBoxLayout()
-        mesh_label = QtWidgets.QLabel("Mesh:")
-        self.mesh_combo = TreeComboBox()
-        self.mesh_combo.setMinimumWidth(150)
-        mesh_layout.addWidget(mesh_label)
-        mesh_layout.addWidget(self.mesh_combo)
-
-        # Map selection combo
-        map_layout = QtWidgets.QHBoxLayout()
-        map_label = QtWidgets.QLabel("Map:")
-        self.map_combo = ColoredMapComboBox()
-        self.map_combo.setMinimumWidth(150)
-        map_layout.addWidget(map_label)
-        map_layout.addWidget(self.map_combo)
-
-        # Paint button
-        self.paint_button = QtWidgets.QPushButton("Paint")
-        self.paint_button.setStyleSheet("""
-            QPushButton {
-                background-color: rgb(42, 42, 42);
-                color: white;
-                font-weight: bold;
-                padding: 6px 15px;
-                border-radius: 2px;
-            }
-            QPushButton:hover {
-                background-color: rgb(60, 60, 60);
-            }
-        """)
-
-        # populate painting combobox
-        self.populate_treecombobox()
-        self.populate_map_combobox()
-
-        # Add all elements to selection layout
-        selection_layout.addLayout(mesh_layout)
-        selection_layout.addLayout(map_layout)
-        selection_layout.addWidget(self.paint_button)
-
-        main_layout.addWidget(selection_group)
+        # Stretch at bottom
+        layout.addStretch()
 
     def _connect_signals(self):
-        """Connect all widget signals"""
+        """Connect internal signals."""
+        self.flood_btn.clicked.connect(self._flood)
+        self.blend_slider.valueChanged.connect(
+            lambda v: self.blend_label.setText(f"{v}%")
+        )
 
-        # Selection mode signals
-        self.selection_mode_group.buttonClicked.connect(self._handle_selection_mode)
+        # Range slider
+        self.range_slider.rangeChanged.connect(self._on_range_changed)
+        self.range_min_spin.valueChanged.connect(
+            lambda v: self._on_spin_changed(v, True)
+        )
+        self.range_max_spin.valueChanged.connect(
+            lambda v: self._on_spin_changed(v, False)
+        )
 
-        # Range control signals
-        self.range_slider.rangeChanged.connect(self._handle_range_change)
-        self.range_min_spin.valueChanged.connect(lambda v: self._handle_spin_change(v, True))
-        self.range_max_spin.valueChanged.connect(lambda v: self._handle_spin_change(v, False))
-
-        # Connect range limit spinboxes
+        # Limits
         self.range_limit_min.valueChanged.connect(self._update_range_limits)
         self.range_limit_max.valueChanged.connect(self._update_range_limits)
 
-        # Smooth signals
-        for btn in self.smooth_buttons.values():
-            btn.clicked.connect(self._handle_smooth_preset)
+    def _setup_hub_subscriptions(self):
+        """Subscribe to hub keys."""
+        self.hub_subscribe(HubKeys.SELECTED_ITEM, self._on_selection_changed)
+        self.hub_subscribe(HubKeys.SELECTED_MESH, self._on_mesh_changed)
+        self.hub_subscribe(HubKeys.MAP_SELECTED, self._on_map_selected)
 
-        self.iter_spin.valueChanged.connect(self.iter_slider.setValue)
-        self.iter_slider.valueChanged.connect(self.iter_spin.setValue)
-        self.btn_smooth.clicked.connect(partial(self.smooth_flood, self.iter_spin))
+    # ========================================================================
+    # HUB CALLBACKS
+    # ========================================================================
 
-        # Connect solver selection signals
-        self.solver_group.buttonClicked.connect(self._handle_solver_change)
-
-        # Connect mesh and map selection signals
-        self.mesh_combo.currentTextChanged.connect(self._handle_mesh_change)
-        self.map_combo.currentIndexChanged.connect(self._update_storage_buttons)
-        self.paint_button.clicked.connect(self.maya_paint)
-
-    def _update_storage_buttons(self):
-        """Update all storage buttons with current weight node"""
-        current_node = None
-        if hasattr(self.map_combo, 'nucx_node') and self.map_combo.currentText():
-            map_name = self.map_combo.currentText()
-            if map_name:
-                current_node = f"{self.map_combo.nucx_node}.{map_name}PerVertex"
-                logger.debug(f"Updating storage buttons with node: {current_node}")
-        for btn in self.storage_buttons:
-            btn.current_weight_node = current_node
-
-    def _handle_solver_change(self, button):
-        """Handle solver type selection changes"""
-        for solver_type, btn in self.solver_buttons.items():
-            if btn == button:
-                self.solverChanged.emit(solver_type)
-                # Refresh mesh list based on solver type
-                self.refresh_mesh_list(solver_type)
-                break
-
-    def _handle_mesh_change(self, mesh_name):
-        """Handle mesh selection changes"""
-        logger.debug(f"handler textChanged - Processing mesh: {mesh_name}")
-        from ..sim_cmds.paint_wgt_utils import get_nucx_maps_from_mesh
-
-        if mesh_name == "- viewport selection -":
-            # Clear map combo
+    def _on_selection_changed(self, old_value, new_value):
+        """Handle selection change from main tree."""
+        if new_value is None:
+            self.mesh_combo.clear()
             self.map_combo.clear()
-
-            # Get current artisan context if active
-            node, attr, node_type = get_current_artisan_map()
-            if node and attr:
-                # Already in paint mode, use current context
-                self.map_combo.nucx_node = node
-                return
-
-            # Get selected mesh
-            sel = cmds.ls(sl=True, type="transform")
-            if not sel:
-                return
-
-            mesh = sel[0]
-            # Check for nucleus maps
-            maps, nucx_node = get_nucx_maps_from_mesh(mesh)
-            if maps:
-                self.map_combo.nucx_node = nucx_node
-                self.maya_paint()  # Enter paint mode
-            else:
-                # Check for deformers
-                deformers = listDeformers(mesh)
-                if deformers:
-                    # Store first deformer for paint mode
-                    self.map_combo.nucx_node = deformers[0]
-                    self.maya_paint()
-
-        elif mesh_name:  # Regular mesh selection
-            self.mesh_combo._current_text = mesh_name
-            self.populate_map_combobox()
-        else:
-            logger.warning("ComboBox Mesh doesn't emit mesh")
-
-    def refresh_mesh_list(self, solver_type: SolverType):
-        """Refresh the mesh combo box based on solver type"""
-        self.mesh_combo.clear()
-        self.map_combo.clear()
-
-        if solver_type == SolverType.NUCLEUS:
-            # Implementation will be added to fetch nucleus nodes
-            pass
-        elif solver_type == SolverType.DEFORMER:
-            # Implementation for deformers will be added later
-            pass
-
-    def refresh_map_list(self, mesh_name: str):
-        """Refresh the map combo box based on selected mesh"""
-        self.map_combo.clear()
-        if not mesh_name:
             return
 
-    def _update_range_limits(self):
-        """Update spinbox ranges when limits change"""
-        new_min = self.range_limit_min.value()
-        new_max = self.range_limit_max.value()
+        # Get mesh from selection
+        mesh = getattr(new_value, 'mesh_transform', None)
+        if mesh:
+            self._update_mesh_combo(mesh)
 
-        # Update the ranges of the value spinboxes
-        self.range_min_spin.setRange(new_min, new_max)
-        self.range_max_spin.setRange(new_min, new_max)
+    def _on_mesh_changed(self, old_value, new_value):
+        """Handle mesh change."""
+        if new_value:
+            self._update_mesh_combo(new_value)
+        self._current_mesh = new_value
 
-        # Force update of slider positions
-        self._handle_spin_change(self.range_min_spin.value(), True)
-        self._handle_spin_change(self.range_max_spin.value(), False)
+    def _on_map_selected(self, old_value, new_value):
+        """Handle map selection from map tree."""
+        if new_value is None:
+            return
 
-    def set_active_mesh(self, mesh_name: str):
-        """Set the active mesh in the combo box"""
-        index = self.mesh_combo.findText(mesh_name)
-        if index >= 0:
-            self.mesh_combo.setCurrentIndex(index)
+        map_name = getattr(new_value, 'name', str(new_value))
 
-    def set_active_map(self, map_name: str):
-        """Set the active map in the combo box"""
-        index = self.map_combo.findText(map_name)
-        if index >= 0:
-            self.map_combo.setCurrentIndex(index)
+        # Update combo if not already selected
+        idx = self.map_combo.findText(map_name)
+        if idx >= 0:
+            self.map_combo.setCurrentIndex(idx)
 
-    def _handle_flood(self, value: float):
-        """Handle flood button clicks"""
-        # Get current edit mode
-        clamp_min, clamp_max = None, None
-        if self.clamp_min_check.isChecked():
-            clamp_min = float(self.clamp_min_spin.value())
-        if self.clamp_max_check.isChecked():
-            clamp_max = float(self.clamp_max_spin.value())
+        self._current_map = map_name
 
-        edit_mode = self.get_current_mode()
-        logger.debug(f"Flood Start : value:{value}, edit:{edit_mode.value}, clamp:[{clamp_min},{clamp_max}]")
+    # ========================================================================
+    # COMBO MANAGEMENT
+    # ========================================================================
 
-        self.set_flood_weight(value, edit_mode.value, clamp_min, clamp_max)
+    def _update_mesh_combo(self, mesh: str):
+        """Update mesh combo with current mesh."""
+        self.mesh_combo.clear()
+        self.mesh_combo.addItem(mesh)
+        self.mesh_combo.setCurrentText(mesh)
+        self._update_map_combo(mesh)
 
-    def _validate_clamp_ranges(self):
-        """Ensure min clamp is not greater than max clamp"""
-        if self.clamp_min_spin.value() > self.clamp_max_spin.value():
-            self.clamp_max_spin.setValue(self.clamp_min_spin.value())
+    def _update_map_combo(self, mesh: str):
+        """Update map combo based on mesh selection."""
+        self.map_combo.clear()
 
+        # Get maps for this mesh (would need nucleus node)
+        try:
+            from ..sim_cmds.vtx_map_management import get_vtx_maps
 
-    def get_clamp_range(self) -> tuple[Optional[float], Optional[float]]:
-        """Get current clamp range values"""
-        min_val = self.clamp_min_spin.value() if self.clamp_min_check.isChecked() else None
-        max_val = self.clamp_max_spin.value() if self.clamp_max_check.isChecked() else None
-        return min_val, max_val
+            # Find connected simulation node
+            history = cmds.listHistory(mesh, pdo=True) or []
+            sim_nodes = [n for n in history
+                         if cmds.nodeType(n) in ['nCloth', 'nRigid', 'hairSystem']]
 
-    def get_current_mode(self) -> EditMode:
-        """Get current edit mode"""
-        for mode, btn in self.mode_buttons.items():
-            if btn.isChecked():
-                return mode
-        return EditMode.REPLACE
+            if sim_nodes:
+                maps = get_vtx_maps(sim_nodes[0])
+                for map_name in maps:
+                    self.map_combo.addItem(map_name)
+        except Exception as e:
+            logger.debug(f"Could not get maps: {e}")
 
-    def _handle_selection_mode(self, button):
-        """Handle selection mode changes"""
-        mode = SelectionMode.RANGE if button == self.rb_range else SelectionMode.VALUE
-        self.selectionModeChanged.emit(mode)
+    def get_combo_data(self) -> Tuple[Optional[str], Optional[str], Optional[str]]:
+        """Get current combo selections."""
+        mesh = self.mesh_combo.currentText() or None
+        map_name = self.map_combo.currentText() or None
 
-        # Update UI based on mode
-        self.range_max_spin.setVisible(mode == SelectionMode.RANGE)
-        self.range_slider.setVisible(mode == SelectionMode.RANGE)
+        # Get nucleus node
+        nucx = None
+        if mesh:
+            try:
+                history = cmds.listHistory(mesh, pdo=True) or []
+                sim_nodes = [n for n in history
+                             if cmds.nodeType(n) in ['nCloth', 'nRigid', 'hairSystem']]
+                nucx = sim_nodes[0] if sim_nodes else None
+            except Exception:
+                pass
 
-    def _handle_range_change(self, min_val, max_val):
-        """Handle range slider changes"""
-        # Convert slider range (0-99) to value range
+        return nucx, map_name, mesh
+
+    # ========================================================================
+    # FLOOD OPERATIONS
+    # ========================================================================
+
+    def _flood(self):
+        """Execute flood operation."""
+        from ..sim_cmds.vtx_map_management import flood_map
+
+        value = self.flood_value.value()
+        mode = self.mode_group.checkedButton().property("editMode")
+
+        nucx, map_name, mesh = self.get_combo_data()
+        if not nucx or not map_name:
+            cmds.warning("Please select a mesh and map first")
+            return
+
+        # Apply clamp if enabled
+        if self.clamp_check.isChecked():
+            clamp = (self.clamp_min.value(), self.clamp_max.value())
+        else:
+            clamp = None
+
+        logger.info(f"Flooding {map_name} with {value} ({mode.value})")
+        flood_map(nucx, map_name, value, mode.value.lower(), clamp=clamp)
+
+        self.floodRequested.emit(value, mode.value)
+
+    # ========================================================================
+    # RANGE OPERATIONS
+    # ========================================================================
+
+    def _on_range_changed(self, min_norm: float, max_norm: float):
+        """Handle range slider change."""
+        limit_min = self.range_limit_min.value()
+        limit_max = self.range_limit_max.value()
+
+        actual_min = limit_min + min_norm * (limit_max - limit_min)
+        actual_max = limit_min + max_norm * (limit_max - limit_min)
+
+        self.range_min_spin.blockSignals(True)
+        self.range_max_spin.blockSignals(True)
+
+        self.range_min_spin.setValue(actual_min)
+        self.range_max_spin.setValue(actual_max)
+
+        self.range_min_spin.blockSignals(False)
+        self.range_max_spin.blockSignals(False)
+
+    def _on_spin_changed(self, value: float, is_min: bool):
+        """Handle range spinbox change."""
         value_range = self.range_limit_max.value() - self.range_limit_min.value()
-        min_value = self.config.min_value + (min_val / 99.0) * value_range
-        max_value = self.config.min_value + (max_val / 99.0) * value_range
+        if value_range == 0:
+            return
 
-        # Update spinboxes
-        self.range_min_spin.setValue(min_value)
-        self.range_max_spin.setValue(max_value)
+        slider_value = ((value - self.range_limit_min.value()) / value_range) * 99.0
+        slider_value = max(0, min(99, slider_value))
 
-        self.selectionRangeChanged.emit(min_value, max_value)
-
-    def _handle_spin_change(self, value, is_min):
-        """Handle changes to range spinboxes"""
-        # Convert value to slider range
-        value_range = self.range_limit_max.value() - self.range_limit_min.value()
-        slider_value = ((value - self.config.min_value) / value_range) * 99.0
-
-        # Update slider
         if is_min:
             self.range_slider.first_position = slider_value
         else:
@@ -744,188 +534,150 @@ class VertexMapEditor(QtWidgets.QWidget):
 
         self.range_slider.update()
 
-    def _handle_smooth_preset(self):
-        """Handle smooth preset button clicks"""
+    def _update_range_limits(self):
+        """Update spinbox ranges when limits change."""
+        new_min = self.range_limit_min.value()
+        new_max = self.range_limit_max.value()
+
+        self.range_min_spin.setRange(new_min, new_max)
+        self.range_max_spin.setRange(new_min, new_max)
+
+    # ========================================================================
+    # SMOOTH OPERATIONS
+    # ========================================================================
+
+    def _on_smooth_preset(self):
+        """Handle smooth preset button click."""
         iterations = self.sender().property("smoothValue")
+        self._smooth_flood(iterations)
+
+    def _smooth_flood(self, iterations: int):
+        """Apply smooth operation."""
+        from ..sim_cmds.vtx_map_management import smooth_pervtx_map
+
+        logger.debug(f"Smooth flood: {iterations} iterations")
+        smooth_pervtx_map(iterations)
         self.smoothRequested.emit(iterations)
 
-    def populate_treecombobox(self):
-        from ..sim_cmds.paint_wgt_utils import set_data_treecombo, nice_name, get_maya_sel
-        sel = get_maya_sel()
-        self.mesh_combo.clear()
+    # ========================================================================
+    # SELECTION OPERATIONS
+    # ========================================================================
 
-        # Add viewport selection item at the top
-        self.mesh_combo.addItem("- viewport selection -")
+    def _select_by_weight(self):
+        """Select vertices by weight range."""
+        from ..sim_cmds import get_vtx_map_data
+        from dw_maya.dw_paint import WeightDataFactory
+        from dw_maya.dw_nucleus_utils import artisan_nucx_update
 
-        # Add regular items
-        if sel:
-            easy_sel = nice_name(sel[0])
-        elif self.mesh_selected:
-            easy_sel = nice_name(self.mesh_selected)
-        else:
-            easy_sel = None
+        min_val = self.range_min_spin.value()
+        max_val = self.range_max_spin.value()
 
-        set_data_treecombo(self.mesh_combo, easy_sel)
-        self.populate_map_combobox()
-
-    def populate_map_combobox(self):
-        from ..sim_cmds.paint_wgt_utils import get_nucx_maps_from_mesh
-
-        logger.debug("Populating map combobox...")
-        self.map_combo.clear()
-
-        mesh = self.mesh_combo.get_current_text()
-
-        logger.debug(f"Populating map - Current TreeCombo mesh: {mesh}")
-        if not mesh:
+        nucx, map_name, mesh = self.get_combo_data()
+        if not nucx or not map_name:
+            cmds.warning("Please select a mesh and map first")
             return
 
-        maps, nucx_node = get_nucx_maps_from_mesh(mesh)
-        logger.debug(f"Found maps: {maps}, nucx_node: {nucx_node}")
+        # Get weights
+        weights = get_vtx_map_data(nucx, f"{map_name}PerVertex")
+        if not weights:
+            cmds.warning("No weight data found")
+            return
 
-        self.map_combo.nucx_node = nucx_node
-
-        # Sort maps by type
-        map_categories = {
-            1: [],  # Vertex maps
-            2: [],  # Texture maps
-            0: []  # Disabled maps
-        }
-
-        # Categorize maps
-        for map_name in sorted(maps):
-            map_type = get_nucx_map_type(nucx_node, f"{map_name}MapType")
-            if map_type is not None:  # Check for valid map type
-                map_categories[map_type].append(map_name)
-
-        # Add maps with separators
-        first_category = True
-        for map_type, map_list in map_categories.items():
-            if map_list:
-                # Add separator between categories (except first)
-                if not first_category:
-                    self.map_combo.insertSeparator(self.map_combo.count())
-                first_category = False
-
-                # Add maps for this category
-                for map_name in map_list:
-                    self.map_combo.addMapItem(map_name, map_type)
-
-        # Update storage buttons when map changes
-        self._update_storage_buttons()
-
-    def maya_paint(self):
-        """
-        todo: if it is in viewport selection, it should paint
-        automatically when the map combobox is selected
-        :return:
-        """
-        from ..sim_cmds import paint_vtx_map
-        # Per Vertex Method
-        mesh = self.mesh_combo.get_current_text()
-        map = self.map_combo.currentText()
-        nucx_node = self.map_combo.nucx_node
-        solver = get_nucleus_solver(nucx_node)
-        paint_vtx_map(map+"PerVertex", mesh, solver)
-
-    def smooth_flood(self, iteration: int = 1):
-        """ should be okay with both deformers and nucx"""
-        if not isinstance(iteration, int):
-            value = iteration.value()
-            logger.debug(f"Flood smooth x times:{value}]")
-            smooth_pervtx_map(value)
-        else:
-            logger.debug(f"Flood smooth x times:{iteration}]")
-            smooth_pervtx_map(iteration)
-
-    def get_combo_data(self) -> Tuple[str, str, str]:
-        """
-        return nucleus_node, map name, mesh_name
-        """
-        mesh = self.mesh_combo.get_current_text()
-        if mesh != "- viewport selection -":
-            map = self.map_combo.currentText()
-            nucx_node = self.map_combo.nucx_node
-            return nucx_node, map, mesh
-        else:
-            # Get current artisan context if active
-            node, attr, node_type = get_current_artisan_map()
-            return node, attr, node_type
-
-    def set_flood_weight(self, value, operation, clamp_min, clamp_max):
-        """Unified flood weight function for both nucleus and deformers"""
-        from ..sim_cmds.paint_wgt_utils import set_weights
-
-        # Get current context if in paint mode
-        node, attr, node_type = get_current_artisan_map()
-
-        if node and attr:
-            # Use current paint context
-            target_node = f"{node}.{attr}"
-            is_deformer = node_type not in ["nCloth", "nRigid"]
-            mesh = cmds.ls(sl=True)[0]
-        else:
-            # Use combo selection
-            nucx, _map, mesh = self.get_combo_data()
-            target_node = f"{nucx}.{_map}PerVertex"
-            is_deformer = False
-
-        # Get current weights
-        if is_deformer:
-            from dw_maya.dw_deformers.dw_core import get_deformer_weights
-            weights = get_deformer_weights(target_node)['weightList']
-        else:
-            from ..sim_cmds import get_vtx_map_data
-            weights = get_vtx_map_data(target_node.split('.')[0], target_node.split('.')[1])
-
-        # Apply flood operation
-        new_weights = flood_weights(mesh,
-                                    weights,
-                                    value,
-                                    operation.lower(),
-                                    clamp_min,
-                                    clamp_max)
-
-        # Set the weights
-        set_weights(target_node, new_weights, is_deformer)
-
-    def select_by_weight(self):
-        from ..sim_cmds import get_vtx_map_data, set_vtx_map_data
-
-        _min = self.range_min_spin.value()
-        _max = self.range_max_spin.value()
-
-        # gather elements set in ui
-        nucx, _map, mesh = self.get_combo_data()
-
-        # get the weightList
-        weights = get_vtx_map_data(nucx, _map+"PerVertex")
+        # Select by range
         weight_data = WeightDataFactory.create(weights, mesh)
+
         if self.rb_range.isChecked():
-            weight_data.select_indexes_by_weights(_min, _max)
+            weight_data.select_indexes_by_weights(min_val, max_val)
         else:
-            weight_data.select_indexes_by_weights(_min)
+            weight_data.select_indexes_by_weights(min_val)
 
-        artisan_nucx_update(nucx, _map, True)
+        # Update artisan
+        artisan_nucx_update(nucx, map_name, True)
 
-    def invert_selection(self):
-        dwu.invert_selection()
-        # gather elements set in ui
-        nucx, _map, mesh = self.get_combo_data()
-        artisan_nucx_update(nucx, _map, True)
+    def _invert_selection(self):
+        """Invert current selection."""
+        from dw_maya.dw_maya_utils import invert_selection
+        from dw_maya.dw_nucleus_utils import artisan_nucx_update
 
-    def clear_selection(self):
+        invert_selection()
+
+        nucx, map_name, mesh = self.get_combo_data()
+        if nucx and map_name:
+            artisan_nucx_update(nucx, map_name, True)
+
+    def _clear_selection(self):
+        """Clear selection and select mesh."""
+        from dw_maya.dw_nucleus_utils import artisan_nucx_update
+
+        nucx, map_name, mesh = self.get_combo_data()
+
         cmds.select(clear=True)
-        # gather elements set in ui
-        nucx, _map, mesh = self.get_combo_data()
-        cmds.select(mesh, r=True)
-        artisan_nucx_update(nucx, _map, True)
+        if mesh:
+            cmds.select(mesh, r=True)
+
+        if nucx and map_name:
+            artisan_nucx_update(nucx, map_name, True)
+
+    # ========================================================================
+    # STORAGE OPERATIONS
+    # ========================================================================
+
+    def _store_weights(self):
+        """Store current weights for later recall."""
+        from ..sim_cmds import get_vtx_map_data
+
+        nucx, map_name, mesh = self.get_combo_data()
+        if not nucx or not map_name:
+            cmds.warning("Please select a mesh and map first")
+            return
+
+        weights = get_vtx_map_data(nucx, f"{map_name}PerVertex")
+        if weights:
+            self._stored_weights = weights.copy()
+            logger.info(f"Stored {len(weights)} weight values")
+
+    def _recall_weights(self):
+        """Recall stored weights with blend."""
+        from ..sim_cmds.vtx_map_management import set_vtx_map_data
+        from ..sim_cmds import get_vtx_map_data
+
+        if not hasattr(self, '_stored_weights') or not self._stored_weights:
+            cmds.warning("No stored weights to recall")
+            return
+
+        nucx, map_name, mesh = self.get_combo_data()
+        if not nucx or not map_name:
+            return
+
+        blend = self.blend_slider.value() / 100.0
+
+        if blend == 1.0:
+            # Full recall
+            set_vtx_map_data(nucx, f"{map_name}PerVertex", self._stored_weights)
+        else:
+            # Blend with current
+            current = get_vtx_map_data(nucx, f"{map_name}PerVertex")
+            if current and len(current) == len(self._stored_weights):
+                blended = [
+                    c * (1 - blend) + s * blend
+                    for c, s in zip(current, self._stored_weights)
+                ]
+                set_vtx_map_data(nucx, f"{map_name}PerVertex", blended)
+
+        logger.info(f"Recalled weights at {blend * 100}% blend")
+
+    # CLEANUP - handled by DynEvalWidget base class
 
 
-# Example usage
+# ============================================================================
+# STANDALONE TEST
+# ============================================================================
+
 if __name__ == '__main__':
     app = QtWidgets.QApplication([])
-    config = EditorConfig(min_value=-99.0, max_value=99.0, decimals=4)
+
+    config = EditorConfig(min_value=0.0, max_value=1.0, decimals=3)
     editor = VertexMapEditor(config)
     editor.show()
+
     app.exec()
