@@ -49,6 +49,205 @@ class TokenData:
         return "<br>".join(lines)
 
 
+class TokenWrapWidget(QWidget):
+    """
+    Custom widget that handles wrapping tokens and input field to multiple lines.
+    """
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.token_widgets = []
+        self.rows = []  # Keep track of all rows
+
+        # Main layout (vertical to stack rows)
+        self.main_layout = QVBoxLayout(self)
+        self.main_layout.setContentsMargins(0, 0, 0, 0)
+        self.main_layout.setSpacing(4)
+
+        # Create first row with line edit
+        self.line_edit = QLineEdit()
+        self.line_edit.setPlaceholderText("Type to filter...")
+        self.line_edit.setFrame(False)
+        self.line_edit.setMinimumWidth(100)
+        self.line_edit.setMaximumWidth(500)  # Prevent line edit from expanding too much
+
+        self._create_new_row(include_line_edit=True)
+
+        # Token layout wrapper for compatibility
+        self.token_layout = self
+
+        # Set minimum height and size policy
+        self.setMinimumHeight(40)
+        self.setSizePolicy(
+            QSizePolicy.Policy.Expanding,
+            QSizePolicy.Policy.Minimum
+        )
+
+    def _create_new_row(self, include_line_edit=False):
+        """Create a new horizontal row"""
+        row = QHBoxLayout()
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(4)
+
+        if include_line_edit:
+            row.addWidget(self.line_edit, 1)
+
+        row.addStretch()  # Add stretch to keep widgets left-aligned
+
+        self.main_layout.addLayout(row)
+        self.rows.append(row)
+        return row
+
+    def addWidget(self, widget):
+        """Add a token widget with automatic wrapping"""
+        self.token_widgets.append(widget)
+
+        # Get actual available width from the widget itself
+        # Use a more conservative calculation
+        container_width = self.width()
+        if container_width < 100:
+            # Widget hasn't been rendered yet, use parent's width
+            parent = self.parentWidget()
+            while parent and container_width < 100:
+                container_width = parent.width()
+                parent = parent.parentWidget()
+
+        if container_width < 100:
+            container_width = 600  # Fallback default
+
+        # Calculate available width (reserve space for line edit minimum + margins)
+        available_width = container_width - 150
+
+        # Find the last row (the one with the line edit)
+        last_row = self.rows[-1] if self.rows else None
+        if not last_row:
+            last_row = self._create_new_row(include_line_edit=True)
+
+        # Force widget to calculate its size
+        widget.adjustSize()
+        widget.updateGeometry()
+
+        current_width = self._get_row_width(last_row)
+        widget_width = widget.sizeHint().width()
+
+        # Check if widget fits in current row
+        # Wrap if: current width + new widget exceeds available AND there's at least one widget already
+        needs_new_row = (current_width + widget_width + 10 > available_width and
+                        self._count_widgets_in_row(last_row) > 0)
+
+        if needs_new_row:
+            # Need to wrap - move line edit to new row
+            # Remove line edit from current row
+            last_row.removeWidget(self.line_edit)
+
+            # Remove stretch from old row
+            if last_row.count() > 0:
+                stretch_item = last_row.itemAt(last_row.count() - 1)
+                if stretch_item.spacerItem():
+                    last_row.removeItem(stretch_item)
+
+            # Create new row with line edit
+            last_row = self._create_new_row(include_line_edit=True)
+
+        # Insert widget before line edit in the last row
+        line_edit_index = last_row.indexOf(self.line_edit)
+        if line_edit_index >= 0:
+            last_row.insertWidget(line_edit_index, widget)
+        else:
+            # Line edit not in this row, add widget at the beginning
+            last_row.insertWidget(0, widget)
+
+        # Update minimum height based on number of rows
+        min_height = max(40, len(self.rows) * 34)
+        self.setMinimumHeight(min_height)
+
+        # Force layout update
+        self.updateGeometry()
+
+    def _count_widgets_in_row(self, row_layout):
+        """Count actual widgets in row (excluding line edit and spacers)"""
+        count = 0
+        for i in range(row_layout.count()):
+            item = row_layout.itemAt(i)
+            if item.widget() and item.widget() != self.line_edit:
+                count += 1
+        return count
+
+    def removeWidget(self, widget):
+        """Remove a token widget and reorganize layout"""
+        if widget in self.token_widgets:
+            self.token_widgets.remove(widget)
+
+        # Find and remove from layout
+        for row in self.rows:
+            for j in range(row.count()):
+                item = row.itemAt(j)
+                if item and item.widget() == widget:
+                    row.removeWidget(widget)
+
+                    # If row is empty (only has stretch), remove it
+                    if row.count() <= 1 and row != self.rows[-1]:
+                        self.rows.remove(row)
+                        self.main_layout.removeItem(row)
+                        # Delete the layout
+                        while row.count():
+                            item = row.takeAt(0)
+                            if item.widget():
+                                item.widget().deleteLater()
+
+                    # Ensure line edit is in the last row
+                    self._ensure_line_edit_in_last_row()
+
+                    # Update minimum height
+                    min_height = max(40, len(self.rows) * 34)
+                    self.setMinimumHeight(min_height)
+                    return
+
+    def _ensure_line_edit_in_last_row(self):
+        """Ensure the line edit is always in the last row"""
+        if not self.rows:
+            self._create_new_row(include_line_edit=True)
+            return
+
+        last_row = self.rows[-1]
+
+        # Check if line edit is in last row
+        if last_row.indexOf(self.line_edit) < 0:
+            # Find where line edit is
+            for row in self.rows:
+                if row.indexOf(self.line_edit) >= 0:
+                    row.removeWidget(self.line_edit)
+                    break
+
+            # Add to last row
+            last_row.insertWidget(0, self.line_edit, 1)
+
+    def _get_row_width(self, row_layout):
+        """Calculate the current width of a row (excluding line edit and stretch)"""
+        width = 0
+        for i in range(row_layout.count()):
+            item = row_layout.itemAt(i)
+            if item.widget() and item.widget() != self.line_edit:
+                width += item.widget().sizeHint().width() + 4
+        return width
+
+    def count(self):
+        """Return number of token widgets"""
+        return len(self.token_widgets)
+
+    def resizeEvent(self, event):
+        """Handle resize to potentially reflow tokens"""
+        super().resizeEvent(event)
+        # Future: could implement token reflowing here
+
+    def set_scrollable(self, max_height: int):
+        """
+        Set a maximum height to make the widget scrollable.
+        Call this to enable scrolling behavior.
+        """
+        self.setMaximumHeight(max_height)
+        # Parent should wrap this in a QScrollArea for actual scrolling
+
+
 class FlowLayout(QHBoxLayout):
     """
     Simple horizontal flow layout for tokens displayed inline.
@@ -495,33 +694,36 @@ class TokenFilterLineEdit(QWidget):
         container_layout.setContentsMargins(0, 0, 0, 0)
         container_layout.addWidget(main_container)
 
-        # Inner layout for tokens and input (all in one area)
-        inner_layout = QHBoxLayout(main_container)
+        # Use a custom widget that handles wrapping
+        self.inner_widget = TokenWrapWidget(main_container)
+
+        inner_layout = QVBoxLayout(main_container)
         inner_layout.setContentsMargins(8, 8, 8, 8)
         inner_layout.setSpacing(4)
+        inner_layout.addWidget(self.inner_widget)
 
-        # Container for tokens with flow layout
-        self.token_container = QWidget()
-        self.token_layout = FlowLayout(self.token_container)
-        self.token_layout.setContentsMargins(0, 0, 0, 0)
-        self.token_layout.setSpacing(4)
+        # Reference to layout and line edit
+        self.token_layout = self.inner_widget.token_layout
+        self.line_edit = self.inner_widget.line_edit
 
-        inner_layout.addWidget(self.token_container)
-
-        # Line edit for text input (inline with tokens)
-        self.line_edit = QLineEdit()
-        self.line_edit.setPlaceholderText("Type to filter...")
-        self.line_edit.setFrame(False)
-        self.line_edit.setMinimumWidth(100)
-        self.line_edit.setSizePolicy(
-            QSizePolicy.Policy.Expanding,
-            QSizePolicy.Policy.Fixed
-        )
+        # Connect signals
         self.line_edit.textChanged.connect(self._on_text_changed)
         self.line_edit.returnPressed.connect(self._on_return_pressed)
         self.line_edit.installEventFilter(self)
 
-        inner_layout.addWidget(self.line_edit, 1)
+        # Set size policies to prevent expansion
+        self.setSizePolicy(
+            QSizePolicy.Policy.Expanding,
+            QSizePolicy.Policy.Minimum
+        )
+        main_container.setSizePolicy(
+            QSizePolicy.Policy.Expanding,
+            QSizePolicy.Policy.Minimum
+        )
+        self.inner_widget.setSizePolicy(
+            QSizePolicy.Policy.Expanding,
+            QSizePolicy.Policy.Minimum
+        )
 
         # Styling with prominent border
         self.setStyleSheet("""
@@ -571,8 +773,8 @@ class TokenFilterLineEdit(QWidget):
         token_widget = Token(token_data, self)
         token_widget.removeRequested.connect(self._remove_token)
 
-        # Add to flow layout
-        self.token_layout.addWidget(token_widget)
+        # Add to wrap widget
+        self.inner_widget.addWidget(token_widget)
         self.token_widgets.append(token_widget)
 
         self.tokensChanged.emit(self.tokens)
@@ -613,6 +815,16 @@ class TokenFilterLineEdit(QWidget):
         Callback signature: callback(tokens: List[TokenData], filter_text: str, parsed_data: dict) -> Any
         """
         self.custom_filter_callback = callback
+
+    def set_scrollable(self, max_height: int = 150):
+        """
+        Enable scrollable mode with a maximum height.
+        When tokens exceed this height, a scrollbar will appear.
+
+        Args:
+            max_height: Maximum height in pixels before scrolling (default: 150)
+        """
+        self.inner_widget.set_scrollable(max_height)
 
     def set_autocomplete_items(self, items: List[AutoCompleteItem]):
         """Set the list of autocomplete suggestions"""
@@ -941,5 +1153,6 @@ class DemoWindow(QWidget):
 if __name__ == "__main__":
     app = QApplication(sys.argv)
     window = DemoWindow()
+    window.filter_edit.setMaximumWidth(300)
     window.show()
     sys.exit(app.exec())
