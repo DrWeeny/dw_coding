@@ -5,7 +5,8 @@ Inspired by Google's email interface with hoverable token details
 
 from PySide6.QtWidgets import (
     QApplication, QWidget, QLineEdit, QHBoxLayout, QVBoxLayout,
-    QLabel, QPushButton, QFrame, QScrollArea, QToolTip, QCompleter
+    QLabel, QPushButton, QFrame, QScrollArea, QToolTip, QCompleter,
+    QSizePolicy
 )
 from PySide6.QtCore import (
     Qt, Signal, QRect, QPoint, QSize, QTimer, QAbstractListModel,
@@ -46,6 +47,38 @@ class TokenData:
             lines.append(f"<b>{key}:</b> {value}")
 
         return "<br>".join(lines)
+
+
+class FlowLayout(QHBoxLayout):
+    """
+    Simple horizontal flow layout for tokens displayed inline.
+    """
+    def __init__(self, parent=None, spacing=-1):
+        super().__init__(parent)
+        self.item_list = []
+        self.h_spacing = spacing if spacing >= 0 else 4
+        self.setSpacing(self.h_spacing)
+        self.setContentsMargins(0, 0, 0, 0)
+
+    def addWidget(self, widget):
+        """Add widget to layout"""
+        self.item_list.append(widget)
+        super().addWidget(widget)
+
+    def insertWidget(self, index, widget):
+        """Insert widget at specific index"""
+        self.item_list.insert(index, widget)
+        super().insertWidget(index, widget)
+
+    def removeWidget(self, widget):
+        """Remove widget from layout"""
+        if widget in self.item_list:
+            self.item_list.remove(widget)
+        super().removeWidget(widget)
+
+    def count(self):
+        """Return number of widget items"""
+        return len(self.item_list)
 
 
 class Token(QWidget):
@@ -453,49 +486,59 @@ class TokenFilterLineEdit(QWidget):
 
     def _setup_ui(self):
         """Setup the UI layout"""
-        main_layout = QHBoxLayout(self)
-        main_layout.setContentsMargins(4, 4, 4, 4)
-        main_layout.setSpacing(4)
+        # Main container with border
+        main_container = QFrame(self)
+        main_container.setObjectName("tokenFilterContainer")
+        main_container.setFrameShape(QFrame.StyledPanel)
 
-        # Container for tokens
+        container_layout = QVBoxLayout(self)
+        container_layout.setContentsMargins(0, 0, 0, 0)
+        container_layout.addWidget(main_container)
+
+        # Inner layout for tokens and input (all in one area)
+        inner_layout = QHBoxLayout(main_container)
+        inner_layout.setContentsMargins(8, 8, 8, 8)
+        inner_layout.setSpacing(4)
+
+        # Container for tokens with flow layout
         self.token_container = QWidget()
-        self.token_layout = QHBoxLayout(self.token_container)
+        self.token_layout = FlowLayout(self.token_container)
         self.token_layout.setContentsMargins(0, 0, 0, 0)
         self.token_layout.setSpacing(4)
-        self.token_layout.addStretch()
 
-        # Line edit for text input
+        inner_layout.addWidget(self.token_container)
+
+        # Line edit for text input (inline with tokens)
         self.line_edit = QLineEdit()
-        self.line_edit.setPlaceholderText("Filter...")
+        self.line_edit.setPlaceholderText("Type to filter...")
         self.line_edit.setFrame(False)
+        self.line_edit.setMinimumWidth(100)
+        self.line_edit.setSizePolicy(
+            QSizePolicy.Policy.Expanding,
+            QSizePolicy.Policy.Fixed
+        )
         self.line_edit.textChanged.connect(self._on_text_changed)
         self.line_edit.returnPressed.connect(self._on_return_pressed)
         self.line_edit.installEventFilter(self)
 
-        main_layout.addWidget(self.token_container)
-        main_layout.addWidget(self.line_edit, 1)
+        inner_layout.addWidget(self.line_edit, 1)
 
         # Styling with prominent border
-        self.setAutoFillBackground(True)
-        palette = self.palette()
-        palette.setColor(QPalette.Window, QColor("white"))
-        self.setPalette(palette)
-
         self.setStyleSheet("""
-            TokenFilterLineEdit {
+            QFrame#tokenFilterContainer {
                 border: 2px solid #1a73e8;
                 border-radius: 8px;
                 background: white;
-                padding: 2px;
-            }
-            TokenFilterLineEdit:focus-within {
-                border: 2px solid #1557b0;
-                background: #f8f9fa;
+                min-height: 40px;
             }
             QLineEdit {
                 border: none;
                 background: transparent;
                 padding: 4px;
+                font-size: 13px;
+            }
+            QLineEdit:focus {
+                background: transparent;
             }
         """)
 
@@ -528,11 +571,8 @@ class TokenFilterLineEdit(QWidget):
         token_widget = Token(token_data, self)
         token_widget.removeRequested.connect(self._remove_token)
 
-        # Insert before stretch
-        self.token_layout.insertWidget(
-            self.token_layout.count() - 1,
-            token_widget
-        )
+        # Add to flow layout
+        self.token_layout.addWidget(token_widget)
         self.token_widgets.append(token_widget)
 
         self.tokensChanged.emit(self.tokens)
