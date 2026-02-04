@@ -102,7 +102,7 @@ class Template_Importer(QtWidgets.QMainWindow):
         # ListView - general templates
 
         self.widget_general = QtWidgets.QWidget()
-        self.widget_general.setMaximumSize(QtCore.QSize(self._width, self._height))
+        self.widget_general.setMaximumWidth(self._width)
         self.widget_layout = QtWidgets.QVBoxLayout()
 
         self.label = QtWidgets.QLabel("CFX Templates")
@@ -115,6 +115,7 @@ class Template_Importer(QtWidgets.QMainWindow):
         self.list_view = QtWidgets.QListView()
         self.list_view.setModel(self.model_category)
         self.list_view.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
+        self.list_view.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Expanding)
 
         # Add context menu event to the list view
         self.list_view.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
@@ -129,7 +130,7 @@ class Template_Importer(QtWidgets.QMainWindow):
         # Return Button
         # ListView - all templates
         self.widget_sub = QtWidgets.QWidget()
-        self.widget_sub.setMaximumSize(QtCore.QSize(self._width, self._height+80))
+        self.widget_sub.setMaximumWidth(self._width)
         self.widget_sub.resize(QtCore.QSize(0, self._height))
         self.widget_sub_layout = QtWidgets.QVBoxLayout()
 
@@ -540,8 +541,33 @@ class Template_Importer(QtWidgets.QMainWindow):
             self.widget_sub.setVisible(False)
             self.widget_general.setVisible(True)
 
+        # Connect finished signal to refresh layout after animation
+        try:
+            self.anim_group.finished.disconnect(self._refresh_layout_after_animation)
+        except (TypeError, RuntimeError):
+            pass
+        self.anim_group.finished.connect(self._refresh_layout_after_animation)
         self.anim_group.start()
 
+    def _refresh_layout_after_animation(self):
+        """
+        Force a layout refresh after slide animation completes.
+        Uses QTimer to ensure the update happens after Qt processes events.
+        """
+
+        def do_refresh():
+            self.centralwidget.updateGeometry()
+            self.view_layout_main.update()
+            # Force the visible widget to properly resize
+            if self.widget_sub.isVisible():
+                self.widget_sub.setMaximumWidth(self._width)
+                self.widget_sub.updateGeometry()
+            if self.widget_general.isVisible():
+                self.widget_general.setMaximumWidth(self._width)
+                self.widget_general.updateGeometry()
+            self.adjustSize()
+
+        QtCore.QTimer.singleShot(0, do_refresh)
     def show_context_menu(self, pos):
         """
         Displays a context menu with actions related to categories and templates.
