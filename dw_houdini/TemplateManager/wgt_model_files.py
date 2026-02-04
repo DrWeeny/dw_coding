@@ -16,10 +16,14 @@ Functional Overview:
 The models are designed to work with Qt-based views (`QTableView`, `QListView`, etc.) and
 integrate into a larger UI application, facilitating interaction with file data.
 
-Author: drweeny
+Author: np-alexis
 """
 
-from PySide2 import QtCore, QtGui, QtWidgets
+try:
+    from PySide2 import QtCore, QtGui, QtWidgets
+except:
+    from PySide6 import QtCore, QtGui, QtWidgets
+
 import re
 from .template_cmds import get_user, get_current_time
 from typing import Optional
@@ -158,7 +162,8 @@ class FileModel(QtCore.QAbstractTableModel):
                 file.get("comment", ""),
                 file.get("user", ""),
                 file.get("creation_time", ""),
-                file.get("weblink", "")
+                file.get("weblink", ""),
+                file.get("context", None)
             ]
 
         return None
@@ -222,6 +227,7 @@ class FileModel(QtCore.QAbstractTableModel):
                  approved:bool=False,
                  comment:str=None,
                  weblink:str=None,
+                 context:str=None,
                  ):
         """
         Adds a new file to the model's data and notifies the view to refresh.
@@ -229,6 +235,7 @@ class FileModel(QtCore.QAbstractTableModel):
         :param approved: Approval status of the file.
         :param comment: Optional comment for the file.
         :param weblink: Optional web link for the file.
+        :param context: Optional Houdini context (e.g., 'Sop', 'Object') for user snippets.
         """
         # Prepare the new file's data
         new_file = {
@@ -238,6 +245,7 @@ class FileModel(QtCore.QAbstractTableModel):
             "comment": comment,
             "creation_time": get_current_time(),
             "weblink": weblink,
+            "context": context,
         }
 
         self.layoutAboutToBeChanged.emit()

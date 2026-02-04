@@ -6,10 +6,13 @@ Classes:
 - CustomTextEdit: A subclass of QTextEdit that adds custom context menu actions.
 - CommentPanel: A QWidget that displays a panel with user information, comment text, and metadata.
 
-author : drweeny
+author : np-alexis
 """
 import webbrowser
-from PySide2 import QtCore, QtGui, QtWidgets
+try:
+    from PySide2 import QtCore, QtGui, QtWidgets
+except:
+    from PySide6 import QtCore, QtGui, QtWidgets
 from .wgt_action_separator import ActionTextSeparator
 from typing import Optional
 
@@ -83,6 +86,11 @@ class CommentPanel(QtWidgets.QWidget):
         self.user_name_label.setReadOnly(True)
         self.layout.addWidget(self.user_name_label)
 
+        # context field (for user snippets - shows Sop, Object, Dop, etc.)
+        self.context_label = QtWidgets.QLineEdit("Context: ", self)
+        self.context_label.setReadOnly(True)
+        self.layout.addWidget(self.context_label)
+
         # date + weblink
         horizontalLayout = QtWidgets.QHBoxLayout()
 
@@ -121,6 +129,20 @@ class CommentPanel(QtWidgets.QWidget):
             text (str): The user name to display.
         """
         self.user_name_label.setText(text)
+
+    def set_context(self, text: Optional[str]):
+        """
+        Set the Houdini context in the panel (e.g., Sop, Object, Dop).
+
+        Args:
+            text (Optional[str]): The context to display, or None to hide the field.
+        """
+        if text:
+            self.context_label.setText(f"Context: {text}")
+            self.context_label.setVisible(True)
+        else:
+            self.context_label.setText("")
+            self.context_label.setVisible(False)
 
     def set_date(self, text:str):
         """
@@ -174,21 +196,25 @@ class CommentPanel(QtWidgets.QWidget):
         Reset all fields in the comment panel.
         """
         self.user_name_label.setText("")
+        self.context_label.setText("")
+        self.context_label.setVisible(False)
         self.date_created_label.setText("")
         self.weblink=None
         self.comment_text.setText("")
 
-    def set_all_fields(self, comment: str, user: str, creation_date: str, weblink: Optional[str]):
+    def set_all_fields(self, comment: str, user: str, creation_date: str, weblink: Optional[str], context: Optional[str] = None):
         """
-        Set all fields (comment, user, date, weblink) in the panel.
+        Set all fields (comment, user, date, weblink, context) in the panel.
 
         Args:
             comment (str): The comment text.
             user (str): The user name.
             creation_date (str): The creation date.
             weblink (Optional[str]): The weblink (can be None).
+            context (Optional[str]): The Houdini context (e.g., 'Sop', 'Object'). Can be None.
         """
         self.user_name_label.setText(user)
+        self.set_context(context)
         self.date_created_label.setText(creation_date)
         self.weblink = weblink
         if self.weblink:

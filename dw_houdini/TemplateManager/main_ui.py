@@ -267,8 +267,8 @@ class Template_Importer(QtWidgets.QMainWindow):
         """
         extra_data = self.get_commentary_data()
         if extra_data:
-            comment, user, creation, weblink = extra_data
-            self.comment_widget.set_all_fields(comment, user, creation, weblink)
+            comment, user, creation, weblink, context = extra_data
+            self.comment_widget.set_all_fields(comment, user, creation, weblink, context)
 
     def close_comment_widget(self):
         """
@@ -342,10 +342,10 @@ class Template_Importer(QtWidgets.QMainWindow):
 
     def get_commentary_data(self)->list:
         """
-        Retrieves commentary metadata (comment, user, creation date, weblink) for the selected template.
+        Retrieves commentary metadata (comment, user, creation date, weblink, context) for the selected template.
 
         Returns:
-            list: A list containing [comment, user, creation, weblink], or None if not found.
+            list: A list containing [comment, user, creation, weblink, context], or None if not found.
         """
         # Get the currently selected template name using the FileModel
         selection_model = self.sub_list_view.selectionModel()
@@ -400,10 +400,16 @@ class Template_Importer(QtWidgets.QMainWindow):
                 if os.path.exists(selected_file_path):
                     # Import the selected file
                     print(f"Importing template: {selected_file_path}")
+                    # In import_template method:
                     if ".hip" in selected_file_path:
                         merge_file(selected_file_path)
                     else:
-                        load_otl(selected_file_path)
+                        # Get context from model if available (for user snippets)
+                        context = None
+                        if selected_category == "user":
+                            entry = self.model_files.get_selected_entry(source_index.row())
+                            context = entry.get("context") if entry else None
+                        load_otl(selected_file_path, expected_context=context)
                 else:
                     print(f"File does not exist: {selected_file_path}")
             else:
@@ -900,47 +906,62 @@ class Template_Importer(QtWidgets.QMainWindow):
 
         # if we have changed the category, we change the selection in the model
         # but also if we are in the second panel, we need to update the file model
-        if confirmed:
-            confirmed_category, next_iter, comment, weblink, template_name = confirmed
-            if confirmed_category != selected_category:
-                selected_category=confirmed_category
-                self.select_category_by_text(selected_category)
-                _cat_changed = True
+        if not confirmed:
+            return
 
-            # You can adjust the file name or path based on the source type if needed
-            if selected_category != "user":
-                file_name = f"{template_name}_v{next_iter:03}.otl"
+        confirmed_category, next_iter, comment, weblink, template_name = confirmed
+        if confirmed_category != selected_category:
+            selected_category=confirmed_category
+            self.select_category_by_text(selected_category)
+            _cat_changed = True
+
+        # You can adjust the file name or path based on the source type if needed
+        if selected_category != "user":
+            file_name = f"{template_name}_v{next_iter:03}.otl"
+        else:
+            current_user = self.get_user_prefix()
+            file_name = f"{current_user}_{template_name}_v{next_iter:03}.otl"
+
+        # Write the template to the target path (could be more logic here based on source_type)
+        target_path = os.path.join(template_path, selected_category)
+
+        # write otl/hip on disk first to get context metadata
+        is_root = "obj"
+        node_context = None
+        if selected_category == "user":
+            # Write OTL and get context
+            result = write_otl(target_path, file_name, isroot=None, store_context=True)
+            if result:
+                fullpath, node_context = result
             else:
-                current_user = self.get_user_prefix()
-                file_name = f"{current_user}_{template_name}_v{next_iter:03}.otl"
+                return  # write_otl failed, abort
+        else:
+            write_otl(target_path, file_name, isroot=is_root)
 
-            # Write the template to the target path (could be more logic here based on source_type)
-            target_path = os.path.join(template_path, selected_category)
+        # if we are on the second qlistview, we need to update it
+        # otherwise we need to update the data
+        if self._focus_index:
+            tmp_data = self.model_files.add_file(file_name,
+                                                 approved=False,
+                                                 comment=comment,
+                                                 weblink=weblink,
+                                                 context=node_context)
+        else:
+            tmp_data=self.data
 
-            # if we are on the second qlistview, we need to update it
-            # otherwise we need to update the data
-            if self._focus_index:
-                tmp_data = self.model_files.add_file(file_name,
-                                                     approved=False,
-                                                     comment=comment,
-                                                     weblink=weblink)
-            else:
-                tmp_data=self.data
+            new_file = {
+                "name": file_name,
+                "approved": False,
+                "user": get_user(),
+                "comment": comment,
+                "creation_time": get_current_time(),
+                "weblink":weblink,
+                "context": node_context
+            }
 
-                new_file = {
-                    "name": file_name,
-                    "approved": False,
-                    "user": get_user(),
-                    "comment": comment,
-                    "creation_time": get_current_time(),
-                    "weblink":weblink
-                }
+            # # Update the category files list in the JSON structure
+            tmp_data[0][selected_category]["files"].append(new_file)
 
-                # # Update the category files list in the JSON structure
-                tmp_data[0][selected_category]["files"].append(new_file)
-
-            # write otl/hip on disk
-            write_otl(target_path, file_name)
 
             # Save the updated JSON to disk
             save_assets_to_json(file_path=template_json_path,
