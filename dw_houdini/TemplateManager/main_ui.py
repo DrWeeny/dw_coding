@@ -962,17 +962,16 @@ class Template_Importer(QtWidgets.QMainWindow):
             # # Update the category files list in the JSON structure
             tmp_data[0][selected_category]["files"].append(new_file)
 
+        # Save the updated JSON to disk (must happen in both cases)
+        save_assets_to_json(file_path=template_json_path,
+                            folders=tmp_data[0],
+                            version=tmp_data[1],
+                            user_registration=get_user())
 
-            # Save the updated JSON to disk
-            save_assets_to_json(file_path=template_json_path,
-                                folders=tmp_data[0],
-                                version=tmp_data[1],
-                                user_registration=get_user())
-
-            # if second view is focused
-            if self._focus_index:
-                # Avoid race condition by ensuring the model is fully updated before sorting
-                QtCore.QTimer.singleShot(0, lambda: self.proxy_model.sort(0, QtCore.Qt.DescendingOrder))
+        # if second view is focused, ensure sorting is applied
+        if self._focus_index:
+            # Avoid race condition by ensuring the model is fully updated before sorting
+            QtCore.QTimer.singleShot(0, lambda: self.proxy_model.sort(0, QtCore.Qt.DescendingOrder))
 
     def action_remove_template(self):
         """
