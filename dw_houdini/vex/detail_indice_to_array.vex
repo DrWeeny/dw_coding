@@ -1,0 +1,17 @@
+function int[] fn_arrayuniqueval (int arr[])
+{
+   int tmp[] = {}; 
+   foreach(int src; arr)
+   {
+        int i =0;
+        
+        foreach(int itm; tmp) if (src == itm) i++ ;
+        
+        if (i == 0) append(tmp, src);            
+    
+   }
+   
+   return arr = tmp;
+}
+
+i[]@cfx_id=fn_arrayuniqueval(@cfx_id);
