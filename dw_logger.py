@@ -1,6 +1,9 @@
 from pathlib import Path
 import logging
-from maya import cmds
+try:
+    from maya import cmds
+except ImportError:
+    print("Maya Env not detected.")
 from logging.handlers import RotatingFileHandler
 
 
