@@ -1,0 +1,482 @@
+================================================================================
+HOUDINI TEACHING NOTES - CFX / ATTRIBUTES / GROUPING
+================================================================================
+These notes summarise examples from a Houdini teaching scene (.hip file).
+Topics covered: Remesh sensitivity, grouping methods, attributes, blendshapes,
+smoothing, mirroring, transferring, merging, masks, and the solver node.
+================================================================================
+
+
+--------------------------------------------------------------------------------
+SECTION 1 - REMESH & ANIMATED GEOMETRY
+--------------------------------------------------------------------------------
+
+EXAMPLE 1 - Remesh dependency on topology
+On animated geometry, remesh is dependent on topology. In particular, it is
+sensitive to the distance between points and stretch. Even small deformations
+between frames can produce very different remesh results.
+
+EXAMPLE 2 - Remesh on two static meshes
+To demonstrate the issue, two static meshes are remeshed. The second output has
+received only a minor adjustment. Despite having the same number of points, the
+remesh produces a completely different result. This illustrates that in a CFX
+pipeline, even the smallest modeling update can break any non-procedural
+methodology.
+
+
+--------------------------------------------------------------------------------
+SECTION 2 - TIME SHIFT NODE
+--------------------------------------------------------------------------------
+
+You can use the Time Shift node to freeze geometry at a specific point in time.
+This is equivalent to a duplicate (Ctrl+D) in Maya.
+
+The expression "$RFSTART" is often used to refer to the first frame of the
+timeline, typically a T-pose. However, if the shot setup is unusual, this can
+break your setup.
+
+Time Shift is very useful when doing shot sculpt after simulation.
+
+Note: Houdini sometimes caches the Time Shift node, so even if you change the
+input, it will not refresh. If this happens, disable the node and then re-enable
+it to force a refresh.
+
+
+--------------------------------------------------------------------------------
+SECTION 3 - OBJECT MERGE & BEST PRACTICES
+--------------------------------------------------------------------------------
+
+Many artists use the Object Merge node to import a proxy in T-pose. While simple,
+avoid overusing it. A node-based system is built around connections between nodes,
+and excessive use of Object Merge can make debugging very difficult.
+
+Best practice: only import Null nodes via Object Merge.
+
+
+--------------------------------------------------------------------------------
+SECTION 4 - STORING THE MODEL / T-POSE POSITION
+--------------------------------------------------------------------------------
+
+In a pipeline, the T-pose or model pose is stored as a point attribute (X, Y, Z).
+
+- This attribute is commonly called "pref" because renderers use it.
+- Vellum reads an attribute called "rest", so some pipelines also name it "rest".
+- In the teaching examples, it is named "model" for clarity, but the name can be
+  anything.
+
+With a Wrangle node you can manipulate attributes using VEX expressions.
+
+IMPORTANT - Performance tip:
+A Wrangle applies an operation to every component on every frame, similar to a
+for-loop in code. If your mesh is dense and the scene has many frames, this adds
+up. Best practice: use a Time Shift node to freeze the calculation, or cache the
+operation, to avoid recomputing every frame.
+
+An alternative to the Wrangle for moving attributes is the Attribute Swap node.
+It is faster than a Wrangle for a simple attribute copy.
+
+How to use Attribute Swap:
+- Set mode to "Copy"
+- Select the source attribute (e.g. "model")
+- Type the destination attribute (e.g. "P" for point position)
+- Freeze the calculation upstream (use Time Shift)
+- Add a Normal node after it to fix shading (or use the "Recompute Normals"
+  checkbox inside a Wrangle)
+
+Other Attribute Swap modes:
+- Swap  : exchanges two attributes (model becomes P, P becomes model)
+- Move  : deletes the source attribute and copies it to the destination
+
+
+--------------------------------------------------------------------------------
+SECTION 5 - GROUPING METHODS
+--------------------------------------------------------------------------------
+
+OVERVIEW
+In Houdini, groups are equivalent to selections in Maya. When you select geometry
+in the viewport and create a group, the result is stored as a list of indices.
+
+CFX rigs are sensitive to remesh. Selecting by index will break if the mesh is
+updated or if extra topology is added for a shot. The goal is to find grouping
+methods that stay stable even when the model is updated.
+
+--- 5.1 Quad mesh preservation ---
+If you create a group on a quad mesh, the group can be automatically preserved
+even after remeshing. This works because the group is based on spatial or
+conditional criteria rather than raw topology.
+
+--- 5.2 Group on the T-pose / model ---
+A reliable procedural approach is to create groups on the model or T-pose
+(stored at the origin), rather than on animated geometry.
+
+Example: use a bounding volume (set to Sphere) in the Group node to select
+sleeves. Because the selection is based on spatial position, it remains stable
+even if topology changes.
+
+--- 5.3 Group Copy vs Group Transfer ---
+Once your selection is ready on the T-pose, use the Group Copy node to transfer
+groups to the animated geometry. Specify which point, edge, or primitive groups
+to transfer, or use "*" to copy all groups.
+
+Note: Group Copy and Group Transfer are two different nodes. Do not confuse them.
+
+--- 5.4 Group by Lasso ---
+The Group by Lasso node works like the lasso selection in the viewport, but saves
+the lasso shape inside the node (as a 2D camera plane projection into 3D space).
+This means even if you remesh and change values, the selection is preserved.
+
+Important: the mesh must be at the same position as when the lasso was created.
+Always use it on the model placed at the origin, not on the first frame of a
+preroll, even if it is in T-pose - different positions will cause the selection
+to drift.
+
+--- 5.5 Group by Attribute Expression ---
+You can group points based on attribute values using an expression.
+Example: "@P.y > 0.5" groups every point with a Y position above 0.5.
+
+--- 5.6 Attribute Paint + Group Expression ---
+You can paint a mask attribute (e.g. "@mask") with Attribute Paint, then use it
+to drive groups:
+
+- Group node with "@mask > 0.5"  → selects points where mask is above 0.5
+- Group Expression node with "@mask > 0.4 && @mask < 0.6"  → selects the middle
+  range. Group Expression allows minimal VEX without requiring a full Wrangle.
+
+The VEXpression parameter has a dropdown arrow with presets. The preset
+"First Point on Primitive" is commonly used in CFX to get the roots of hair
+simulation curves.
+
+Warnings about Attribute Paint:
+- It is computationally heavy; do not use it as your default grouping workflow.
+- The "Recache Strokes" button only works reliably if the mesh is in the exact
+  same position as when it was painted. Even on a T-pose, it can sometimes
+  produce inconsistent results that are hard to debug.
+
+--- 5.7 Grouping with VEX (Wrangle) ---
+Anything is possible in VEX. Simple attribute and group manipulation can be done
+with minimal knowledge. Also note that a Wrangle node has a Group parameter that
+lets you filter which components are processed.
+
+--- 5.8 UV-based grouping ---
+UV islands are a stable selection basis because modeling rarely updates UVs once
+the asset reaches CFX.
+
+Method: use the Connectivity node in Prim mode to generate a "class" attribute
+that reflects UV islands. Then in the Group node use "@class=4-5" (or any range)
+to select the desired island.
+
+Because UVs change less often, you can group on either a T-pose or animated
+geometry and the result remains procedural.
+
+Note: In Houdini 20.5, the Remesh node changed behavior and modifies UVs.
+In a pipeline, store the UVs before remesh as a separate attribute (e.g.
+"@class_uv") to avoid this issue.
+
+--- 5.9 Utility grouping nodes ---
+1. Group node - Unshared Edges:
+   Untick "Base Group", set Group Type to "Points", go to the "Include by Edges"
+   tab and tick "Unshared Edges". This returns points on border edges, useful for
+   selecting sleeve tips, trouser bottoms, etc.
+
+2. Group Expand:
+   Grows, shrinks, or flood-fills a selection. Works together with border edge
+   selection.
+
+3. Group Transfer:
+   Transfers a group from one geometry to another (e.g. from a collider to cloth).
+   Use the "Distance Threshold" parameter to control the influence radius.
+   Warning: when using Vellum Constraint nodes at SOP level, avoid transferring
+   groups onto animated meshes because changing groups per frame causes issues.
+   Dynamic grouping inside DOPs can work under certain conditions.
+
+4. Group Promote:
+   Converts a group from one component type to another (e.g. primitive to point).
+   Default direction is prim to point but can be changed. The source type is
+   deleted by default; tick "Keep Original" to preserve both types.
+
+5. Group Combine:
+   Applies logical operations between groups: subtraction, intersection, union,
+   exclusive. For simpler operations, the "Initial Merge" option inside the Group
+   node also offers logical modes (default is "Replace Existing").
+
+
+--------------------------------------------------------------------------------
+SECTION 6 - ATTRIBUTE METHODS
+--------------------------------------------------------------------------------
+
+--- 6.1 General workflow ---
+Attributes have more dedicated nodes than groups. When using Attribute Paint or
+Attribute Transfer, work on the T-pose and then use Attribute Copy to apply the
+result to the animated geometry. Attributes are generally less sensitive to the
+mesh being animated compared to groups.
+
+--- 6.2 Attribute Create ---
+Allows you to create any type of attribute: point, prim, detail, vector, integer,
+float, string, etc. You can specify a default value and the current value.
+
+--- 6.3 Attribute Combine ---
+Apply operations between attributes (e.g. subtraction: my_paint - hole).
+
+--- 6.4 Attribute Promote ---
+Promotes an attribute from one component type to another (e.g. point to prim).
+
+--- 6.5 Attribute Copy ---
+Copies attributes from one geometry to another. Can only copy one component type
+at a time (prim, point, vertex, detail). The node will try to guess the type
+automatically, but if you pass a mix of types it may fail. Explicitly set the
+type when needed.
+
+Use the "New Name" parameter to rename an attribute during the copy operation.
+
+--- 6.6 Visualize node ---
+Shows any attribute or data type in the viewport. Useful for checking attribute
+values visually.
+
+--- 6.7 Wrangles for attribute manipulation ---
+Wrangles can replace most attribute operation nodes. You can organise related
+networks into Network Boxes (blue, pink, green) to keep the node graph clean.
+
+--- 6.8 Blendshapes and Attribute Copy ---
+Nearly everything in Houdini is an attribute. Point position "@P" (VEX) / "$P"
+(HScript) is an attribute like any other.
+
+You can use Attribute Copy to copy P and use it as a blendshape at weight 1.
+This lets you conform a mesh and copy animation without compromising other
+attributes.
+
+Alternatively, use the Blendshape node:
+- By default it blends all attributes, not just P.
+- To restrict blending to position only, set "Attributes to Blend" to "P".
+- You can blend any attribute with Blendshape: wind, maps, colors, etc.
+
+lerp (VEX function) linearly interpolates two attributes. It is more flexible
+than the Blendshape node. In VOP, the equivalent is the "mix" node.
+
+Houdini 19 added "Blend Masking" and "Blend Mask Attribute" to the Blendshape
+node, allowing map-based blending without VEX.
+
+VEX vs VOP:
+- Anything done in VEX can be done in VOP.
+- VEX uses code; VOP uses nodes to represent the same operations.
+- For complex scripts, VOP can be slightly slower, but for simple tasks there is
+  no practical difference.
+
+--- 6.9 Point order and @ptnum ---
+Most examples use @ptnum, the attribute that represents the point order.
+
+When splitting and recombining meshes, artists sometimes merge them back in a
+different order, breaking blendshapes and attribute operations.
+
+Best practice: store the point order before operations and restore it afterwards.
+
+Methods to store and restore point order:
+
+Blue example:
+  Use the Enumerate node to store @ptnum as "pt_index" and @primnum as a separate
+  attribute. After splitting and recombining, use the Sort node set to
+  "By Attribute" with attribute name "pt_index" to restore the order.
+
+Green example:
+  Use two Wrangles instead of Enumerate:
+    i@ptid   = @ptnum;   // point wrangle
+    i@primid = @primnum; // prim wrangle
+  Then use Sort as in the blue example.
+
+Purple example:
+  The Match Topology node compares two geometries and tries to match their point
+  order automatically. Useful in desperate situations where points have been
+  deleted or meshes were restructured.
+  Warning: it is very slow without hints, and it can hide issues that should not
+  be exported. Our pipeline does not use layered alembic, so topology must match
+  exactly.
+  Tips: select the same 3 points in "Tracking Points" and "Reference Points" to
+  help the node. If point and prim counts match, tick "Assume Primitives Match".
+
+Pink and yellow examples:
+  The Blendshape and Attribute Copy nodes have a "Point Sorting" parameter.
+  In our pipeline, the point order attribute is named "ptid" and is specified in
+  the "Point ID Attribute" field. Note: the output still has a shuffled order;
+  sorting is only used internally for matching.
+
+Brown example:
+  When a Point ID Attribute is specified in Blendshape or Attribute Copy, the
+  two inputs do not need to have the same number of points. Example: isolate a
+  shirt, apply Attribute Noise, then use Blendshape for the shirt only - it works
+  because "ptid" is set.
+  Watch out: if "Attributes" is set to "*", normals are also blended because
+  normals (N / @N / $N) are attributes too. Set "Attributes" to "P" to avoid
+  breaking normals without needing an extra Normal node.
+
+--- 6.10 Smoothing methods ---
+Various nodes exist for smoothing. Attribute Blur can blur any attribute, not
+just @P (e.g. blur @Cd to smooth colors).
+
+Delta Mush is the only smoothing node that is mesh-dependent. All others accept
+any attribute as input.
+
+--- 6.11 Attribute Remap ---
+Clamps minimum and maximum values, and remaps ranges.
+
+"Compute Range": automatically finds the min and max from the input geometry.
+You then specify new output min and output max.
+
+Invert example:
+  Input min: 0  /  Input max: 1
+  Output min: 1 /  Output max: 0
+
+The ramp widget changes the distribution of the remap (default is linear).
+Commonly used in hair simulation where 0 = root and 1 = tip.
+
+--- 6.12 Attribute Mirror ---
+Mirrors an attribute across an axis.
+
+Blue example:    Simple box, red color created on top, mirrored in Y axis to
+                 reproduce on the bottom.
+Green example:   Character that is not fully symmetrical causes dark spots where
+                 the mirror fails.
+Pink example:    Fix the dark spots by using Attribute Promote.
+                 - Promote point attribute to prim (set Operation to "Maximum"
+                   so a value of 1 wins over 0 instead of averaging to 0.5).
+                 - Then promote back from prim to point.
+Purple example:  To shrink multiple times, use a For-Each Feedback loop with the
+                 same technique but with Operation set to "Minimum". Adjust the
+                 "Iterations" slider on the foreach_end node.
+Yellow example:  Same logic implemented in a Wrangle.
+Brown example:   Do not try to loop through neighbours inside a Wrangle. The
+                 neighbours() function does not update between VEX iterations.
+                 Use a For-Each Feedback loop with a Wrangle inside it instead.
+
+--- 6.13 Attribute Adjust ---
+Simple math operations on an attribute. Example: multiply @Cd by a random value.
+A Wrangle example alongside shows multiplying only the red channel by a random
+value.
+
+--- 6.14 Attribute Randomize ---
+Randomises attribute values and also provides clamping and remapping options.
+Useful for adding chaos to Vellum simulation attributes. Commonly used in hair
+simulation to give each guide a different drag, density, or other value.
+
+--- 6.15 Detail attributes ---
+Houdini attribute types:
+  - Point attribute:  stored per point
+  - Vertex attribute: stored per UV / per point connection
+  - Primitive attribute: stored per polygon
+  - Detail attribute: a single constant value for the whole geometry.
+                      In a Wrangle, detail attributes are processed only once,
+                      not in a per-component loop.
+
+Blue example:
+  Store the arc length of curves as a detail attribute "arc_length_median" using
+  Attribute Promote with method "Median".
+
+  Left side - nodes approach:
+    - Measure node (mode: Perimeter / Length) returns the length as a prim attr.
+    - Resample node outputs a distance parameter; promote to prim with Sum.
+
+  Right side - VEX approach:
+    - Non-NURBS curves: iterate each point and accumulate distances.
+    - NURBS curves: use primarclen() with UV space.
+
+Green example:
+  Bonus: use a length attribute (primitive) to limit stretch in a Guide Process.
+
+Pink example:
+  - Store preroll frame count as a detail attribute to automate Peak node
+    animation.
+  - Store "asset_name" and use it to generate group names automatically.
+  - Store a direction attribute (computable from velocity or normals) to drive
+    automatic preroll movement or to ease a collider into position without
+    starting with interpenetration.
+
+Tip: detail() vs details() - left-click on an attribute name in the parameter
+     editor to toggle between the expression and the evaluated result.
+     String attributes always require backtick notation: `attribute_name`.
+
+--- 6.16 Intrinsic attributes ---
+Some attributes are created automatically by Houdini, even if you did not set
+them (e.g. @ptnum always exists on geometry). They are generally primitive-level.
+
+Examples when importing an Alembic:
+  - "abcfilename" : source file path
+  - "pivot"       : pivot position
+  - "visibility"  : visibility state
+
+To view intrinsic attributes in the Geometry Spreadsheet, click the "Intrinsics"
+dropdown (next to "View") and tick the ones you want to see.
+
+Note: Intrinsic attributes are generally read-only. Use primintrinsic() or
+intrinsic() functions in VEX to read them.
+
+--- 6.17 Attribute Transfer ---
+Transfers an attribute from one geometry to another, similar to Group Transfer.
+
+Blue example:  Transfer Cd from a sphere to another geometry.
+Green example: Warning - even if you do not specify any attributes, Attribute
+               Transfer copies ALL point and primitive attributes by default.
+               An attribute called "annoying_attr" was overwritten unintentionally.
+Pink example:  Transfer a "contact" attribute from a collider to another mesh
+               (scrub the timeline to see the animation).
+
+Best practice:
+  - Untick component types you do not need (point / prim / vertex / detail).
+  - Explicitly list attribute names in the "Attributes" field.
+  - Use "*" only when you truly want to transfer everything.
+
+--- 6.18 Merging attributes with the Merge node ---
+The Merge node combines geometry AND attributes. If the two inputs do not share
+the same attributes, a yellow warning flag appears on the node.
+
+Houdini will create the missing attribute on the other mesh using its default
+value.
+
+Blue example:  Sphere has @Cd, pig does not. Default (1,1,1) makes the pig white.
+Green example: @Cd created with Attribute Create (default 0,0,0) makes pig black.
+Pink example:  Sphere @Cd default set to pink, so merged pig becomes pink.
+Yellow example: Both sides have @Cd set correctly; no warning appears.
+
+Most of the time the Merge defaults make sense, but be aware that @Cd defaults
+to white (1,1,1), which can cause unexpected behavior when @Cd drives other nodes.
+
+
+--------------------------------------------------------------------------------
+SECTION 7 - MASK NODES
+--------------------------------------------------------------------------------
+
+"Mask" refers to an attribute named "mask". These are equivalent to vertex maps
+in Maya and are commonly used in CFX.
+
+Blue example - Mask Along Geometry:
+  Preset of the "Distance Along Geometry" node. Very commonly used. Pick a point,
+  set a radius, and the mask fades outward from that selection.
+
+Green example - Mask From Geometry:
+  Preset of the "Distance From Geometry" node. Uses a geometry shape to generate
+  the mask instead of a single point. Less precise, but useful for broader shapes.
+  Yellow sub-example: use this to create a contact map without needing an
+  Attribute Transfer node.
+
+Pink example - Mask by Feature:
+  A relatively recent node with multiple mask creation modes.
+  Used here to create an occlusion mask. Possible uses:
+  - Damp wind influence in occluded/dark areas.
+  - Simulate wind shielding based on a direction.
+  - Generate a shadow-like map.
+  The Direction tab lets you set a wind direction for shielding simulations.
+
+
+--------------------------------------------------------------------------------
+SECTION 8 - SOLVER NODE (BONUS)
+--------------------------------------------------------------------------------
+
+In Houdini you can build a custom Solver, which is a network that reads the
+previous frame's state and applies operations to it.
+
+Example: a red torus transfers its color attribute permanently onto the ground
+geometry as it passes over it. The result can be used as a painted map that
+accumulates over time.
+
+
+--------------------------------------------------------------------------------
+END OF NOTES
+--------------------------------------------------------------------------------
+
