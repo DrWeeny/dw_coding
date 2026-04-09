@@ -140,9 +140,9 @@ class MayaNode(ObjPointer):
                     MAttr(self.node, attr_name).setAttr(value)
             except AttributeError:
                 if not isinstance(value, str):
-                    cmds.setAttr('{}.{}'.format(self.node, self.attr), value)
+                    cmds.setAttr(f'{self.node}.{attr_name}', value)
                 elif isinstance(value, str):
-                    cmds.setAttr('{}.{}'.format(self.node, self.attr), value, type='string')
+                    cmds.setAttr(f'{self.node}.{attr_name}', value, type='string')
 
     @property
     def __node(self) -> str:
@@ -266,7 +266,7 @@ class MayaNode(ObjPointer):
             if current == tr:
                 if exists_in_tr:
                     if exists_in_sh and sh != tr:
-                        cmds.warning(f"attribute `{attr}` exists in both shape and transform, using: {current}.{attr}")
+                        logger.warning(f"Attribute `{attr}` exists in both shape and transform, using: {current}.{attr}")
                     return [attr]
                 elif exists_in_sh:
                     self.__dict__['item'] = 1  # Switch to shape
@@ -275,7 +275,7 @@ class MayaNode(ObjPointer):
             else:  # current == sh
                 if exists_in_sh:
                     if exists_in_tr and sh != tr:
-                        cmds.warning(f"attribute `{attr}` exists in both shape and transform, using: {current}.{attr}")
+                        logger.warning(f"Attribute `{attr}` exists in both shape and transform, using: {current}.{attr}")
                     return [attr]
                 elif exists_in_tr:
                     self.__dict__['item'] = 0  # Switch to transform
@@ -468,7 +468,8 @@ class MayaNode(ObjPointer):
             self.__dict__['node'] = name
             return self
         except Exception as e:
-            print(f"Failed to rename the node: {e}")
+            logger.error(f"Failed to rename the node: {e}")
+            raise
 
     def createNode(self, preset, targ_ns=':', name=""):
         """Create new node from preset or type.
@@ -489,7 +490,7 @@ class MayaNode(ObjPointer):
             # If we give some string, it will conform the dictionnary
             _type = preset[:]
             if _type not in cmds.ls(nt=True):
-                cmds.error('Please provide a valid : string nodeType or a key `nodeType`')
+                raise ValueError(f"Please provide a valid string nodeType or a key `nodeType`. Got: '{_type}'")
             preset = {f"{self.__dict__['node']}_nodeType": _type}
 
         # we try to determine if we create a node from scratch or if we load it
@@ -599,7 +600,7 @@ class MayaNode(ObjPointer):
 
                 # Check using full names or base names
                 if full_node_name == self.__dict__['node'] or current_node_basename in self_node_basenames:
-                    print(f"debug : it should process the node: {full_node_name}")
+                    logger.debug(f"Processing node: {full_node_name}")
                     # Create or use existing node
                     if not cmds.objExists(self.__dict__['node']):
                         # Create new node with the specified node type
@@ -619,7 +620,7 @@ class MayaNode(ObjPointer):
                                 target_attr = f"{self.sh}.{attr}"
 
                             if not cmds.ls(target_attr):
-                                print(f"skipping attribute {attr} for node {full_node_name}")
+                                logger.debug(f"Skipping attribute {attr} for node {full_node_name}")
                                 continue
 
                             # Check if value is a special token that needs evaluation
