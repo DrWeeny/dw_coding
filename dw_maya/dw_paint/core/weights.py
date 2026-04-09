@@ -86,29 +86,12 @@ class WeightData:
     def mirror(self,
                axis: Literal['x', 'y', 'z'] = 'x',
                tolerance: float = 0.001) -> 'WeightData':
-        """Mirror weights across specified axis"""
+        """Mirror weights across specified axis using shared find_mirror_pairs utility."""
+        from .mesh_data import find_mirror_pairs
+
         positions = self._mesh_data.vertex_positions
-        axis_idx = {'x': 0, 'y': 1, 'z': 2}[axis.lower()]
+        pairs = find_mirror_pairs(positions.tolist(), axis=axis, tolerance=tolerance)
 
-        # Find mirror pairs
-        pairs: Dict[int, int] = {}
-        for i in range(len(positions)):
-            if i in pairs:
-                continue
-            for j in range(i + 1, len(positions)):
-                if j in pairs:
-                    continue
-
-                # Check mirror conditions
-                pos1, pos2 = positions[i], positions[j]
-                if (abs(pos1[axis_idx] + pos2[axis_idx]) < tolerance and
-                        abs(pos1[(axis_idx + 1) % 3] - pos2[(axis_idx + 1) % 3]) < tolerance and
-                        abs(pos1[(axis_idx + 2) % 3] - pos2[(axis_idx + 2) % 3]) < tolerance):
-                    pairs[i] = j
-                    pairs[j] = i
-                    break
-
-        # Apply mirroring
         new_weights = self._weights.copy()
         for i, j in pairs.items():
             new_weights[j] = self._weights[i]
@@ -156,7 +139,8 @@ class WeightData:
 
         indices = []
         for comp in selected:
-            if match := re.search(r'\[(\d+)(?::(\d+))?\]', comp):
+            match = re.search(r'\[(\d+)(?::(\d+))?\]', comp)
+            if match:
                 start = int(match.group(1))
                 end = int(match.group(2)) if match.group(2) else start
                 indices.extend(range(start, end + 1))
