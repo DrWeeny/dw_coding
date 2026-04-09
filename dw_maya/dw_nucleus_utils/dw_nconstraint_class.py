@@ -1,17 +1,12 @@
-import sys, os
-
-# ----- Edit sysPath -----#
-rdPath = 'E:\\dw_coding\\dw_open_tools'
-if not rdPath in sys.path:
-    print(f"Add {rdPath} to sysPath")
-    sys.path.insert(0, rdPath)
-
 from maya import cmds, mel
 import dw_maya.dw_maya_nodes as dwnn
 import dw_maya.dw_maya_utils as dwu
 from dw_maya.dw_decorators import acceptString, viewportOff
 import dw_maya.dw_presets_io as dwpreset
 import dw_maya
+from dw_logger import get_logger
+
+logger = get_logger()
 
 class nConstraint(dwnn.MayaNode):
     """This class represents a dynamic constraint (nConstraint) in Maya.
@@ -25,7 +20,7 @@ class nConstraint(dwnn.MayaNode):
         mn.network
     """
 
-    def __init__(self, name: str, preset: dict = {}, blendValue: float = 1.0):
+    def __init__(self, name: str, preset: dict = None, blendValue: float = 1.0):
         """Initialize the nConstraint with a node name, preset, and blend value.
 
                     "transform", "pointToSurface",
@@ -34,10 +29,10 @@ class nConstraint(dwnn.MayaNode):
 
         Args:
             name (str): The name of the dynamic constraint node.
-            preset (dict, optional): Preset used for node creation. Defaults to an empty dict.
+            preset (dict, optional): Preset used for node creation. Defaults to None.
             blendValue (float, optional): The blend value for the constraint. Defaults to 1.0.
         """
-        super().__init__(name, preset, blendValue)
+        super().__init__(name, preset or {}, blendValue)
 
     @property
     def nComponents(self) -> list:
@@ -67,8 +62,10 @@ class nConstraint(dwnn.MayaNode):
         nconst_connections_agnostic = [con.split(':')[-1] for con in nconst_connections]
 
         # Get nBase and hairSystem nodes
-        nNodes = list(set(cmds.listConnections(ncomp_names, type='nBase') or [] +
-                          cmds.listConnections(ncomp_names, type='hairSystem') or []))
+        nNodes = list(set(
+            (cmds.listConnections(ncomp_names, type='nBase') or []) +
+            (cmds.listConnections(ncomp_names, type='hairSystem') or [])
+        ))
         nNodes_agnostic = [n.split(':')[-1] for n in nNodes]
 
         # Create the network dictionary
@@ -146,7 +143,7 @@ class nConstraint(dwnn.MayaNode):
         nBase = [f'{namespace}:{i.split(".")[-1]}'.replace('::', ':') for i in node_preset[network_key]['nBases']]
         if not all(cmds.objExists(j) for j in nBase):
             invalid_input = ', '.join(nBase)
-            cmds.warning(
+            logger.warning(
                 f'Cannot create dynamicConstraint node "{target_node_name}" due to missing elements: {invalid_input}')
             return
 
@@ -301,15 +298,15 @@ class nComponent(dwnn.MayaNode):
         cmds.select(c)
     """
 
-    def __init__(self, name: str, preset: dict = {}, blendValue: float = 1.0):
+    def __init__(self, name: str, preset: dict = None, blendValue: float = 1.0):
         """Initialize the nComponent with a node name, preset, and blend value.
 
         Args:
             name (str): The name of the nComponent node.
-            preset (dict, optional): Used for node creation. Defaults to an empty dict.
+            preset (dict, optional): Used for node creation. Defaults to None.
             blendValue (float, optional): The blend value for the nComponent. Defaults to 1.0.
         """
-        super().__init__(name, preset, blendValue)
+        super().__init__(name, preset or {}, blendValue)
 
     @property
     def geometry(self) -> list:
@@ -368,8 +365,9 @@ class nComponent(dwnn.MayaNode):
         if attr and attr != [None]:
             for a in attr:
                 if a not in self._maps_dic:
-                    error_msg = f"This map '{a}' doesn't exist. Pick one of these: {list(self._maps_dic.keys())}."
-                    cmds.error(error_msg)
+                    raise ValueError(
+                        f"Map '{a}' doesn't exist. Pick one of: {list(self._maps_dic.keys())}."
+                    )
         else:
             attr = list(self._maps_dic.keys())
 
@@ -416,15 +414,14 @@ class nComponent(dwnn.MayaNode):
                 ids = map(int, ids)
 
                 nodes = self.geometry
-                pattern = '{geometry}.{component}[{id}]'.format
                 if isinstance(nodes, str):
                     m_ids = dwu.create_maya_ranges(ids)
-                    return [pattern(geometry=self.geometry, component=compo, id=i) for i in m_ids]
+                    return [f'{self.geometry}.{compo}[{i}]' for i in m_ids]
                 else:
                     curve_ranges = {}
                     offset = 0
                     for crv in nodes:
-                        cv_count = len(cmds.ls(crv + '.cv[*]', fl=True))
+                        cv_count = len(cmds.ls(f'{crv}.cv[*]', fl=True))
                         previous_value = offset
                         offset += cv_count
                         curve_ranges[offset] = [crv, previous_value]
@@ -437,11 +434,10 @@ class nComponent(dwnn.MayaNode):
 
             elif elem_type == 2:
                 # Select all components
-                pattern = '{geometry}.{component}[:]'.format
                 if isinstance(self.geometry, str):
-                    return cmds.ls(pattern(geometry=self.geometry, component=compo))
+                    return cmds.ls(f'{self.geometry}.{compo}[:]')
                 else:
-                    return [pattern(geometry=p, component='cv') for p in self.geometry]
+                    return [f'{p}.cv[:]' for p in self.geometry]
             else:
                 return self.geometry
 
