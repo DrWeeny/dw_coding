@@ -135,10 +135,10 @@ class MAttr(object):
         """
         if isinstance(other, MAttr):
             cmds.connectAttr(self.fullattr, other.fullattr, force=True)
-            print(f'Connected {self.fullattr} to {other.fullattr}')
+            logger.info(f'Connected {self.fullattr} to {other.fullattr}')
             return True
         else:
-            print(f'FAILED {self.fullattr} to {other.fullattr}')
+            logger.warning(f'Failed to connect {self.fullattr} to {other}')
 
     def __eq__(self, other):
         """Check if two attributes or an attribute and a value are equal."""
@@ -158,13 +158,13 @@ class MAttr(object):
             *args (Any): maya arguments for the commands
             **kwargs (Any): all the flag you would try to parse
         """
-        if args:
+        if not args:
+            cmds.setAttr(f'{self._node}.{self.attr}', *args, **kwargs)
+        else:
             if not isinstance(args[0], str) and len(args) == 1:
-                cmds.setAttr('{}.{}'.format(self._node, self.attr), args[0], **kwargs)
+                cmds.setAttr(f'{self._node}.{self.attr}', args[0], **kwargs)
             elif isinstance(args[0], str) and len(args) == 1:
-                cmds.setAttr('{}.{}'.format(self._node, self.attr), args[0], type='string', **kwargs)
-        elif kwargs:
-            cmds.setAttr('{}.{}'.format(self._node, self.attr), *args, **kwargs)
+                cmds.setAttr(f'{self._node}.{self.attr}', args[0], type='string', **kwargs)
 
     def getAttr(self, **kwargs):
         """
@@ -173,7 +173,7 @@ class MAttr(object):
             Any: cmds.getAttr()
         """
         if self.attr in self.listAttr(self.attr) or self._COMPOUND_PATTERN.search(self.attr):
-            return cmds.getAttr('{}.{}'.format(self._node, self.attr), **kwargs)
+            return cmds.getAttr(f'{self._node}.{self.attr}', **kwargs)
 
     @acceptString('destination')
     def connectAttr(self, destination: List[str], force=True):
@@ -190,7 +190,7 @@ class MAttr(object):
         _isConnec = [True if '.' in i and cmds.ls(i) else False for i in destination]
         if not all(_isConnec):
             invalid_input = ', '.join([i for x, i in zip(_isConnec, destination) if not x])
-            cmds.error(f"No valid attributes found in: {invalid_input}")
+            raise ValueError(f"No valid attributes found in: {invalid_input}")
 
         if self.attr in self.listAttr(self.attr) or self._COMPOUND_PATTERN.search(self.attr):
             try:
@@ -235,7 +235,7 @@ class MAttr(object):
 
     @property
     def fullattr(self):
-        return '{}.{}'.format(self.node, self.attr)
+        return f'{self.node}.{self.attr}'
 
     @property
     def _type(self):
@@ -243,19 +243,18 @@ class MAttr(object):
         Returns:
             str: type of the current attribute
         """
-        o = cmds.getAttr('{}.{}'.format(self._node, self.attr), type=True)
+        o = cmds.getAttr(f'{self._node}.{self.attr}', type=True)
         if isinstance(o, (list, tuple)):
             return list(set(o))
         return o
 
     def listConnections(self, **kwargs):
         """List all connections to/from this attribute."""
-        attr = '{}.{}'.format(self._node, self.attr)
-        return cmds.listConnections(attr, **kwargs)
+        return cmds.listConnections(f'{self._node}.{self.attr}', **kwargs)
 
     def disconnectAttr(self, source=True, destination=True):
         """Disconnect this attribute from its connections."""
-        attr = '{}.{}'.format(self._node, self.attr)
+        attr = f'{self._node}.{self.attr}'
         conn = cmds.listConnections(attr, p=True, d=False, s=True,
                                     scn=True)
         dest = cmds.listConnections(attr, p=True, d=True, s=False,
