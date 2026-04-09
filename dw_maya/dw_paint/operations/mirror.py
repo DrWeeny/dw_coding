@@ -80,38 +80,9 @@ class MirrorOperation:
                            positions: np.ndarray,
                            axis: str,
                            tolerance: float) -> dict:
-        """Find vertex pairs for mirroring"""
-        pairs = {}
-        axis_idx = {'x': 0, 'y': 1, 'z': 2}[axis.lower()]
-        vertex_count = len(positions)
-
-        for i in range(vertex_count):
-            if i in pairs:
-                continue
-
-            pos1 = positions[i]
-            found_pair = False
-
-            for j in range(i + 1, vertex_count):
-                if j in pairs:
-                    continue
-
-                pos2 = positions[j]
-
-                # Check mirror conditions
-                if (abs(pos1[axis_idx] + pos2[axis_idx]) < tolerance and
-                        abs(pos1[(axis_idx + 1) % 3] - pos2[(axis_idx + 1) % 3]) < tolerance and
-                        abs(pos1[(axis_idx + 2) % 3] - pos2[(axis_idx + 2) % 3]) < tolerance):
-                    pairs[i] = j
-                    pairs[j] = i
-                    found_pair = True
-                    break
-
-            # Handle vertices on mirror plane
-            if not found_pair and abs(pos1[axis_idx]) < tolerance:
-                pairs[i] = i
-
-        return pairs
+        """Find vertex pairs for mirroring. Delegates to shared mesh_data utility."""
+        from ..core.mesh_data import find_mirror_pairs
+        return find_mirror_pairs(positions.tolist(), axis=axis, tolerance=tolerance)
 
     def mirror_selected(self,
                         weights: WeightList,
@@ -152,7 +123,8 @@ class MirrorOperation:
     def _parse_component_index(self, component: str) -> Optional[int]:
         """Extract vertex index from component name"""
         import re
-        if match := re.search(r'vtx\[(\d+)\]', component):
+        match = re.search(r'vtx\[(\d+)\]', component)
+        if match:
             return int(match.group(1))
         return None
 

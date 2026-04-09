@@ -253,19 +253,107 @@ def find_vertex_pairs(
         positions: List[Tuple[float, float, float]],
         tolerance: float = 0.001
 ) -> Dict[int, int]:
-    """Find vertex pairs within tolerance distance."""
-    pairs = {}
-    for i, pos1 in enumerate(positions):
-        if i in pairs:
-            continue
-        for j, pos2 in enumerate(positions[i + 1:], i + 1):
-            if j in pairs:
+    """Find vertex pairs within tolerance distance.
+
+    Uses a KDTree for O(n log n) performance instead of O(n²) brute force.
+    Falls back to brute force if scipy is unavailable.
+    """
+    try:
+        import numpy as np
+        from scipy.spatial import KDTree
+
+        pos_array = np.array(positions)
+        tree = KDTree(pos_array)
+        pairs = {}
+        for i, pos in enumerate(pos_array):
+            if i in pairs:
                 continue
-            dist = math.sqrt(sum((a - b) ** 2 for a, b in zip(pos1, pos2)))
+            neighbours = tree.query_ball_point(pos, tolerance)
+            for j in neighbours:
+                if j != i and j not in pairs:
+                    pairs[i] = j
+                    pairs[j] = i
+                    break
+        return pairs
+
+    except ImportError:
+        # Brute-force fallback when scipy is not available
+        pairs = {}
+        for i, pos1 in enumerate(positions):
+            if i in pairs:
+                continue
+            for j, pos2 in enumerate(positions[i + 1:], i + 1):
+                if j in pairs:
+                    continue
+                dist = math.sqrt(sum((a - b) ** 2 for a, b in zip(pos1, pos2)))
+                if dist <= tolerance:
+                    pairs[i] = j
+                    pairs[j] = i
+        return pairs
+
+
+def find_mirror_pairs(
+        positions: List[Tuple[float, float, float]],
+        axis: str = 'x',
+        tolerance: float = 0.001
+) -> Dict[int, int]:
+    """Find vertex mirror pairs across the specified axis.
+
+    Mirrors positions along the given axis and finds matching vertices
+    within tolerance. Vertices on the mirror plane (coord ≈ 0) map to
+    themselves. Uses KDTree for O(n log n) performance.
+
+    Args:
+        positions: Vertex positions as list of (x, y, z) tuples or array.
+        axis: Axis to mirror across ('x', 'y', 'z').
+        tolerance: Maximum distance to consider two vertices a pair.
+
+    Returns:
+        Dict mapping vertex index → mirror vertex index.
+        Vertices on the plane map to themselves.
+    """
+    try:
+        import numpy as np
+        from scipy.spatial import KDTree
+
+        axis_idx = {'x': 0, 'y': 1, 'z': 2}[axis.lower()]
+        pos_array = np.array(positions, dtype=np.float32)
+
+        # Build a mirrored copy by flipping the axis coordinate
+        mirrored = pos_array.copy()
+        mirrored[:, axis_idx] *= -1
+
+        tree = KDTree(pos_array)
+        pairs = {}
+
+        for i, m_pos in enumerate(mirrored):
+            dist, j = tree.query(m_pos)
             if dist <= tolerance:
-                pairs[i] = j
-                pairs[j] = i
-    return pairs
+                pairs[i] = int(j)
+
+        return pairs
+
+    except ImportError:
+        # Brute-force fallback
+        axis_idx = {'x': 0, 'y': 1, 'z': 2}[axis.lower()]
+        pairs = {}
+        for i in range(len(positions)):
+            if i in pairs:
+                continue
+            pos1 = positions[i]
+            for j in range(i + 1, len(positions)):
+                if j in pairs:
+                    continue
+                pos2 = positions[j]
+                if (abs(pos1[axis_idx] + pos2[axis_idx]) < tolerance
+                        and abs(pos1[(axis_idx + 1) % 3] - pos2[(axis_idx + 1) % 3]) < tolerance
+                        and abs(pos1[(axis_idx + 2) % 3] - pos2[(axis_idx + 2) % 3]) < tolerance):
+                    pairs[i] = j
+                    pairs[j] = i
+                    break
+            if i not in pairs and abs(pos1[axis_idx]) < tolerance:
+                pairs[i] = i  # on mirror plane
+        return pairs
 
 def get_closest_vertex(
         point: Tuple[float, float, float],
