@@ -15,8 +15,8 @@ def get_deformer_weights(deformer_node: str) -> Dict[str, List[float]]:
         deformer_node: Name of the deformer node (e.g., cluster, blendShape, etc.)
 
     Returns:
-        Dictionary containing weight values with key 'mainWeight'
-        Example: {'mainWeight': [0.0, 0.5, 1.0, ...]}
+        Dictionary containing weight values with key 'weightList'
+        Example: {'weightList': [0.0, 0.5, 1.0, ...]}
 
     Raises:
         ValueError: If deformer node doesn't exist or has no mesh history
@@ -207,10 +207,10 @@ def set_deformer_weights(deformer: str,
     weight_attr = None
     if cmds.listAttr(f"{deformer}.{target_type}"):
         weight_attr = f"{deformer}.{target_type}"
-        pattern = re.compile("\[(\d+)]")
-        id = pattern.match(weight_attr).group(1)
-        if id:
-            index = int(id)
+        pattern = re.compile(r'\[(\d+)]')
+        match = pattern.search(weight_attr)
+        if match:
+            index = int(match.group(1))
             weight_attr = pattern.sub("", weight_attr)
 
         target_type = None
@@ -331,8 +331,8 @@ def get_deformers_weights(deformers: Union[str, List[str]]) -> Dict[str, List[fl
             # Get weights using the existing get_deformer_weights function
             deformer_data = get_deformer_weights(deformer)
 
-            # Add to main dictionary
-            weights_dict[deformer] = deformer_data.get('mainWeight', [])
+            # Add to main dictionary — key matches what get_deformer_weights() returns
+            weights_dict[deformer] = deformer_data.get('weightList', [])
 
             logger.debug(f"Successfully got weights from {deformer}")
 
@@ -592,15 +592,13 @@ def maya_edit_sets(deformer_name: str, object_list: list, **kwargs):
 
     # Ensure the deformer exists
     if not cmds.objExists(deformer_name):
-        cmds.error(f"Deformer '{deformer_name}' does not exist.")
-        return
+        raise RuntimeError(f"Deformer '{deformer_name}' does not exist.")
 
     # Get the object set connected to the deformer
     object_set = cmds.listConnections(deformer_name, type="objectSet")
 
     if not object_set:
-        cmds.error(f"No object set found connected to the deformer '{deformer_name}'.")
-        return
+        raise RuntimeError(f"No object set found connected to the deformer '{deformer_name}'.")
     object_set = object_set[0]  # The first connected set is used
 
     # Find the first valid flag in kwargs
@@ -615,7 +613,7 @@ def maya_edit_sets(deformer_name: str, object_list: list, **kwargs):
         kwargs[flag] = object_set
         cmds.sets(object_list, **kwargs)
     else:
-        cmds.error("No valid flag ('add', 'remove', 'addElement', 'rm') provided in kwargs.")
+        raise ValueError("No valid flag ('add', 'remove', 'addElement', 'rm') provided in kwargs.")
 
 def editDeformer(**kwargs):
     """
@@ -636,30 +634,22 @@ def editDeformer(**kwargs):
     """
     flags_accepted = ['remove', 'rm', 'add', 'addElement']
 
-    # Ensure that a valid flag is provided in the kwargs
     if not (set(kwargs.keys()) & set(flags_accepted)):
-        print(f"Error: One flag must be set from this list: {flags_accepted}")
-        return
+        raise ValueError(f"One flag must be set from this list: {flags_accepted}")
 
-    # Check that something is selected
     sel = cmds.ls(sl=True)
     if not sel or len(sel) < 2:
-        print("Error: Please select at least one object and a deformer.")
-        return
+        raise RuntimeError("Please select at least one object and a deformer.")
 
-    # Objects to add/remove and the deformer
     objs = sel[:-1]
     deformer_sel = sel[-1]
 
-    # Retrieve the history of the deformer and find any deformers in its history
     history = cmds.listHistory(deformer_sel)
     filter_deformers = [i for i in history if is_deformer(i)]
 
     if not filter_deformers:
-        print(f"Error: No deformers found in the history of {deformer_sel}.")
-        return
+        raise RuntimeError(f"No deformers found in the history of {deformer_sel}.")
 
-    # Use the first deformer found in the history and edit the set
     maya_edit_sets(filter_deformers[0], objs, **kwargs)
 
 
@@ -674,14 +664,13 @@ def editMembership(deformer=None):
         editMembership("myCluster")
     """
     if deformer:
-        # Select the parent object of the deformer
         parent_object = cmds.listRelatives(deformer, parent=True)
         if parent_object:
             cmds.select(parent_object[0], replace=True)
         else:
-            cmds.warning(f"Deformer '{deformer}' has no parent.")
+            logger.warning(f"Deformer '{deformer}' has no parent.")
     else:
-        cmds.warning("No deformer provided. Please select a deformer.")
+        logger.warning("No deformer provided. Please select a deformer.")
 
     # Launch Maya's Edit Membership Tool
     mel.eval("EditMembershipTool")
@@ -699,7 +688,7 @@ def paintWeights(deformer=None):
         paintWeights("myCluster")
     """
     if not deformer:
-        cmds.warning("No deformer provided. Please specify a deformer.")
+        logger.warning("No deformer provided. Please specify a deformer.")
         return
 
     defNode = None
@@ -727,7 +716,7 @@ def paintWeights(deformer=None):
 
     # Handle case where deformer is not found or not supported
     else:
-        cmds.warning(f"No supported deformer (softMod or cluster) found for '{deformer}'.")
+        logger.warning(f"No supported deformer (softMod or cluster) found for '{deformer}'.")
 
 
 def create_noise_texture_deformer(
