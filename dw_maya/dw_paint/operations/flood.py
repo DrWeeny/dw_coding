@@ -3,13 +3,13 @@ from typing import List, Optional, Tuple, Union
 import numpy as np
 from maya import cmds
 
-from ..core import (
+from dw_maya.dw_paint.core import (
     WeightData,
     MeshDataFactory,
     WeightList,
     mesh_cache
 )
-from ..utils.validation import validate_operation_type
+from dw_maya.dw_paint.utils.validation import validate_operation_type
 from dw_logger import get_logger
 
 logger = get_logger()
@@ -159,7 +159,8 @@ class FloodOperation:
     def _parse_component_indices(self, component: str) -> List[Union[int, Tuple[int, int]]]:
         """Parse component indices from component name"""
         import re
-        if match := re.search(r'\[(\d+)(?::(\d+))?\]', component):
+        match = re.search(r'\[(\d+)(?::(\d+))?\]', component)
+        if match:
             start = int(match.group(1))
             if match.group(2):  # Range
                 end = int(match.group(2))

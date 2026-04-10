@@ -1,4 +1,10 @@
-from typing import List, Optional, Tuple, Union, Literal
+from typing import List, Optional, Tuple, Union
+
+try:
+    from typing import Literal
+except ImportError:
+    from typing_extensions import Literal
+
 import numpy as np
 from maya import cmds
 

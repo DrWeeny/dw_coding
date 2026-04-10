@@ -1,8 +1,7 @@
 import time
 from functools import wraps
 import datetime
-from pathlib import Path
-from typing import Any, Callable, TypeVar, Optional
+from typing import Any, Callable, TypeVar, Optional, List, Dict
 from statistics import mean, median
 from dw_logger import get_logger
 
@@ -18,7 +17,7 @@ class TimingStats:
 
     def __init__(self, func_name: str):
         self.func_name = func_name
-        self.executions: list[float] = []
+        self.executions: List[float] = []
         self.start_time: Optional[float] = None
 
     def start(self) -> None:
@@ -36,7 +35,7 @@ class TimingStats:
         return duration
 
     @property
-    def stats(self) -> dict[str, float]:
+    def stats(self) -> Dict[str, float]:
         """Calculate timing statistics."""
         if not self.executions:
             return {}
@@ -79,7 +78,7 @@ class TimingStats:
 
 
 # Global dictionary to store timing statistics
-_timing_stats: dict[str, TimingStats] = {}
+_timing_stats: Dict[str, TimingStats] = {}
 
 
 def timeIt(track_stats: bool = False) -> Callable:

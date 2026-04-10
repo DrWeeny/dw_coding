@@ -52,12 +52,17 @@ Author: DrWeeny
 Version: 1.0.0
 """
 
-from typing import Union, List, Any, Optional, Literal, Dict
+# Correction de l'import de Literal pour compatibilité Python 3.7
+try:
+    from typing import Literal
+except ImportError:
+    from typing_extensions import Literal
+from typing import Union, List, Any, Optional, Dict
 from maya import cmds, mel
-from .data import flags
-from .components import get_next_free_multi_index
-from ..decorators import acceptString
-from cfx_maya.constants.node_attr_mappings import NODE_IO_MAPPING
+from dw_maya.dw_maya_utils.dw_maya_data import flags
+from dw_maya.dw_maya_utils.dw_maya_components import get_next_free_multi_index
+from dw_maya.dw_decorators import acceptString
+from dw_maya.dw_constants.node_attr_mappings import NODE_IO_MAPPING
 
 # Type aliases
 NodeName = AttrName = AttrPath = AttrType = str
@@ -230,7 +235,8 @@ def add_attr(node: NodeName,
             ('storable', 's'),
             ('writable', 'w')
         ]:
-            if flag_value := flags(kwargs, None, long, short):
+            flag_value = flags(kwargs, None, long, short)
+            if flag_value:
                 attr_data[long] = flag_value
 
         # Handle attribute type specific setup

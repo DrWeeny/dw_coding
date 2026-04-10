@@ -60,10 +60,12 @@ def unique_name(sel: Union[str, List[str]],
     frame = f"{int(cmds.currentTime(q=True)):03d}"
     dup_pattern = re.compile('_\d{3}_v\d{1,2}$')
 
+
     for obj in sel:
         # Handle custom pattern or generate default
-        if pattern := kwargs.get('pattern'):
-            name_pattern = pattern
+        custom_pattern = kwargs.get('pattern')
+        if custom_pattern:
+            name_pattern = custom_pattern
         else:
             # Strip namespace and attributes
             base_name = obj.split('.')[-1].split(':')[-1]
@@ -76,10 +78,10 @@ def unique_name(sel: Union[str, List[str]],
                     cmds.ls(type='transform'))
 
         # Find highest version number
-        pattern = re.compile(name_pattern)
+        name_pattern_re = re.compile(name_pattern)
         versions = [
             int(i[-1]) for i in existing
-            if pattern.search(i)
+            if name_pattern_re.search(i)
         ]
         version = max(versions, default=0) + 1
 

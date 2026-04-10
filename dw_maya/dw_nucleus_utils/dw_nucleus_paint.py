@@ -67,7 +67,13 @@ from maya import cmds, mel
 import re
 from .dw_core import get_nucx_map_data, get_mesh_from_nucx_node, set_nucx_map_data, get_nucx_map_type
 from dw_maya.dw_maya_utils import get_vtx_pos
-from typing import List, Optional, Union, Tuple, Literal
+from typing import List, Optional, Union, Tuple
+
+try:
+    from typing import Literal
+except ImportError:
+    from typing_extensions import Literal
+
 from dw_logger import get_logger
 import math
 import maya.api.OpenMaya as om

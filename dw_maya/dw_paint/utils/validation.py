@@ -1,5 +1,11 @@
 # utils/validation.py
-from typing import Optional, Union, List, Tuple, Literal, Any
+from typing import Optional, Union, List, Tuple, Any
+
+try:
+    from typing import Literal
+except ImportError:
+    from typing_extensions import Literal
+
 import re
 from maya import cmds
 from dw_logger import get_logger
@@ -156,7 +162,8 @@ def validate_component_name(component: str) -> Optional[Tuple[str, int]]:
         Tuple of (mesh_name, component_index) or None if invalid
     """
     pattern = r"^(.*?)\.vtx\[(\d+)\]$"
-    if match := re.match(pattern, component):
+    match = re.match(pattern, component)
+    if match:
         mesh_name = match.group(1)
         index = int(match.group(2))
 

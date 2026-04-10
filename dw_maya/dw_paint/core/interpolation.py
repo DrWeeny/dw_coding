@@ -1,10 +1,13 @@
 # core/interpolation.py
 import numpy as np
-from typing import List, Optional, Tuple, Dict, Literal
+try:
+    from typing import List, Optional, Union, Dict, Tuple, Literal
+except ImportError:
+    from typing import List, Optional, Union, Dict, Tuple
+    from typing_extensions import Literal
 from dataclasses import dataclass
-from ..utils.falloff import apply_falloff
-from .mesh_data import MeshDataFactory
-from .weights import WeightData
+from dw_maya.dw_paint.utils.falloff import apply_falloff
+from dw_maya.dw_paint.core.mesh_data import MeshDataFactory
 from dw_logger import get_logger
 
 logger = get_logger()

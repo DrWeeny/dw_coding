@@ -1,5 +1,9 @@
 import re
-from typing import List, Optional, Union, Dict, Tuple, Literal
+try:
+    from typing import List, Optional, Union, Dict, Tuple, Literal
+except ImportError:
+    from typing import List, Optional, Union, Dict, Tuple
+    from typing_extensions import Literal
 import numpy as np
 from dw_logger import get_logger
 from .mesh_data import MeshDataFactory

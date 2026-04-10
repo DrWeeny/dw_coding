@@ -151,7 +151,8 @@ def component_to_mesh_and_index(component: str) -> Optional[Tuple[str, int]]:
     """
     try:
         import re
-        if match := re.match(r"(.*?)\.vtx\[(\d+)\]", component):
+        match = re.match(r"(.*?)\.vtx\[(\d+)\]", component)
+        if match:
             mesh_name = match.group(1)
             index = int(match.group(2))
             return mesh_name, index

@@ -19,7 +19,7 @@ Example usage:
 """
 
 # Core functionality
-from .core import (
+from dw_maya.dw_paint.core import (
     # Cache system
     MeshCache,
     MeshDataCache,
@@ -53,7 +53,7 @@ from .core import (
 )
 
 # Operations
-from .operations import (
+from dw_maya.dw_paint.operations import (
     # Flood operations
     FloodOperation,
     flood_weights,
@@ -72,7 +72,7 @@ from .operations import (
 )
 
 # Utility functions
-from .utils import (
+from dw_maya.dw_paint.utils import (
     # MEL based utils
     open_tools_window,
 

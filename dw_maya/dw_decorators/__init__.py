@@ -56,17 +56,17 @@ __all__: List[str] = [
 ]
 
 # Explicit imports for frequently used decorators
-from .dw_acceptString import acceptString
-from .dw_benchmark import timeIt, printDate
-from .dw_complete_sound import complete_sound
-from .dw_disable_solvers import tmp_disable_solver
-from .dw_load_plugin import load_plugin
-from .dw_returnNodeDiff import returnNodeDiff
-from .dw_undo import singleUndoChunk, repeatable
-from .dw_viewportOff import viewportOff
-from .dw_decorators_other import evalManager_DG, evalManagerState
-from .dw_vtxAnimDetection import vtxAnimDetection
-from .dw_is_maya_node import is_maya_node
+from dw_maya.dw_decorators.dw_acceptString import acceptString
+from dw_maya.dw_decorators.dw_benchmark import timeIt, printDate
+from dw_maya.dw_decorators.dw_complete_sound import complete_sound
+from dw_maya.dw_decorators.dw_disable_solvers import tmp_disable_solver
+from dw_maya.dw_decorators.dw_load_plugin import load_plugin
+from dw_maya.dw_decorators.dw_returnNodeDiff import returnNodeDiff
+from dw_maya.dw_decorators.dw_undo import singleUndoChunk, repeatable
+from dw_maya.dw_decorators.dw_viewportOff import viewportOff
+from dw_maya.dw_decorators.dw_decorators_other import evalManager_DG, evalManagerState
+from dw_maya.dw_decorators.dw_vtxAnimDetection import vtxAnimDetection
+from dw_maya.dw_decorators.dw_is_maya_node import is_maya_node
 
 # Decorator categories for documentation and IDE support
 performance_decorators = [timeIt, viewportOff, tmp_disable_solver, evalManager_DG]

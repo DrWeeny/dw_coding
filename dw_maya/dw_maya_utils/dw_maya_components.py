@@ -11,6 +11,16 @@ MayaComponent = str
 ComponentID = int
 ComponentRange = str
 
+def selectBorder():
+    """ Select components next to selected ones. """
+
+    sel = cmds.filterExpand(selectionMask=[31, 32, 34])
+    if not sel:
+        cmds.warning("Wrong selection. (Must be a components selection.)")
+    else:
+        cmds.GrowPolygonSelectionRegion()
+        cmds.select(sel, deselect=True)
+
 def component_in_list(node_list):
     for name in node_list:
         component = COMPONENT_PATTERN.match(name)
@@ -149,7 +159,8 @@ def extract_id(components: List[str],
     indices: Set[int] = set()
 
     for comp in components:
-        if match := re.search(pattern, comp):
+        match = re.search(pattern, comp)
+        if match:
             index_str = match.group(1)
 
             # Handle range notation

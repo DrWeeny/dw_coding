@@ -1,5 +1,11 @@
 # utils/falloff.py
-from typing import Union, List, Literal, Optional, Callable, Tuple
+from typing import Union, List, Optional, Callable, Tuple
+
+try:
+    from typing import Literal
+except ImportError:
+    from typing_extensions import Literal
+
 import numpy as np
 from functools import lru_cache
 from dw_logger import get_logger

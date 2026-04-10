@@ -1,7 +1,7 @@
-from .maya_tool import (open_tools_window)
+from dw_maya.dw_paint.utils.maya_tool import open_tools_window
 
 # Validation utilities
-from .validation import (
+from dw_maya.dw_paint.utils.validation import (
     validate_operation_type,
     validate_weight_value,
     validate_mesh,
@@ -14,7 +14,7 @@ from .validation import (
 )
 
 # Falloff utilities
-from .falloff import (
+from dw_maya.dw_paint.utils.falloff import (
     FalloffCurve,
     FalloffFunction,
     CustomFalloff,
@@ -23,7 +23,7 @@ from .falloff import (
 )
 
 # Conversion utilities
-from .conversion import (
+from dw_maya.dw_paint.utils.conversion import (
     to_weight_list,
     to_numpy_array,
     convert_range_to_indices,
@@ -34,8 +34,8 @@ from .conversion import (
     remap_weights
 )
 
-from .maya_tool import (get_current_artisan_map,
-                        open_tools_window)
+from dw_maya.dw_paint.utils.maya_tool import (get_current_artisan_map,
+                                              open_tools_window)
 
 __all__ = [
     # Validation

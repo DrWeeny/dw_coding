@@ -1,25 +1,25 @@
 # operations/__init__.py
 
 # Flood operations
-from .flood import (
+from dw_maya.dw_paint.operations.flood import (
     FloodOperation,
     flood_weights
 )
 
 # Mirror operations
-from .mirror import (
+from dw_maya.dw_paint.operations.mirror import (
     MirrorOperation,
     mirror_weights
 )
 
 # Radial operations
-from .radial import (
+from dw_maya.dw_paint.operations.radial import (
     RadialOperation,
     set_radial_weights
 )
 
 # Directional operations
-from .directional import (
+from dw_maya.dw_paint.operations.directional import (
     DirectionalOperation,
     set_directional_weights
 )

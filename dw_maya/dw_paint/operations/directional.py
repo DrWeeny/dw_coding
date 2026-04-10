@@ -1,6 +1,12 @@
 # operations/directional.py
 import numpy as np
-from typing import List, Optional, Tuple, Union, Literal
+from typing import List, Optional, Tuple, Union
+
+try:
+    from typing import Literal
+except ImportError:
+    from typing_extensions import Literal
+
 from maya import cmds
 
 from ..core import (
