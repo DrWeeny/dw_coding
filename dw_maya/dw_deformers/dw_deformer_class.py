@@ -42,7 +42,6 @@ import dw_maya.dw_paint
 import dw_maya.dw_paint.core
 import dw_maya.dw_paint.utils
 import dw_maya.dw_paint.operations
-import dw_maya.dw_nucleus_utils.dw_nucleus_paint
 import dw_maya.dw_presets_io.dw_deformer_json as deformer_json
 import dw_maya.dw_presets_io.dw_preset as preset_utils
 from dw_logger import get_logger
@@ -50,41 +49,11 @@ from dw_logger import get_logger
 logger = get_logger()
 
 # ---------------------------------------------------------------------------
-# Type aliases
+# Type aliases + WeightSource protocol
+# Canonical home: dw_maya.dw_paint.protocol
+# New code:  from dw_maya.dw_paint.protocol import WeightSource, WeightList
 # ---------------------------------------------------------------------------
-WeightList = List[float]
-
-
-# ---------------------------------------------------------------------------
-# WeightSource protocol
-# ---------------------------------------------------------------------------
-class WeightSource:
-    """Minimal protocol that every weight-bearing node must satisfy.
-
-    Both Deformer subclasses and NClothMap implement this interface so
-    the UI and operations (flood, mirror, smooth …) remain backend-agnostic.
-    """
-
-    @property
-    def node_name(self) -> str:
-        raise NotImplementedError
-
-    @property
-    def mesh_name(self) -> str:
-        raise NotImplementedError
-
-    @property
-    def vtx_count(self) -> int:
-        raise NotImplementedError
-
-    def get_weights(self) -> WeightList:
-        raise NotImplementedError
-
-    def set_weights(self, weights: WeightList) -> None:
-        raise NotImplementedError
-
-    def paint(self) -> None:
-        raise NotImplementedError
+from dw_maya.dw_paint.protocol import WeightSource, WeightList
 
 
 # ---------------------------------------------------------------------------
@@ -151,14 +120,15 @@ class Deformer(dwnn.MayaNode, WeightSource):
     def meshes(self) -> List[str]:
         """All mesh/nurbsCurve transforms connected to this deformer.
 
-        Queries every outputGeometry slot so NURBS curves and multi-mesh
-        setups are both handled.  Returns transform names, not shapes.
+        Uses ``cmds.deformer(query, geometry)`` rather than following
+        ``outputGeometry`` connections: in a stacked-deformer setup the
+        latter resolves to the *next deformer node* instead of the actual
+        geometry, which breaks mesh_name and vtx_count.
+
+        Returns transform names, not shapes.
         """
-        shapes = cmds.listConnections(
-            f'{self.node_name}.outputGeometry',
-            source=False,
-            destination=True
-        ) or []
+        # cmds.deformer returns shape names of the actual affected geometry.
+        shapes = cmds.deformer(self.node_name, query=True, geometry=True) or []
         result = []
         for sh in shapes:
             parents = cmds.listRelatives(sh, parent=True, fullPath=True)
@@ -187,11 +157,12 @@ class Deformer(dwnn.MayaNode, WeightSource):
     def vtx_count(self) -> int:
         """Live vertex / CV count for the active geometry."""
         try:
-            shape = cmds.listConnections(
-                f'{self.node_name}.outputGeometry[{self.geo_index}]',
-                source=False,
-                destination=True
-            )[0]
+            # Use the same geometry list as meshes — avoids the outputGeometry
+            # bug where the connected node is the next deformer, not the mesh.
+            shapes = cmds.deformer(self.node_name, query=True, geometry=True) or []
+            if not shapes or self.geo_index >= len(shapes):
+                return 0
+            shape = shapes[self.geo_index]
             # polyMesh
             result = cmds.polyEvaluate(shape, vertex=True)
             if isinstance(result, int):
@@ -332,8 +303,8 @@ class Deformer(dwnn.MayaNode, WeightSource):
         current = self.get_weights()
         if not current:
             return
-        new_weights = dw_maya.dw_nucleus_utils.dw_nucleus_paint.mirror_vertex_map(
-            current, self.mesh_name, axis, world_space
+        new_weights = dw_maya.dw_paint.mirror_weights(
+            self.mesh_name, current, axis, world_space=world_space
         )
         if new_weights:
             self.set_weights(new_weights)
@@ -350,8 +321,8 @@ class Deformer(dwnn.MayaNode, WeightSource):
         current = self.get_weights()
         if not current:
             return
-        new_weights = dw_maya.dw_nucleus_utils.dw_nucleus_paint.interpolate_vertex_map(
-            current, self.mesh_name, iterations, smooth_factor
+        new_weights = dw_maya.dw_paint.smooth_weights(
+            self.mesh_name, current, iterations, smooth_factor
         )
         if new_weights:
             self.set_weights(new_weights)
@@ -373,8 +344,10 @@ class Deformer(dwnn.MayaNode, WeightSource):
             invert:      Invert the resulting weights.
             mode:        'projection' (signed) or 'distance' (unsigned).
         """
-        new_weights = dw_maya.dw_paint.set_vertex_weights_by_vector(
-            self.mesh_name, direction, remap_range, falloff, origin, invert, mode
+        new_weights = dw_maya.dw_paint.set_directional_weights(
+            self.mesh_name, direction,
+            remap_range=remap_range, falloff=falloff, origin=origin,
+            invert=invert, mode=mode,
         )
         if new_weights:
             self.set_weights(new_weights)
@@ -392,8 +365,8 @@ class Deformer(dwnn.MayaNode, WeightSource):
             falloff: Falloff curve type.
             invert:  Invert the resulting weights.
         """
-        new_weights = dw_maya.dw_paint.set_vertex_weights_radial(
-            self.mesh_name, center, radius, falloff, invert
+        new_weights = dw_maya.dw_paint.set_radial_weights(
+            self.mesh_name, center=center, radius=radius, falloff=falloff, invert=invert
         )
         if new_weights:
             self.set_weights(new_weights)
@@ -430,7 +403,7 @@ class Deformer(dwnn.MayaNode, WeightSource):
         weights = self.get_weights()
         if not weights:
             return
-        dw_maya.dw_nucleus_utils.dw_nucleus_paint.select_vtx_info_on_mesh(
+        dw_maya.dw_paint.select_vtx_info_on_mesh(
             weights, self.mesh_name, 'range',
             _min=min_value, _max=max_value
         )
@@ -558,9 +531,14 @@ class Deformer(dwnn.MayaNode, WeightSource):
     # ------------------------------------------------------------------
 
     def paint(self) -> None:
-        """Open Maya's artisan paint tool for this deformer."""
-        from dw_maya.dw_deformers.dw_core import paintWeights
-        paintWeights(self.node_name)
+        """Open Maya's artisan paint tool for this deformer.
+
+        Uses the centralized _paint_deformer() logic from dw_paint.weight_source
+        which directly drives cmds.artAttrCtx to avoid artAttrToolScript.mel
+        false warnings with stacked deformers.
+        """
+        from dw_maya.dw_paint.weight_source import _paint_deformer
+        _paint_deformer(self)
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -803,12 +781,15 @@ class BlendShape(Deformer):
 
     def paint(self) -> None:
         """Open artisan specifically for blendShape base weights."""
-        cmds.select(self.mesh_name, replace=True)
-        cmds.setToolTo('selectSuperContext')
-        mel.eval(
-            f'artSetToolAndSelectAttr("artAttrCtx", '
-            f'"blendShape.{self.node_name}.baseWeights")'
+        mesh_short = self.mesh_name.split('|')[-1]
+        cmds.select(mesh_short, replace=True)
+        if not cmds.artAttrCtx('artAttrCtx', exists=True):
+            cmds.artAttrCtx('artAttrCtx')
+        cmds.artAttrCtx(
+            'artAttrCtx', edit=True,
+            attrSelected=f'blendShape.{self.node_name}.baseWeights'
         )
+        cmds.setToolTo('artAttrCtx')
 
 
 # ---------------------------------------------------------------------------
@@ -946,131 +927,10 @@ class SkinCluster(Deformer):
 
 # ---------------------------------------------------------------------------
 # NClothMap
+# Canonical home: dw_maya.dw_nucleus_utils.dw_ncloth_class
+# New code:  from dw_maya.dw_nucleus_utils import NClothMap
 # ---------------------------------------------------------------------------
-class NClothMap(WeightSource):
-    """Per-vertex map on an nCloth or nRigid node.
-
-    Wraps a single named map (e.g. 'thickness', 'bendResistance') and
-    exposes the same get_weights / set_weights interface as Deformer
-    subclasses so the UI never needs to branch on backend type.
-
-    The map_type attribute is auto-promoted from 0 (None) to 1 (Vertex)
-    on the first :meth:`set_weights` call so values actually take effect.
-
-    Args:
-        nucleus_node: nCloth or nRigid shape node name.
-        map_name:     Base map name without suffix
-                      (e.g. 'thickness', not 'thicknessPerVertex').
-        mesh_name:    Transform of the mesh driven by nucleus_node.
-
-    Example:
-        >>> m = NClothMap('nClothShape1', 'thickness', 'pSphere1')
-        >>> m.get_weights()
-        >>> m.set_weights([0.5] * m.vtx_count)
-    """
-
-    def __init__(self, nucleus_node: str, map_name: str, mesh_name: str):
-        if not cmds.objExists(nucleus_node):
-            raise ValueError(f"Nucleus node '{nucleus_node}' does not exist")
-        node_type = cmds.nodeType(nucleus_node)
-        if node_type not in ('nCloth', 'nRigid'):
-            raise ValueError(
-                f"'{nucleus_node}' is type '{node_type}', "
-                f"expected nCloth or nRigid"
-            )
-        self._nucleus_node = nucleus_node
-        self._map_name = map_name
-        self._mesh_name = mesh_name
-
-    @property
-    def node_name(self) -> str:
-        return self._nucleus_node
-
-    @property
-    def mesh_name(self) -> str:
-        return self._mesh_name
-
-    @property
-    def vtx_count(self) -> int:
-        try:
-            return cmds.polyEvaluate(self._mesh_name, vertex=True)
-        except Exception:
-            return 0
-
-    @property
-    def map_type(self) -> int:
-        """Current map type: 0=None, 1=Vertex, 2=Texture."""
-        attr_name = f'{self._map_name}MapType'
-        if not cmds.attributeQuery(attr_name, node=self._nucleus_node, exists=True):
-            raise RuntimeError(
-                f"MapType attribute not found for map '{self._map_name}'"
-            )
-        return cmds.getAttr(f'{self._nucleus_node}.{attr_name}')
-
-    @map_type.setter
-    def map_type(self, value: int) -> None:
-        cmds.setAttr(f'{self._nucleus_node}.{self._map_name}MapType', value)
-
-    def get_weights(self) -> WeightList:
-        """Read per-vertex values, returning a full-length list.
-
-        Maya's getAttr prunes zero-weight vertices from the stored array.
-        Missing indices are filled with 0.0 so the returned list is always
-        aligned to vtx_count.
-        """
-        per_vtx_attr_name = f'{self._map_name}PerVertex'
-        if not cmds.attributeQuery(
-            per_vtx_attr_name, node=self._nucleus_node, exists=True
-        ):
-            raise RuntimeError(
-                f"PerVertex attribute not found for map '{self._map_name}'"
-            )
-        raw = cmds.getAttr(
-            f'{self._nucleus_node}.{per_vtx_attr_name}'
-        ) or []
-        n = self.vtx_count
-        if len(raw) == n:
-            return list(raw)
-        weights = [0.0] * n
-        for i, v in enumerate(raw):
-            if i < n:
-                weights[i] = v
-        return weights
-
-    def set_weights(self, weights: WeightList) -> None:
-        """Write per-vertex values, auto-promoting map_type if needed.
-
-        Args:
-            weights: Full-length per-vertex weight list.
-
-        Raises:
-            ValueError: If length does not match vtx_count.
-        """
-        n = self.vtx_count
-        if len(weights) != n:
-            raise ValueError(
-                f"Weight count {len(weights)} != vertex count {n}"
-            )
-        if self.map_type == 0:
-            logger.debug(
-                f"Auto-promoting '{self._map_name}' on "
-                f"'{self._nucleus_node}' from MapType=None to MapType=Vertex"
-            )
-            self.map_type = 1
-        cmds.setAttr(
-            f'{self._nucleus_node}.{self._map_name}PerVertex',
-            weights, type='doubleArray'
-        )
-
-    def paint(self) -> None:
-        """Open Maya's artisan paint tool for this nucleus map."""
-        from dw_maya.dw_nucleus_utils import artisan_nucx_update
-        artisan_nucx_update(self._nucleus_node, self._map_name, True)
-
-    def __repr__(self) -> str:
-        return (f"<NClothMap node='{self._nucleus_node}' "
-                f"map='{self._map_name}' mesh='{self._mesh_name}' "
-                f"map_type={self.map_type}>")
+from dw_maya.dw_nucleus_utils.dw_ncloth_class import NClothMap
 
 
 # ---------------------------------------------------------------------------
@@ -1130,316 +990,3 @@ def make_deformer(node: str,
 
     return cls(node, preset, blend_value)
 
-
-def resolve_weight_sources(mesh: str,
-                           mode: Literal['all', 'deformer', 'nucleus'] = 'all'
-                           ) -> List[WeightSource]:
-    """Return all WeightSource objects available on a mesh.
-
-    Queries both standard deformers (via history) and nucleus per-vertex
-    maps so the UI never needs to handle the two backends separately.
-    The ``mode`` parameter lets callers restrict to one backend — useful
-    for the UI's mode-toggle button.
-
-    Args:
-        mesh: Mesh transform name.
-        mode: Which backends to include:
-              'all'      — deformers + nucleus maps (default)
-              'deformer' — standard Maya deformers only
-              'nucleus'  — nCloth/nRigid per-vertex maps only
-
-    Returns:
-        List of WeightSource instances: deformers first, then nucleus maps.
-
-    Example:
-        >>> resolve_weight_sources('pSphere1')
-        [<Cluster ...>, <BlendShape ...>, <NClothMap ...>]
-
-        >>> resolve_weight_sources('pSphere1', mode='nucleus')
-        [<NClothMap ...>, <NClothMap ...>]
-    """
-    from dw_maya.dw_deformers.dw_core import listDeformers
-    from dw_maya.dw_nucleus_utils.dw_core import get_nucx_node, get_pervertex_maps
-
-    sources: List[WeightSource] = []
-
-    if mode in ('all', 'deformer'):
-        for node in listDeformers(mesh):
-            try:
-                sources.append(make_deformer(node))
-            except Exception as e:
-                logger.warning(f"Could not wrap deformer '{node}': {e}")
-
-    if mode in ('all', 'nucleus'):
-        try:
-            nucx_node = get_nucx_node(mesh)
-            if nucx_node:
-                for map_name in get_pervertex_maps(nucx_node):
-                    try:
-                        sources.append(NClothMap(nucx_node, map_name, mesh))
-                    except Exception as e:
-                        logger.warning(
-                            f"Could not wrap nucleus map '{map_name}' "
-                            f"on '{nucx_node}': {e}"
-                        )
-        except Exception as e:
-            logger.debug(f"No nucleus node found for '{mesh}': {e}")
-
-    return sources
-
-
-# ---------------------------------------------------------------------------
-# Phase 3 — unified paint dispatch and operation helpers
-# ---------------------------------------------------------------------------
-
-def paint_weight_source(source: WeightSource,
-                        nucleus_node: Optional[str] = None) -> None:
-    """Open the appropriate Maya paint tool for any WeightSource.
-
-    Handles both standard deformer artisan and nucleus artisan so the
-    UI paint button is completely backend-agnostic.
-
-    For nucleus maps an optional ``nucleus_node`` can be supplied to
-    force-enable the solver before opening artisan (useful when the
-    simulation hasn't been run yet on the current frame).
-
-    Args:
-        source:       Any WeightSource — Deformer subclass or NClothMap.
-        nucleus_node: Optional nucleus solver node name.  When provided
-                      and artisan fails, the solver is force-enabled and
-                      artisan is retried automatically.
-
-    Example:
-        >>> sources = resolve_weight_sources('pSphere1')
-        >>> paint_weight_source(sources[0])   # works for cluster or nCloth map
-    """
-    if isinstance(source, NClothMap):
-        _paint_nucleus_map(source, nucleus_node)
-    elif isinstance(source, BlendShape):
-        # BlendShape overrides paint() itself — delegate
-        source.paint()
-    elif isinstance(source, Deformer):
-        _paint_deformer(source)
-    else:
-        raise TypeError(
-            f"Cannot paint unsupported WeightSource type: {type(source).__name__}"
-        )
-
-
-def _paint_deformer(source: Deformer) -> None:
-    """Internal: open artisan for a standard deformer WeightSource."""
-    _ARTISAN_ATTRS: Dict[str, str] = {
-        'cluster':    'cluster.{node}.weights',
-        'softMod':    'softMod.{node}.weights',
-        'blendShape': 'blendShape.{node}.baseWeights',
-        'deltaMush':  'deltaMush.{node}.weights',
-        'wire':       'wire.{node}.weights',
-    }
-    node_type = cmds.nodeType(source.node_name)
-    template = _ARTISAN_ATTRS.get(node_type)
-    if template is None:
-        logger.warning(
-            f"Paint not supported for deformer type '{node_type}' "
-            f"on '{source.node_name}'"
-        )
-        return
-
-    artisan_attr = template.format(node=source.node_name)
-
-    # Prefer any selected vertices on the target mesh; fall back to full mesh
-    vtx = cmds.filterExpand(selectionMask=31, expand=False) or []
-    if vtx and vtx[0].split('.')[0] == source.mesh_name:
-        sel = vtx
-    else:
-        sel = source.mesh_name
-
-    cmds.select(sel, replace=True)
-    cmds.setToolTo('selectSuperContext')
-    mel.eval(f'artSetToolAndSelectAttr("artAttrCtx", "{artisan_attr}")')
-
-
-def _paint_nucleus_map(source: NClothMap,
-                       nucleus_node: Optional[str] = None) -> None:
-    """Internal: open artisan for a nucleus per-vertex map WeightSource."""
-    from dw_maya.dw_nucleus_utils import artisan_nucx_update
-
-    # Ensure map type is Vertex before painting — a map at type 0 (None)
-    # would accept paint strokes but silently discard them.
-    if source.map_type == 0:
-        logger.debug(
-            f"Promoting '{source._map_name}' to MapType=Vertex before painting"
-        )
-        source.map_type = 1
-
-    try:
-        artisan_nucx_update(source.node_name, source._map_name, True)
-    except Exception:
-        # First attempt failed — try force-enabling the nucleus solver
-        if nucleus_node and cmds.objExists(nucleus_node):
-            logger.debug(
-                f"Artisan failed; force-enabling nucleus '{nucleus_node}' "
-                f"and retrying"
-            )
-            _force_enable_nucleus(nucleus_node)
-            try:
-                artisan_nucx_update(source.node_name, source._map_name, True)
-            except Exception as e:
-                raise RuntimeError(
-                    f"Could not open paint tool for nucleus map "
-                    f"'{source._map_name}' on '{source.node_name}'. "
-                    f"Ensure the nucleus is active and scrub to the first frame. "
-                    f"Detail: {e}"
-                )
-        else:
-            raise RuntimeError(
-                f"Could not open paint tool for nucleus map "
-                f"'{source._map_name}' on '{source.node_name}'. "
-                f"Pass nucleus_node= to force-enable the solver."
-            )
-
-
-def _force_enable_nucleus(nucleus_node: str) -> None:
-    """Set a nucleus solver to enabled and jump to its start frame."""
-    cmds.setAttr(f'{nucleus_node}.visibility', 1)
-    try:
-        cmds.setAttr(f'{nucleus_node}.enable', 1)
-    except Exception:
-        pass
-    start_frame = cmds.getAttr(f'{nucleus_node}.startFrame')
-    cmds.currentTime(start_frame, update=True)
-
-
-def apply_operation(source: WeightSource,
-                    operation: Literal['flood', 'mirror', 'smooth',
-                                       'vector', 'radial'],
-                    **kwargs) -> None:
-    """Apply a weight operation to any WeightSource — deformer or nucleus map.
-
-    This is the single call-site for the UI's operation buttons.  It reads
-    weights from the source, runs the operation, and writes the result back
-    — the caller never touches raw weight lists or cares about the backend.
-
-    Args:
-        source:    Any WeightSource (Deformer subclass or NClothMap).
-        operation: Which operation to apply:
-                   'flood'  — set / add / multiply a scalar value
-                   'mirror' — mirror across an axis
-                   'smooth' — topology-based smoothing
-                   'vector' — distribute by direction vector
-                   'radial' — distribute by radial distance
-        **kwargs:  Forwarded to the underlying operation function.
-                   See each operation's docstring for accepted kwargs.
-
-    Keyword args by operation:
-
-        flood:
-            value (float):      Value to apply. Required.
-            op (str):           'replace' | 'add' | 'multiply'. Default 'replace'.
-            mask (list|None):   Vertex index specs. Default None (all vertices).
-            clamp_min (float):  Lower clamp. Default 0.0.
-            clamp_max (float):  Upper clamp. Default 1.0.
-
-        mirror:
-            axis (str):         'x' | 'y' | 'z'. Default 'x'.
-            world_space (bool): Use world space. Default True.
-
-        smooth:
-            iterations (int):   Smoothing passes. Default 1.
-            factor (float):     Smoothing strength 0–1. Default 0.5.
-
-        vector:
-            direction:          Predefined key or (x, y, z) tuple. Required.
-            remap_range:        Optional (min, max) clamp tuple.
-            falloff (str):      'linear' | 'quadratic' | 'smooth' | 'smooth2'.
-            origin:             Optional (x, y, z) origin point.
-            invert (bool):      Invert result. Default False.
-            mode (str):         'projection' | 'distance'. Default 'projection'.
-
-        radial:
-            center:             Optional (x, y, z) centre point.
-            radius (float):     Max influence radius.
-            falloff (str):      Falloff curve type.
-            invert (bool):      Invert result. Default False.
-
-    Example:
-        >>> src = resolve_weight_sources('pSphere1')[0]
-        >>> apply_operation(src, 'flood', value=0.5)
-        >>> apply_operation(src, 'mirror', axis='x')
-        >>> apply_operation(src, 'smooth', iterations=3, factor=0.5)
-        >>> apply_operation(src, 'vector', direction='y', falloff='smooth')
-        >>> apply_operation(src, 'radial', center=(0,0,0), invert=True)
-    """
-    weights = source.get_weights()
-    if not weights:
-        logger.warning(
-            f"apply_operation: no weights returned from '{source.node_name}'"
-        )
-        return
-
-    mesh = source.mesh_name
-    new_weights: Optional[WeightList] = None
-
-    if operation == 'flood':
-        new_weights = _op_flood(weights, **kwargs)
-
-    elif operation == 'mirror':
-        new_weights = dw_maya.dw_nucleus_utils.dw_nucleus_paint.mirror_vertex_map(weights, mesh, kwargs.get('axis', 'x'), kwargs.get('world_space', True))
-
-    elif operation == 'smooth':
-        new_weights = dw_maya.dw_nucleus_utils.dw_nucleus_paint.interpolate_vertex_map(
-            weights, mesh,
-            kwargs.get('iterations', 1),
-            kwargs.get('factor', 0.5)
-        )
-
-    elif operation == 'vector':
-        if 'direction' not in kwargs:
-            raise ValueError("apply_operation 'vector' requires a 'direction' kwarg")
-        new_weights = dw_maya.dw_nucleus_utils.dw_nucleus_paint.set_vertex_weights_by_vector(
-            mesh,
-            kwargs['direction'],
-            kwargs.get('remap_range'),
-            kwargs.get('falloff', 'linear'),
-            kwargs.get('origin'),
-            kwargs.get('invert', False),
-            kwargs.get('mode', 'projection'),
-        )
-
-    elif operation == 'radial':
-        new_weights = dw_maya.dw_nucleus_utils.dw_nucleus_paint.set_vertex_weights_radial(
-            mesh,
-            kwargs.get('center'),
-            kwargs.get('radius'),
-            kwargs.get('falloff', 'linear'),
-            kwargs.get('invert', False),
-        )
-
-    else:
-        raise ValueError(
-            f"Unknown operation '{operation}'. "
-            f"Must be one of: flood, mirror, smooth, vector, radial."
-        )
-
-    if new_weights is not None:
-        source.set_weights(new_weights)
-    else:
-        logger.warning(
-            f"apply_operation '{operation}' returned no weights for "
-            f"'{source.node_name}' — weights unchanged"
-        )
-
-
-def _op_flood(weights: WeightList,
-              value: float,
-              op: Literal['replace', 'add', 'multiply'] = 'replace',
-              mask: Optional[List] = None,
-              clamp_min: float = 0.0,
-              clamp_max: float = 1.0) -> WeightList:
-    """Apply a flood operation to a weight list.
-
-    Separated from apply_operation so it can be unit-tested without Maya.
-    """
-    return dw_maya.dw_paint.modify_weights(
-        weights, value, op, mask,
-        min_value=clamp_min, max_value=clamp_max
-    )

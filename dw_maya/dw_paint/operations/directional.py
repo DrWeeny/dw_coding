@@ -148,25 +148,40 @@ class DirectionalOperation:
 
 def set_directional_weights(mesh_name: str,
                             direction: Union[str, Vector3D],
+                            remap_range: Optional[Tuple[float, float]] = None,
                             falloff: Literal['linear', 'quadratic', 'smooth', 'smooth2'] = 'linear',
-                            mode: Literal['vector', 'normal'] = 'vector') -> Optional[WeightList]:
+                            origin: Optional[Vector3D] = None,
+                            invert: bool = False,
+                            mode: Literal['vector', 'normal', 'projection', 'distance'] = 'vector') -> Optional[WeightList]:
     """High-level function for setting directional weights.
 
     Args:
-        mesh_name: Name of mesh
-        direction: Direction vector or predefined direction
-        falloff: Type of falloff curve
-        mode: Type of directional calculation
+        mesh_name:   Name of mesh.
+        direction:   Direction vector or predefined direction string
+                     ('x', '-x', 'y', '-y', 'z', '-z', 'xy', …).
+        remap_range: Optional ``(min, max)`` to remap weights to.
+        falloff:     Type of falloff curve.
+        origin:      Optional origin point; defaults to mesh centre.
+        invert:      Invert the resulting weights (1-w).
+        mode:        ``'vector'`` / ``'projection'`` — signed projection along direction;
+                     ``'distance'`` — unsigned distance from the direction axis;
+                     ``'normal'`` — based on vertex normals (ignores *direction*).
 
     Returns:
-        Weight list or None if failed
+        Weight list or None if failed.
     """
     dir_op = DirectionalOperation(mesh_name)
 
-    if mode == 'vector':
-        return dir_op.set_weights_by_vector(direction, falloff=falloff)
-    else:  # normal
-        return dir_op.set_weights_by_normal(falloff)
+    if mode == 'normal':
+        result = dir_op.set_weights_by_normal(falloff, invert)
+    else:
+        # 'vector', 'projection' and 'distance' all route through set_weights_by_vector
+        proj_mode = 'distance' if mode == 'distance' else 'projection'
+        result = dir_op.set_weights_by_vector(direction, remap_range, falloff, origin, proj_mode)
+        if result is not None and invert:
+            result = [1.0 - w for w in result]
+
+    return result
 
 
 if __name__ == '__main__':

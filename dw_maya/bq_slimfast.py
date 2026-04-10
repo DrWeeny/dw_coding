@@ -36,16 +36,18 @@ except ImportError:
     from PySide2 import QtCore, QtGui, QtWidgets
     from PySide2.QtCore import Qt, Signal, Slot
     from shiboken2 import wrapInstance
-import dw_maya.dw_deformers.dw_deformer_class
-from dw_maya.dw_deformers.dw_deformer_class import (
-    WeightSource,
+import dw_maya.dw_paint
+from dw_maya.dw_paint.protocol import WeightSource
+from dw_maya.dw_paint.weight_source import (
     resolve_weight_sources,
     paint_weight_source,
     apply_operation,
 )
-from dw_maya.dw_deformers.dw_deformer_class import NClothMap
+from dw_maya.dw_nucleus_utils import NClothMap
 import dw_maya.dw_maya_utils
 from dw_maya.dw_maya_utils.dw_maya_components import selectBorder
+import dw_maya.dw_nucleus_utils.dw_core
+import dw_maya.dw_nucleus_utils.dw_nucleus_paint
 from dw_logger import get_logger
 
 logger = get_logger()
@@ -212,7 +214,7 @@ class SlimfastController:
             self._sources = []
             self._active = None
             self._mesh = None
-            self._signals.sources_changed.emit([])
+            self._signals.sources_changed.emit([], [])
             logger.warning("Select a polyMesh and refresh.")
             return
 
@@ -225,7 +227,8 @@ class SlimfastController:
             self._sources = []
 
         names = [self._source_label(s) for s in self._sources]
-        self._signals.sources_changed.emit(names)
+        is_nucleus_flags = [isinstance(s, NClothMap) for s in self._sources]
+        self._signals.sources_changed.emit(names, is_nucleus_flags)
         self._signals.mesh_changed.emit(mesh)
 
         if self._sources:
@@ -246,7 +249,7 @@ class SlimfastController:
     def _source_label(self, source: WeightSource) -> str:
         """Human-readable label for a WeightSource."""
         if isinstance(source, NClothMap):
-            return f"[nCloth] {source._map_name}"
+            return f"[nCloth] {source.map_name}"
         return f"[{cmds.nodeType(source.node_name)}] {source.node_name}"
 
     def _require_active(self) -> bool:
@@ -256,14 +259,117 @@ class SlimfastController:
             return False
         return True
 
+    def _resolve_nucleus_solver(self) -> Optional[str]:
+        """Return the nucleus solver node for the active NClothMap source.
+
+        Returns:
+            Nucleus solver node name, or None if source is a deformer.
+        """
+        if not isinstance(self._active, NClothMap):
+            return None
+        try:
+            return dw_maya.dw_nucleus_utils.dw_core.get_nucleus_solver(
+                self._active.node_name
+            ) or None
+        except Exception as e:
+            logger.debug(f"Could not resolve nucleus solver: {e}")
+            return None
+
     # ------------------------------------------------------------------
     # Weight operations — all delegate to WeightSource / apply_operation
     # ------------------------------------------------------------------
 
+    def _log_paint_debug(self, nucleus_node: Optional[str]) -> None:
+        """Log debug info about the active weight source before painting.
+
+        Args:
+            nucleus_node: Resolved nucleus solver node (or None for deformers).
+        """
+        src = self._active
+        node = src.node_name
+
+        lines = [
+            "==== Paint debug ========================================",
+            f"  node       : {node}",
+            f"  node type  : {cmds.nodeType(node)}",
+            f"  mesh       : {src.mesh_name}",
+            f"  vtx count  : {src.vtx_count}",
+        ]
+
+        if isinstance(src, NClothMap):
+            _MAP_TYPE_NAMES = {0: 'None (disabled)', 1: 'PerVertex', 2: 'Texture'}
+            mt = src.map_type
+            lines += [
+                f"  map name   : {src.map_name}",
+                f"  map type   : {_MAP_TYPE_NAMES.get(mt, str(mt))}",
+                f"  nucleus    : {nucleus_node or 'n/a'}",
+            ]
+        else:
+            # Envelope attribute
+            env_attr = f"{node}.envelope"
+            env_val = cmds.getAttr(env_attr) if cmds.objExists(env_attr) else "n/a"
+            lines.append(f"  envelope   : {env_val}")
+
+            # geo_index and all connected meshes
+            lines.append(f"  geo_index  : {src.geo_index}")
+            all_meshes = src.meshes
+            lines.append(f"  all meshes : {all_meshes}")
+
+            # Deformer membership count (vertices in the deformer set)
+            try:
+                deformer_set = cmds.listConnections(node, type='objectSet') or []
+                if deformer_set:
+                    members = cmds.sets(deformer_set[0], query=True) or []
+                    lines.append(
+                        f"  dfm set    : {deformer_set[0]}"
+                        f"  ({len(members)} member(s))"
+                    )
+            except Exception:
+                pass
+
+            # Upstream deformer history — show name(type)
+            history = cmds.listHistory(node, pruneDagObjects=True) or []
+            upstream = [
+                f"{h}({cmds.nodeType(h)})"
+                for h in history
+                if h != node
+            ]
+            if upstream:
+                lines.append(f"  upstream   : {upstream}")
+
+        # Weight stats — min/max/mean of the weight array
+        try:
+            weights = src.get_weights()
+            if weights:
+                w_min = min(weights)
+                w_max = max(weights)
+                w_mean = sum(weights) / len(weights)
+                lines.append(
+                    f"  weights    : min={w_min:.4f}  max={w_max:.4f}"
+                    f"  mean={w_mean:.4f}  ({len(weights)} values)"
+                )
+            else:
+                lines.append("  weights    : empty list returned")
+        except Exception as exc:
+            lines.append(f"  weights    : could not read ({exc})")
+
+        lines.append("=========================================================")
+        logger.debug("\n".join(lines))
+
     def paint(self, nucleus_node: Optional[str] = None) -> None:
-        """Open artisan for the active source."""
+        """Open artisan for the active source.
+
+        Args:
+            nucleus_node: Optional override for the nucleus solver node.
+                          If None and the active source is an NClothMap,
+                          the solver is resolved automatically.
+        """
         if not self._require_active():
             return
+        # Auto-resolve the nucleus solver when source is a nucleus map
+        if nucleus_node is None:
+            nucleus_node = self._resolve_nucleus_solver()
+        logger.debug(nucleus_node)
         try:
             paint_weight_source(self._active, nucleus_node)
         except Exception as e:
@@ -300,15 +406,30 @@ class SlimfastController:
             logger.error(f"Smooth failed: {e}")
 
     def smooth_artisan(self, iterations: int = 1) -> None:
-        """Smooth via Maya artisan (requires paint tool to be active)."""
-        try:
-            mel.eval('artAttrPaintOperation artAttrCtx Smooth')
-        except RuntimeError:
-            raise RuntimeError('Click "Paint" before using artisan smooth.')
-        for _ in range(iterations):
-            cmds.artAttrCtx(cmds.currentCtx(), edit=True, clear=True)
-        mel.eval('artAttrPaintOperation artAttrCtx Replace')
-        logger.info(f"Artisan smooth x{iterations}.")
+        """Smooth via Maya artisan (requires paint tool to be active).
+
+        Uses artAttrNClothContext for nucleus maps and artAttrCtx for deformers.
+        """
+        if isinstance(self._active, NClothMap):
+            # Nucleus artisan path — flood_smooth_vtx_map handles the context
+            try:
+                for _ in range(iterations):
+                    dw_maya.dw_nucleus_utils.dw_nucleus_paint.flood_smooth_vtx_map()
+                logger.info(f"Nucleus artisan smooth x{iterations}.")
+            except Exception as e:
+                raise RuntimeError(
+                    f"Click \"Paint\" before using artisan smooth. Detail: {e}"
+                )
+        else:
+            # Standard deformer artisan path
+            try:
+                mel.eval('artAttrPaintOperation artAttrCtx Smooth')
+            except RuntimeError:
+                raise RuntimeError('Click "Paint" before using artisan smooth.')
+            for _ in range(iterations):
+                cmds.artAttrCtx(cmds.currentCtx(), edit=True, clear=True)
+            mel.eval('artAttrPaintOperation artAttrCtx Replace')
+            logger.info(f"Artisan smooth x{iterations}.")
 
     def copy_weights(self) -> None:
         """Store the active source's weights in the clipboard."""
@@ -396,7 +517,20 @@ class SlimfastController:
         selectBorder()
 
     def set_artisan_value(self, value: float) -> None:
-        """Push value to artisan context (absolute/replace mode)."""
+        """Push value to artisan context (absolute/replace mode).
+
+        Routes to artAttrNClothContext for nucleus maps and to the standard
+        deformer contexts otherwise.
+        """
+        if isinstance(self._active, NClothMap):
+            try:
+                dw_maya.dw_nucleus_utils.dw_nucleus_paint.set_cfx_brush_val(
+                    value, mod='absolute'
+                )
+            except Exception as e:
+                logger.debug(f"set_cfx_brush_val failed (paint tool not active?): {e}")
+            return
+        # Standard deformer artisan contexts
         for ctx in ('artAttrContext', 'artAttrBlendShapeContext'):
             try:
                 cmds.artAttrCtx(ctx, edit=True, value=value)
@@ -413,8 +547,9 @@ class SlimfastController:
 class SlimfastSignals(QtCore.QObject):
     """Qt signals emitted by SlimfastController."""
 
-    #: Emitted when the source list changes. Payload: list of display names.
-    sources_changed = Signal(list)
+    #: Emitted when the source list changes.
+    #: Payload: (labels: list[str], is_nucleus: list[bool])
+    sources_changed = Signal(list, list)
     #: Emitted when the active mesh changes. Payload: mesh name string.
     mesh_changed = Signal(str)
     #: Emitted when the active WeightSource changes. Payload: WeightSource or None.
@@ -529,6 +664,13 @@ class SlimfastWidget(QtWidgets.QWidget):
         self._source_combo = QtWidgets.QComboBox()
         self._source_combo.setMinimumWidth(220)
         lay.addWidget(self._source_combo)
+
+        # --- Map type badge (nucleus only) ---
+        self._map_type_label = QtWidgets.QLabel()
+        self._map_type_label.setAlignment(Qt.AlignCenter)
+        self._map_type_label.setStyleSheet('font-size: 11px;')
+        self._map_type_label.hide()
+        lay.addWidget(self._map_type_label)
 
         # --- Copy / Paste ---
         cp_row = QtWidgets.QHBoxLayout()
@@ -698,8 +840,8 @@ class SlimfastWidget(QtWidgets.QWidget):
         # Mode toggle
         self._mode_group.buttonClicked.connect(self._on_mode_changed)
 
-        # Source selection
-        self._source_combo.currentIndexChanged.connect(self._ctrl.select_source)
+        # Source selection — routed via _on_source_combo_changed to handle separators
+        self._source_combo.currentIndexChanged.connect(self._on_source_combo_changed)
 
         # Deformer group
         self._copy_btn.clicked.connect(self._ctrl.copy_weights)
@@ -731,18 +873,70 @@ class SlimfastWidget(QtWidgets.QWidget):
     def _on_mode_changed(self, btn: QtWidgets.QAbstractButton) -> None:
         self._ctrl.set_mode(btn.property('mode'))
 
-    @Slot(list)
-    def _on_sources_changed(self, names: list) -> None:
+    @Slot(list, list)
+    def _on_sources_changed(self, names: list, is_nucleus: list) -> None:
+        """Rebuild the source combo with per-item colors and an optional separator.
+
+        Deformer items use the default foreground.
+        nCloth map items are coloured teal (#4ecdc4).
+        A disabled separator row is inserted between the two groups when both
+        types are present (mode='all').
+        Each selectable item stores its real source index in Qt.UserRole so
+        that _on_source_combo_changed can resolve it even when a separator
+        shifts the visual indices.
+        """
+        # Build a fresh model — stored to prevent GC
+        self._source_model = QtGui.QStandardItemModel()
+
+        if not names:
+            empty_item = QtGui.QStandardItem('— no sources —')
+            empty_item.setEnabled(False)
+            self._source_model.appendRow(empty_item)
+            self._source_combo.blockSignals(True)
+            self._source_combo.setModel(self._source_model)
+            self._source_combo.blockSignals(False)
+            return
+
+        has_deformer = any(not flag for flag in is_nucleus)
+        has_nucleus = any(is_nucleus)
+        separator_added = False
+
+        for source_idx, (name, nucleus) in enumerate(zip(names, is_nucleus)):
+            # Insert one separator when we hit the first nucleus item after deformers
+            if nucleus and not separator_added and has_deformer and has_nucleus:
+                sep_item = QtGui.QStandardItem('─── nCloth maps ───')
+                sep_item.setEnabled(False)
+                sep_item.setForeground(QtGui.QBrush(QtGui.QColor('#666666')))
+                self._source_model.appendRow(sep_item)
+                separator_added = True
+
+            item = QtGui.QStandardItem(name)
+            item.setData(source_idx, Qt.UserRole)
+            if nucleus:
+                item.setForeground(QtGui.QBrush(QtGui.QColor('#4ecdc4')))
+            self._source_model.appendRow(item)
+
         self._source_combo.blockSignals(True)
-        self._source_combo.clear()
-        if names:
-            self._source_combo.addItems(names)
-        else:
-            self._source_combo.addItem('— no sources —')
+        self._source_combo.setModel(self._source_model)
         self._source_combo.blockSignals(False)
-        # Manually trigger selection of first item
-        if names:
-            self._ctrl.select_source(0)
+
+        # Auto-select the first real source
+        self._ctrl.select_source(0)
+
+    @Slot(int)
+    def _on_source_combo_changed(self, combo_index: int) -> None:
+        """Resolve combo_index → real source index, skipping separator rows."""
+        if combo_index < 0:
+            return
+        model = self._source_combo.model()
+        if model is None:
+            return
+        item = model.item(combo_index)
+        if item is None or not item.isEnabled():
+            return  # separator row — ignore
+        source_idx = item.data(Qt.UserRole)
+        if source_idx is not None:
+            self._ctrl.select_source(source_idx)
 
     @Slot(object)
     def _on_active_changed(self, source: Optional[WeightSource]) -> None:
@@ -754,6 +948,27 @@ class SlimfastWidget(QtWidgets.QWidget):
         self._set1_btn.setEnabled(has_source)
         self._weight_slider.setEnabled(has_source)
 
+        # --- Map type badge (nucleus only) ---
+        if isinstance(source, NClothMap):
+            _MAP_TYPE_INFO = {
+                0: ('● None  (map disabled)', '#888888'),
+                1: ('● PerVertex',             '#4ecdc4'),
+                2: ('● Texture',               '#ddcc44'),
+            }
+            try:
+                mt = source.map_type
+                text, color = _MAP_TYPE_INFO.get(mt, (f'● type={mt}', '#aaaaaa'))
+                self._map_type_label.setText(text)
+                self._map_type_label.setStyleSheet(
+                    f'color: {color}; font-size: 11px;'
+                )
+                self._map_type_label.show()
+            except Exception:
+                self._map_type_label.hide()
+        else:
+            self._map_type_label.hide()
+
+        # --- Envelope slider ---
         # Wire envelope to the node's envelope attribute if it exists
         if has_source and not isinstance(source, NClothMap):
             env_attr = f'{source.node_name}.envelope'

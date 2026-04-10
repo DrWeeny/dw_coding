@@ -260,3 +260,22 @@ if __name__ == '__main__':
         logger.info("Maya vector tests completed successfully")
     else:
         logger.error("Maya vector tests failed")
+
+
+def normalize_vector(vector: Vector3D) -> Tuple[float, float, float]:
+    """Normalize a 3D vector to unit length.
+
+    Convenience wrapper around :meth:`VectorUtils.normalize` that returns a
+    plain ``(x, y, z)`` tuple instead of a numpy array, so the result is
+    directly usable wherever a ``Tuple[float, float, float]`` is expected
+    (e.g. as a direction argument).
+
+    Args:
+        vector: Any 3-element sequence (list, tuple or ndarray).
+
+    Returns:
+        Unit-length ``(x, y, z)`` tuple.  Returns ``(0.0, 0.0, 0.0)`` for a
+        zero-magnitude input.
+    """
+    result = VectorUtils.normalize(vector)
+    return (float(result[0]), float(result[1]), float(result[2]))

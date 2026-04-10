@@ -250,10 +250,10 @@ def mirror_vertex_map(
         if not data:
             return False
 
-        weights = dwpaint.mirror_vertex_map(data,
-                                  mesh,
-                                  axis,
-                                  space)
+        weights = dwpaint.mirror_weights(mesh,
+                                         data,
+                                         axis,
+                                         world_space=space)
 
         # Apply new values
         set_nucx_map_data(nucx_node, nucx_map, weights)
@@ -298,10 +298,10 @@ def interpolate_vertex_map(
         if not data:
             return False
 
-        weights = dwpaint.interpolate_vertex_map(data,
-                                                 mesh,
-                                                 smooth_iterations,
-                                                 smooth_factor)
+        weights = dwpaint.smooth_weights(mesh,
+                                         data,
+                                         smooth_iterations,
+                                         smooth_factor)
 
         # Apply smoothed values
         set_nucx_map_data(nucx_node, nucx_map, weights)
@@ -363,13 +363,13 @@ def set_vertex_weights_by_vector(
             logger.error(f"No vertices found for {mesh}")
             return False
 
-        weights = dwpaint.set_vertex_weights_by_vector(mesh,
-                                             direction,
-                                             remap_range,
-                                             falloff,
-                                             origin,
-                                             invert,
-                                             mode)
+        weights = dwpaint.set_directional_weights(mesh,
+                                                  direction,
+                                                  remap_range=remap_range,
+                                                  falloff=falloff,
+                                                  origin=origin,
+                                                  invert=invert,
+                                                  mode=mode)
 
         # Set the weights
         set_nucx_map_data(nucx_node, nucx_map, weights)
@@ -413,11 +413,11 @@ def set_vertex_weights_radial(
         if not mesh:
             return False
 
-        weights = dwpaint.set_vertex_weights_radial(mesh,
-                                                    center,
-                                                    radius,
-                                                    falloff,
-                                                    invert)
+        weights = dwpaint.set_radial_weights(mesh,
+                                             center=center,
+                                             radius=radius,
+                                             falloff=falloff,
+                                             invert=invert)
 
         set_nucx_map_data(nucx_node, nucx_map, weights)
         return True
@@ -433,8 +433,7 @@ def set_vertex_weights_between_points(
         start_point: Tuple[float, float, float],
         end_point: Tuple[float, float, float],
         falloff: Literal['linear', 'quadratic', 'smooth', 'smooth2'] = 'linear',
-        invert: bool = False
-) -> bool:
+        invert: bool = False) -> bool:
     """Set vertex map weights based on position between two points.
 
     Args:

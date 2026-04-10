@@ -302,6 +302,72 @@ def blend_weight_lists(
     ]
 
 
+def smooth_weights(mesh_name: str,
+                   weights: WeightList,
+                   iterations: int = 1,
+                   factor: float = 0.5) -> WeightList:
+    """Topology-based weight smoothing using vertex neighbor averaging.
+
+    Wraps :class:`WeightData`.smooth so callers never instantiate the class.
+
+    Args:
+        mesh_name:  Mesh transform name.
+        weights:    Per-vertex weight list aligned to vertex order.
+        iterations: Number of smoothing passes.
+        factor:     Blend strength per pass (0 = no change, 1 = full average).
+
+    Returns:
+        Smoothed weight list of the same length as *weights*.
+        Returns the original list unchanged on error.
+    """
+    try:
+        wd = WeightData(weights, mesh_name)
+        wd.smooth(iterations, factor)
+        return wd.as_list
+    except Exception as e:
+        logger.error(f"smooth_weights failed on '{mesh_name}': {e}")
+        return list(weights)
+
+
+def select_vtx_info_on_mesh(weights: WeightList,
+                             mesh: str,
+                             sel_mode: str,
+                             value: Optional[float] = None,
+                             _min: Optional[float] = None,
+                             _max: Optional[float] = None) -> None:
+    """Select vertices on a mesh based on their weight values.
+
+    Args:
+        weights:  Per-vertex weight list aligned to vertex order.
+        mesh:     Mesh transform name.
+        sel_mode: ``'range'`` — select vertices whose weight is in [_min, _max];
+                  ``'value'`` — select vertices whose weight equals *value*.
+        value:    Exact value used when sel_mode is ``'value'``.
+        _min:     Lower bound used when sel_mode is ``'range'``.
+        _max:     Upper bound used when sel_mode is ``'range'``.
+    """
+    if not weights or not cmds.objExists(mesh):
+        return
+
+    if sel_mode == 'range' and _min is not None and _max is not None:
+        indices = [i for i, w in enumerate(weights) if _min <= w <= _max]
+    elif sel_mode == 'value' and value is not None:
+        indices = [i for i, w in enumerate(weights) if w == value]
+    else:
+        logger.warning(
+            f"select_vtx_info_on_mesh: invalid sel_mode='{sel_mode}' or missing bounds"
+        )
+        return
+
+    if not indices:
+        cmds.select(clear=True)
+        return
+
+    from dw_maya.dw_maya_utils import create_maya_ranges
+    ranges = create_maya_ranges(indices)
+    cmds.select([f'{mesh}.vtx[{r}]' for r in ranges], replace=True)
+
+
 if __name__ == '__main__':
     from maya import cmds
 

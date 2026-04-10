@@ -238,19 +238,21 @@ def get_nucleus_solver(nucx_name: str) -> str:
     """get nucleus name from a nucleus shape node.
 
     Args:
-        nucx_node: Name of the nCloth or nRigid node
+        nucx_name: Name of the nCloth, nRigid, or its transform node.
 
     Returns:
-        str: the name of the nucleus
+        str: the name of the nucleus solver, or '' if not found.
     """
+    shape = None
     if cmds.nodeType(nucx_name) == "transform":
-        shape = cmds.listRelatives(nucx_name)
+        shapes = cmds.listRelatives(nucx_name, shapes=True) or []
+        shape = shapes[0] if shapes else None
     elif cmds.nodeType(nucx_name) in ["nCloth", "nRigid"]:
         shape = nucx_name
+
     if shape:
         connections = cmds.listConnections(shape, type="nucleus") or []
         return connections[0].split(':')[-1] if connections else ''
-    else:
-        return ""
+    return ""
 
 

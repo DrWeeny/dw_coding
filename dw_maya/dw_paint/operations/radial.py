@@ -213,7 +213,8 @@ def set_radial_weights(mesh_name: str,
                        radius: Optional[float] = None,
                        falloff: Literal['linear', 'quadratic', 'smooth', 'smooth2'] = 'linear',
                        mode: Literal['radial', 'spherical', 'cylindrical'] = 'radial',
-                       axis: Literal['x', 'y', 'z'] = 'y') -> Optional[WeightList]:
+                       axis: Literal['x', 'y', 'z'] = 'y',
+                       invert: bool = False) -> Optional[WeightList]:
     """High-level function for setting radial weights.
 
     Args:
@@ -223,6 +224,7 @@ def set_radial_weights(mesh_name: str,
         falloff: Type of falloff curve
         mode: Type of radial calculation
         axis: Main axis for spherical/cylindrical modes
+        invert: Invert the resulting weights (1-w)
 
     Returns:
         Weight list or None if failed
@@ -230,7 +232,7 @@ def set_radial_weights(mesh_name: str,
     radial_op = RadialOperation(mesh_name)
 
     if mode == 'radial':
-        return radial_op.set_weights_radial(center, radius, falloff)
+        return radial_op.set_weights_radial(center, radius, falloff, invert=invert)
     elif mode == 'spherical':
         return radial_op.set_weights_spherical(center, radius, axis, falloff)
     else:  # cylindrical

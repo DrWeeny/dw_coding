@@ -1,9 +1,7 @@
-print(0)
 from dw_maya.dw_paint.core.cache import MeshDataCache, MeshCache
 # Create a global instance for general use
 mesh_cache = MeshDataCache()
 
-print(1)
 # Mesh data operations
 from dw_maya.dw_paint.core.mesh_data import (
     MeshData,
@@ -14,7 +12,6 @@ from dw_maya.dw_paint.core.mesh_data import (
     find_vertex_pairs,
 
 )
-print(2)
 # Weight operations
 from dw_maya.dw_paint.core.weights import (
     WeightData,
@@ -22,23 +19,23 @@ from dw_maya.dw_paint.core.weights import (
     WeightList,
     WeightArray,
     blend_weight_lists,
-    modify_weights
+    modify_weights,
+    smooth_weights,
+    select_vtx_info_on_mesh,
 )
-print(3)
 # Vector operations
 from dw_maya.dw_paint.core.vectors import (
     VectorUtils,
     MayaVectorUtils,
     VectorDirection,
-    Vector3D
+    Vector3D,
+    normalize_vector,
 )
-print(4)
 # Interpolation operations
 from dw_maya.dw_paint.core.interpolation import (
     InterpolationSettings,
     WeightInterpolator,
 )
-print(5)
 __all__ = [
     # Cache
     'MeshCache',
@@ -60,12 +57,15 @@ __all__ = [
     'WeightArray',
     'blend_weight_lists',
     'modify_weights',
+    'smooth_weights',
+    'select_vtx_info_on_mesh',
 
     # Vectors
     'VectorUtils',
     'MayaVectorUtils',
     'VectorDirection',
     'Vector3D',
+    'normalize_vector',
 
     # Interpolation
     'InterpolationSettings',
