@@ -33,6 +33,7 @@
   - Shared widgets go in `dw_widgets`
   - For widget communication, use a singleton `dw_data_hub` and a `wgt_hub.py` base class for subwidgets
   - Place all UI commands in a `cmds_py` file to keep UI code clean
+- Prefer partial module rather than lambda for signal connections.
 
 ## Documentation
 - Docstrings must be in English, minimal, and follow the Google style guide.

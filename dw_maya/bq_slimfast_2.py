@@ -22,8 +22,9 @@ Author:  DrWeeny
 from __future__ import annotations
 
 from typing import List, Optional
+from functools import partial
 
-from maya import cmds
+from maya import cmds, mel
 import maya.OpenMayaUI as omui
 
 try:
@@ -43,6 +44,7 @@ from dw_maya.dw_deformers.dw_deformer_class import (
     apply_operation,
 )
 from dw_maya.dw_deformers.dw_deformer_class import NClothMap
+import dw_maya.dw_maya_utils
 from dw_maya.dw_maya_utils.dw_maya_components import selectBorder
 from dw_logger import get_logger
 
@@ -276,8 +278,7 @@ class SlimfastController:
             cmds.ConvertSelectionToVertices()
             vtx = cmds.filterExpand(selectionMask=31) or []
             if vtx:
-                from dw_maya.dw_maya_components import extract_id
-                indices = extract_id(vtx)
+                indices = dw_maya.dw_maya_utils.extract_id(vtx)
                 mask = [[i, i + 1] for i in indices]
                 apply_operation(self._active, 'flood', value=value, mask=mask)
                 return
@@ -300,7 +301,6 @@ class SlimfastController:
 
     def smooth_artisan(self, iterations: int = 1) -> None:
         """Smooth via Maya artisan (requires paint tool to be active)."""
-        from maya import mel
         try:
             mel.eval('artAttrPaintOperation artAttrCtx Smooth')
         except RuntimeError:
@@ -360,15 +360,13 @@ class SlimfastController:
             indices = [i for i, w in enumerate(weights) if w >= 1.0 - tolerance]
 
         mesh = self._active.mesh_name
-        from dw_maya.dw_maya_components import create_maya_ranges
         if not indices:
             cmds.select(clear=True)
             logger.info("No vertices match the weight criteria.")
             return
 
-        from maya import mel as _mel
-        _mel.eval(f'doMenuComponentSelection("{mesh}", "vertex")')
-        ranges = create_maya_ranges(indices)
+        mel.eval(f'doMenuComponentSelection("{mesh}", "vertex")')
+        ranges = dw_maya.dw_maya_utils.create_maya_ranges(indices)
         vtx_list = [f'{mesh}.vtx[{r}]' for r in ranges]
 
         if key_mod == 1:
@@ -386,8 +384,7 @@ class SlimfastController:
             return
         mesh = self._active.mesh_name
         n = self._active.vtx_count
-        from maya import mel as _mel
-        _mel.eval(f'doMenuComponentSelection("{mesh}", "vertex")')
+        mel.eval(f'doMenuComponentSelection("{mesh}", "vertex")')
         vertices = f'{mesh}.vtx[0:{n - 1}]'
         if key_mod == 1:
             cmds.select(vertices, toggle=True)
@@ -599,7 +596,7 @@ class SlimfastWidget(QtWidgets.QWidget):
         for n in (2, 5, 10, 20):
             btn = QtWidgets.QPushButton(str(n))
             btn.setFixedWidth(44)
-            btn.clicked.connect(lambda _, count=n: self._on_smooth(count))
+            btn.clicked.connect(partial(self._on_smooth, n))
             quick_row.addWidget(btn)
         quick_row.addStretch()
         lay.addLayout(quick_row)
@@ -707,15 +704,13 @@ class SlimfastWidget(QtWidgets.QWidget):
         # Deformer group
         self._copy_btn.clicked.connect(self._ctrl.copy_weights)
         self._paste_btn.clicked.connect(self._ctrl.paste_weights)
-        self._paint_btn.clicked.connect(lambda: self._ctrl.paint())
+        self._paint_btn.clicked.connect(self._ctrl.paint)
         self._envelope_slider.valueChanged.connect(self._on_envelope_changed)
 
         # Weights group
-        self._set0_btn.clicked.connect(lambda: self._ctrl.set_weight_all(0.0))
-        self._set1_btn.clicked.connect(lambda: self._ctrl.set_weight_all(1.0))
-        self._weight_slider.button_clicked.connect(
-            lambda: self._ctrl.set_weight(self._weight_slider.value)
-        )
+        self._set0_btn.clicked.connect(partial(self._ctrl.set_weight_all, 0.0))
+        self._set1_btn.clicked.connect(partial(self._ctrl.set_weight_all, 1.0))
+        self._weight_slider.button_clicked.connect(partial(self._ctrl.set_weight, self._weight_slider.value))
         self._weight_slider.value_changed.connect(self._ctrl.set_artisan_value)
 
         # Select group

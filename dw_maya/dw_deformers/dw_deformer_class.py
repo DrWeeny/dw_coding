@@ -38,8 +38,11 @@ from typing import Dict, List, Optional, Tuple, Union
 from maya import cmds, mel
 
 import dw_maya.dw_maya_nodes as dwnn
-import dw_maya.dw_paint.core as paint_core
-import dw_maya.dw_paint.utils as paint_utils
+import dw_maya.dw_paint
+import dw_maya.dw_paint.core
+import dw_maya.dw_paint.utils
+import dw_maya.dw_paint.operations
+import dw_maya.dw_nucleus_utils.dw_nucleus_paint
 import dw_maya.dw_presets_io.dw_deformer_json as deformer_json
 import dw_maya.dw_presets_io.dw_preset as preset_utils
 from dw_logger import get_logger
@@ -294,7 +297,7 @@ class Deformer(dwnn.MayaNode, WeightSource):
         if not current:
             return
         self.set_weights(
-            paint_utils.modify_weights(
+            dw_maya.dw_paint.modify_weights(
                 current, value, operation, mask, min_value=0.0, max_value=1.0
             )
         )
@@ -314,7 +317,7 @@ class Deformer(dwnn.MayaNode, WeightSource):
         if not current:
             return
         self.set_weights(
-            paint_utils.remap_weights(current, old_min, old_max, new_min, new_max)
+            dw_maya.dw_paint.remap_weights(current, old_min, old_max, new_min, new_max)
         )
 
     def mirror_weights(self,
@@ -329,7 +332,7 @@ class Deformer(dwnn.MayaNode, WeightSource):
         current = self.get_weights()
         if not current:
             return
-        new_weights = paint_core.mirror_vertex_map(
+        new_weights = dw_maya.dw_nucleus_utils.dw_nucleus_paint.mirror_vertex_map(
             current, self.mesh_name, axis, world_space
         )
         if new_weights:
@@ -347,7 +350,7 @@ class Deformer(dwnn.MayaNode, WeightSource):
         current = self.get_weights()
         if not current:
             return
-        new_weights = paint_core.interpolate_vertex_map(
+        new_weights = dw_maya.dw_nucleus_utils.dw_nucleus_paint.interpolate_vertex_map(
             current, self.mesh_name, iterations, smooth_factor
         )
         if new_weights:
@@ -370,7 +373,7 @@ class Deformer(dwnn.MayaNode, WeightSource):
             invert:      Invert the resulting weights.
             mode:        'projection' (signed) or 'distance' (unsigned).
         """
-        new_weights = paint_core.set_vertex_weights_by_vector(
+        new_weights = dw_maya.dw_paint.set_vertex_weights_by_vector(
             self.mesh_name, direction, remap_range, falloff, origin, invert, mode
         )
         if new_weights:
@@ -389,7 +392,7 @@ class Deformer(dwnn.MayaNode, WeightSource):
             falloff: Falloff curve type.
             invert:  Invert the resulting weights.
         """
-        new_weights = paint_core.set_vertex_weights_radial(
+        new_weights = dw_maya.dw_paint.set_vertex_weights_radial(
             self.mesh_name, center, radius, falloff, invert
         )
         if new_weights:
@@ -410,7 +413,7 @@ class Deformer(dwnn.MayaNode, WeightSource):
         if blend_factor < 1.0:
             current = self.get_weights()
             if current:
-                source_weights = paint_utils.blend_weight_lists(
+                source_weights = dw_maya.dw_paint.blend_weight_lists(
                     current, source_weights, blend_factor
                 )
         self.set_weights(source_weights)
@@ -427,7 +430,7 @@ class Deformer(dwnn.MayaNode, WeightSource):
         weights = self.get_weights()
         if not weights:
             return
-        paint_core.select_vtx_info_on_mesh(
+        dw_maya.dw_nucleus_utils.dw_nucleus_paint.select_vtx_info_on_mesh(
             weights, self.mesh_name, 'range',
             _min=min_value, _max=max_value
         )
@@ -1380,14 +1383,10 @@ def apply_operation(source: WeightSource,
         new_weights = _op_flood(weights, **kwargs)
 
     elif operation == 'mirror':
-        new_weights = paint_core.mirror_vertex_map(
-            weights, mesh,
-            kwargs.get('axis', 'x'),
-            kwargs.get('world_space', True)
-        )
+        new_weights = dw_maya.dw_nucleus_utils.dw_nucleus_paint.mirror_vertex_map(weights, mesh, kwargs.get('axis', 'x'), kwargs.get('world_space', True))
 
     elif operation == 'smooth':
-        new_weights = paint_core.interpolate_vertex_map(
+        new_weights = dw_maya.dw_nucleus_utils.dw_nucleus_paint.interpolate_vertex_map(
             weights, mesh,
             kwargs.get('iterations', 1),
             kwargs.get('factor', 0.5)
@@ -1396,7 +1395,7 @@ def apply_operation(source: WeightSource,
     elif operation == 'vector':
         if 'direction' not in kwargs:
             raise ValueError("apply_operation 'vector' requires a 'direction' kwarg")
-        new_weights = paint_core.set_vertex_weights_by_vector(
+        new_weights = dw_maya.dw_nucleus_utils.dw_nucleus_paint.set_vertex_weights_by_vector(
             mesh,
             kwargs['direction'],
             kwargs.get('remap_range'),
@@ -1407,7 +1406,7 @@ def apply_operation(source: WeightSource,
         )
 
     elif operation == 'radial':
-        new_weights = paint_core.set_vertex_weights_radial(
+        new_weights = dw_maya.dw_nucleus_utils.dw_nucleus_paint.set_vertex_weights_radial(
             mesh,
             kwargs.get('center'),
             kwargs.get('radius'),
@@ -1440,7 +1439,7 @@ def _op_flood(weights: WeightList,
 
     Separated from apply_operation so it can be unit-tested without Maya.
     """
-    return paint_utils.modify_weights(
+    return dw_maya.dw_paint.modify_weights(
         weights, value, op, mask,
         min_value=clamp_min, max_value=clamp_max
     )
