@@ -1,10 +1,3 @@
-import sys
-# ----- Edit sysPath -----#
-rdPath = 'E:\\dw_coding\\dw_open_tools'
-if not rdPath in sys.path:
-    print("Add {} to sysPath".format(rdPath))
-    sys.path.insert(0, rdPath)
-
 from typing import List
 import dw_maya.dw_maya_utils as dwu
 import dw_maya.dw_alembic_utils as dwabc

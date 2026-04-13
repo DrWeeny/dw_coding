@@ -414,41 +414,14 @@ def get_centroid(sel):
 
 
 def grow_vertex_selection():
+    """Grow component selection by one topological step.
+
+    Deprecated:
+        Moved to ``dw_maya.dw_maya_utils.dw_maya_components.grow_component_selection``.
+        This alias is kept for backward compatibility.
     """
-    Grows the vertex selection in Maya by including the previous and next vertices
-    in the current selection for both individual and ranged selections.
-    """
-    sel = cmds.ls(selection=True, flatten=True)
-    new_sel = []
-
-    for item in sel:
-        # Look for indices within brackets e.g. .cv[1:3] or .vtx[4]
-        indices = re.search(r"\[\d[\d:]*\]", item)
-        if indices:
-            result = indices.group(0)
-            s, e = None, None
-
-            # Handle ranges like [1:5]
-            if ":" in result:
-                s = re.search(r"(?<=\[)\d+", result).group()
-                e = re.search(r"(?<=:)\d+(?=\])", result).group()
-                s = max(int(s) - 1, 0)  # Ensure the start index doesn't go below 0
-                e = int(e) + 1  # Extend the end index by 1
-            else:
-                # Handle individual indices like [4]
-                i = re.search(r"(?<=\[)\d+(?=\])", result).group()
-                i = int(i)
-                s = max(i - 1, 0)
-                e = i + 1
-
-            # Build the new selection range
-            new_index_range = f"[{s}:{e}]"
-            # Replace the original selection with the new expanded range
-            new_sel.append(re.sub(r"\[\d[\d:]*\]", new_index_range, item))
-
-    # Apply the new selection
-    if new_sel:
-        cmds.select(new_sel, replace=True)
+    from dw_maya.dw_maya_utils import dw_maya_components
+    dw_maya_components.grow_component_selection()
 
 
 def list_cv_index(curves=list, index=0):

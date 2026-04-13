@@ -1,9 +1,24 @@
-import re, itertools, math
-from typing import Iterable, List, Generator, Tuple, Optional, Union, Set
+import re
+import itertools
+import math
+from typing import Iterable, List, Generator, Tuple, Optional, Set
+
+import maya.cmds
 from dw_maya.dw_constants.node_re_mappings import COMPONENT_PATTERN
-from maya import cmds
+from maya import cmds  # legacy alias kept for existing functions
 
 from dw_maya.dw_decorators import acceptString
+
+# Regex to detect any Maya component type from a component string (vtx, f, e, cv, …)
+_COMP_TYPE_RE = re.compile(r'\.(\w+)\[')
+_CV_RE = re.compile(r'^(.+\.cv)\[(\d+)(?::(\d+))?]$')
+
+# polyListComponentConversion kwargs per target type
+_TO_COMP_FLAGS = {
+    'vtx': {'toVertex': True},
+    'f':   {'toFace': True},
+    'e':   {'toEdge': True},
+}
 
 # Type aliases for clarity
 Point3D = Tuple[float, float, float]
@@ -234,4 +249,131 @@ def invert_selection(select=True, range_opti=True):
     return new_list
 
 
+# ---------------------------------------------------------------------------
+# Component grow utilities
+# ---------------------------------------------------------------------------
 
+def _grow_cv_selection(sel: List[str]) -> List[str]:
+    """Grow NURBS CV selection by ±1 index on each side, clamped to valid range.
+
+    Args:
+        sel: CV component strings, e.g. ``['curveShape1.cv[2]', 'curveShape1.cv[4:6]']``.
+
+    Returns:
+        Grown CV component strings.
+    """
+    # cache max cv index per shape to avoid repeated getAttr calls
+    _max_cv_cache = {}
+
+    def _max_cv(shape: str) -> int:
+        if shape not in _max_cv_cache:
+            spans = maya.cmds.getAttr(f"{shape}.spans")
+            degree = maya.cmds.getAttr(f"{shape}.degree")
+            _max_cv_cache[shape] = spans + degree - 1
+        return _max_cv_cache[shape]
+
+    result = []
+    for item in sel:
+        m = _CV_RE.match(item)
+        if not m:
+            result.append(item)
+            continue
+        base = m.group(1)                          # e.g. 'curveShape1.cv'
+        shape = base.rsplit('.', 1)[0]
+        start = int(m.group(2))
+        end = int(m.group(3)) if m.group(3) else start
+        start = max(start - 1, 0)
+        end = min(end + 1, _max_cv(shape))
+        result.append(f"{base}[{start}:{end}]")
+    return result
+
+
+def grow_component_selection(sel: list = None, select: bool = True) -> list:
+    """Grow component selection by one topological step.
+
+    For mesh components (vtx / f / e): converts to vertices, expands via edge
+    connectivity (vtx → edge → vtx), then converts back to the original type.
+    For NURBS curve CVs: expands each index range by ±1 (clamped).
+
+    Args:
+        sel (list): Component list. Uses current selection if None.
+        select (bool): Apply the result as the active Maya selection.
+
+    Returns:
+        list: Grown component list (flattened strings).
+
+    Example:
+        import dw_maya.dw_maya_utils.dw_maya_components as dw_maya_components
+        grown = dw_maya_components.grow_component_selection()
+    """
+    if sel is None:
+        sel = maya.cmds.ls(selection=True, flatten=True)
+    if not sel:
+        return []
+
+    m = _COMP_TYPE_RE.search(sel[0])
+    if not m:
+        return list(sel)
+    orig_type = m.group(1)  # 'vtx', 'f', 'e', 'cv', …
+
+    # NURBS curve: index expansion
+    if orig_type == 'cv':
+        result = _grow_cv_selection(sel)
+
+    else:
+        # Mesh: vtx → edge → vtx → original type
+        as_vtx = maya.cmds.ls(
+            maya.cmds.polyListComponentConversion(sel, toVertex=True),
+            flatten=True,
+        )
+        as_edge = maya.cmds.polyListComponentConversion(as_vtx, toEdge=True)
+        grown_vtx = maya.cmds.ls(
+            maya.cmds.polyListComponentConversion(as_edge, toVertex=True),
+            flatten=True,
+        )
+
+        conv_flags = _TO_COMP_FLAGS.get(orig_type, {'toVertex': True})
+        result = maya.cmds.ls(
+            maya.cmds.polyListComponentConversion(grown_vtx, **conv_flags),
+            flatten=True,
+        )
+
+    if select and result:
+        maya.cmds.select(result, replace=True)
+    return result
+
+
+def grow_component_selection_max(sel: list = None, select: bool = True) -> list:
+    """Grow component selection repeatedly until it no longer changes.
+
+    Calls :func:`grow_component_selection` in a loop until the selection set is
+    stable (i.e. the whole connected region is selected).
+
+    Args:
+        sel (list): Component list. Uses current selection if None.
+        select (bool): Apply the result as the active Maya selection.
+
+    Returns:
+        list: Maximally grown component list.
+
+    Example:
+        import dw_maya.dw_maya_utils.dw_maya_components as dw_maya_components
+        all_vtx = dw_maya_components.grow_component_selection_max()
+    """
+    if sel is None:
+        sel = maya.cmds.ls(selection=True, flatten=True)
+    if not sel:
+        return []
+
+    current = set(sel)
+    while True:
+        grown = grow_component_selection(list(current), select=False)
+        grown_set = set(grown)
+        if grown_set == current:
+            break
+        current = grown_set
+
+    result = sorted(current)
+    if select and result:
+        maya.cmds.select(result, replace=True)
+    return result

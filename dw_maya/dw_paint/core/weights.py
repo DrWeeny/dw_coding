@@ -334,7 +334,7 @@ def select_vtx_info_on_mesh(weights: WeightList,
                              sel_mode: str,
                              value: Optional[float] = None,
                              _min: Optional[float] = None,
-                             _max: Optional[float] = None) -> None:
+                             _max: Optional[float] = None) -> list:
     """Select vertices on a mesh based on their weight values.
 
     Args:
@@ -365,7 +365,10 @@ def select_vtx_info_on_mesh(weights: WeightList,
 
     from dw_maya.dw_maya_utils import create_maya_ranges
     ranges = create_maya_ranges(indices)
-    cmds.select([f'{mesh}.vtx[{r}]' for r in ranges], replace=True)
+    sel_list = [f'{mesh}.vtx[{r}]' for r in ranges]
+    cmds.select(sel_list, replace=True)
+
+    return sel_list
 
 
 if __name__ == '__main__':
