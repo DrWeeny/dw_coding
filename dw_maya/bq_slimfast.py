@@ -295,14 +295,39 @@ class SlimfastController:
     # ------------------------------------------------------------------
 
     def paint(self) -> None:
-        """Open artisan for the active source and map."""
+        """Open artisan for the active source and map.
+
+        Face and edge selections are automatically converted to vertices
+        before the artisan tool opens, so the user can make a face selection
+        and click Paint without an extra step.
+        """
         if not self._require_active():
             return
         try:
-            # use_map already called by select_map; paint() dispatches correctly
+            self._convert_selection_to_vtx()
             self._active.paint()
         except Exception as e:
             logger.error(f"Paint failed: {e}")
+
+    def _convert_selection_to_vtx(self) -> None:
+        """Convert any face / edge selection to vertices in-place.
+
+        Vertices and transform selections are left untouched.
+        """
+        sel = cmds.ls(sl=True, fl=True) or []
+        if not sel:
+            return
+        faces = cmds.filterExpand(sel, selectionMask=34) or []
+        edges = cmds.filterExpand(sel, selectionMask=32) or []
+        if faces or edges:
+            vtx = cmds.polyListComponentConversion(sel, toVertex=True)
+            vtx = cmds.ls(vtx, fl=True) or []
+            if vtx:
+                cmds.select(vtx, replace=True)
+                logger.debug(
+                    f"paint: converted {len(faces)} face(s) + {len(edges)} edge(s)"
+                    f" → {len(vtx)} vertices"
+                )
 
     @keep_selection
     def set_weight(self, value: float) -> None:
