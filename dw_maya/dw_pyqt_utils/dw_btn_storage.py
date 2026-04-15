@@ -1,4 +1,13 @@
-from PySide6 import QtWidgets, QtCore, QtGui
+try:
+    from PySide6 import QtCore, QtGui, QtWidgets
+    from PySide6.QtCore import Qt, Signal, Slot
+    from shiboken6 import wrapInstance
+except ImportError:
+    # Fallback for older Maya versions shipping PySide2
+    from PySide2 import QtCore, QtGui, QtWidgets
+    from PySide2.QtCore import Qt, Signal, Slot
+    from shiboken2 import wrapInstance
+
 from typing import List, Optional, Dict, Any
 from dw_logger import get_logger
 from dw_maya.dw_maya_utils import extract_id, component_in_list, create_maya_ranges
@@ -12,7 +21,14 @@ logger = get_logger()
 
 
 class VtxStorageButton(QtWidgets.QPushButton):
-    """A button that can store and restore vertex weights and selections"""
+    """A button that can store and restore vertex weights and selections.
+
+    Signals:
+        remove_requested(): Emitted when the user chooses "Remove this slot"
+                            from the right-click context menu.
+    """
+
+    remove_requested = QtCore.Signal()
 
     def __init__(self):
         """
@@ -154,6 +170,10 @@ class VtxStorageButton(QtWidgets.QPushButton):
         # Enable/disable actions based on state
         clear_action.setEnabled(bool(self.storage['weights'] or self.storage['selection']))
 
+        # Remove slot — always available
+        menu.addSeparator()
+        remove_action = menu.addAction("Remove this slot")
+
         # Show menu and handle selection
         action = menu.exec_(QtGui.QCursor.pos())
         if action == store_action:
@@ -178,6 +198,8 @@ class VtxStorageButton(QtWidgets.QPushButton):
             self.combine_data(mode="multiply")
         elif action == div_action:
             self.combine_data(mode="divide")
+        elif action == remove_action:
+            self.remove_requested.emit()
 
     def store_current_data(self, weight_node:str=None, sel_store = True, weight_store=True):
         """Store current weights and selection"""
@@ -361,8 +383,14 @@ class VtxStorageButton(QtWidgets.QPushButton):
 
 
     def _update_button_state(self, has_data: bool):
-        """Update button appearance based on storage state"""
+        """Update button appearance and label based on storage state."""
         if has_data:
+            # Show stored node name on the button for easy identification
+            weight_node = self.storage.get('weight_node') or ''
+            if weight_node:
+                label = weight_node.split('.')[0]
+                self.setText(label[:14] + '…' if len(label) > 14 else label)
+
             if self.storage["weights"] and not self.storage["selection"]:
                 self.setStyleSheet("""
                     QPushButton {

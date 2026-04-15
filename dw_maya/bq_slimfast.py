@@ -37,6 +37,7 @@ except ImportError:
     from PySide2.QtCore import Qt, Signal, Slot
     from shiboken2 import wrapInstance
 import dw_maya.dw_paint
+import dw_maya.dw_pyqt_utils.dw_btn_storage
 from dw_maya.dw_paint.protocol import WeightSource
 from dw_maya.dw_decorators.dw_keep_selection import keep_selection
 from dw_maya.dw_paint.weight_source import (
@@ -533,8 +534,7 @@ class SlimfastWidget(QtWidgets.QWidget):
         super().__init__(parent or _maya_main_window())
         self.setWindowTitle('Slim fast 2.0')
         self.setWindowFlags(Qt.Window)
-        self.setMinimumWidth(260)
-        self.setMaximumWidth(320)
+        self.setMinimumWidth(280)
 
         self._signals = SlimfastSignals(self)
         self._ctrl = SlimfastController(self._signals)
@@ -550,11 +550,84 @@ class SlimfastWidget(QtWidgets.QWidget):
         root = QtWidgets.QVBoxLayout(self)
         root.setContentsMargins(6, 6, 6, 6)
         root.setSpacing(4)
-        root.addWidget(self._build_deformer_group())
-        root.addWidget(self._build_weights_group())
-        root.addWidget(self._build_smooth_group())
-        root.addWidget(self._build_select_group())
-        root.addStretch()
+
+        # Build content groups first (storage panel must exist before menu bar
+        # wires its QAction, because setChecked() fires the toggled signal).
+        deformer_grp = self._build_deformer_group()
+        weights_grp = self._build_weights_group()
+        smooth_grp = self._build_smooth_group()
+        select_grp = self._build_select_group()
+        self._storage_panel = self._build_storage_panel()
+
+        # Menu bar — View > Storage expanded (reads QSettings for initial state)
+        self._menu_bar = self._build_menu_bar()
+        root.addWidget(self._menu_bar)
+
+        # Main horizontal split: left tool groups | right storage column
+        main_area = QtWidgets.QHBoxLayout()
+        main_area.setSpacing(6)
+        main_area.setContentsMargins(0, 0, 0, 0)
+
+        left_col = QtWidgets.QVBoxLayout()
+        left_col.setSpacing(4)
+        left_col.addWidget(deformer_grp)
+        left_col.addWidget(weights_grp)
+        left_col.addWidget(smooth_grp)
+        left_col.addWidget(select_grp)
+        left_col.addStretch()
+        main_area.addLayout(left_col, stretch=1)
+        main_area.addWidget(self._storage_panel)
+
+        root.addLayout(main_area)
+
+    def _build_menu_bar(self) -> QtWidgets.QMenuBar:
+        """Build top menu bar with a View menu to toggle the storage panel."""
+        menu_bar = QtWidgets.QMenuBar(self)
+        view_menu = menu_bar.addMenu('View')
+
+        self._storage_action = QtWidgets.QAction('Storage expanded', self)
+        self._storage_action.setCheckable(True)
+
+        # Persist user preference via QSettings
+        settings = QtCore.QSettings('DrWeeny', 'SlimfastWidget')
+        expanded = settings.value('storage_expanded', True, type=bool)
+
+        # Apply initial visibility directly, then connect for future changes
+        self._storage_panel.setVisible(bool(expanded))
+        self._storage_action.setChecked(bool(expanded))
+        self._storage_action.toggled.connect(self._on_storage_toggled)
+
+        view_menu.addAction(self._storage_action)
+        return menu_bar
+
+    def _build_storage_panel(self) -> QtWidgets.QWidget:
+        """Compact square-button storage column (no title, top-right position)."""
+        panel = QtWidgets.QWidget(self)
+        layout = QtWidgets.QVBoxLayout(panel)
+        layout.setSpacing(4)
+        layout.setContentsMargins(2, 2, 2, 2)
+        layout.setAlignment(Qt.AlignTop)
+
+        # Dynamic area — storage buttons are inserted here
+        self._storage_layout = QtWidgets.QVBoxLayout()
+        self._storage_layout.setSpacing(4)
+        self._storage_layout.setContentsMargins(0, 0, 0, 0)
+        self._storage_layout.setAlignment(Qt.AlignTop)
+        layout.addLayout(self._storage_layout)
+        self._storage_buttons = []
+
+        # [+] square button — always stays at the top
+        self._add_storage_btn = QtWidgets.QPushButton('+')
+        self._add_storage_btn.setFixedSize(20, 20)
+        self._add_storage_btn.setToolTip(
+            'Add a storage slot\n'
+            'Left-click a slot to restore  |  Right-click for options'
+        )
+        self._add_storage_btn.clicked.connect(self._on_add_storage)
+        layout.insertWidget(0, self._add_storage_btn)
+
+        layout.addStretch()
+        return panel
 
     def _build_deformer_group(self) -> QtWidgets.QGroupBox:
         grp = QtWidgets.QGroupBox('Deformer')
@@ -799,6 +872,40 @@ class SlimfastWidget(QtWidgets.QWidget):
     # ------------------------------------------------------------------
     # Slots
     # ------------------------------------------------------------------
+
+    @Slot(bool)
+    def _on_storage_toggled(self, checked: bool) -> None:
+        """Show or hide the storage panel and persist the user preference."""
+        self._storage_panel.setVisible(checked)
+        settings = QtCore.QSettings('DrWeeny', 'SlimfastWidget')
+        settings.setValue('storage_expanded', checked)
+
+    @Slot()
+    def _on_add_storage(self) -> None:
+        """Create a new VtxStorageButton slot below the existing ones."""
+        btn = dw_maya.dw_pyqt_utils.dw_btn_storage.VtxStorageButton()
+        slot_num = len(self._storage_buttons) + 1
+        btn.setText(str(slot_num))
+        btn.setFixedSize(40, 40)
+        btn.setToolTip(f'Slot {slot_num}\nRight-click for options')
+
+        # Pre-link to the currently active source so Store works immediately
+        source = self._ctrl.active_source
+        active_map = self._ctrl.active_map
+        if source and active_map:
+            btn.current_weight_node = f'{source.node_name}.{active_map}'
+
+        btn.remove_requested.connect(partial(self._on_remove_storage, btn))
+        self._storage_layout.addWidget(btn)
+        self._storage_buttons.append(btn)
+
+    @Slot()
+    def _on_remove_storage(self, btn: 'dw_maya.dw_pyqt_utils.dw_btn_storage.VtxStorageButton') -> None:
+        """Remove a storage slot from the panel."""
+        if btn in self._storage_buttons:
+            self._storage_buttons.remove(btn)
+            self._storage_layout.removeWidget(btn)
+            btn.deleteLater()
 
     @Slot()
     def _on_refresh(self) -> None:
@@ -1147,3 +1254,5 @@ class SlimfastWidget(QtWidgets.QWidget):
 
 if __name__ == '__main__':
     _instance = SlimfastWidget.show_window()
+
+
