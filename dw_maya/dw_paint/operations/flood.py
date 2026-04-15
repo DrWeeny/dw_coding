@@ -57,9 +57,7 @@ class FloodOperation:
             mask = self._create_mask_from_selection(selected)
 
             # Apply operation
-            result = (weight_data
-                      .modify(value, operation, mask, clamp_min, clamp_max)
-                      .as_list)
+            result = weight_data.modify(value, operation, mask, clamp_min, clamp_max).as_list
 
             return result
 

@@ -304,9 +304,11 @@ def _paint_deformer(source: WeightSource) -> None:
     mesh_short = mesh.split('|')[-1]
 
     vtx = cmds.filterExpand(selectionMask=31, expand=False) or []
-    vtx_mesh_short = vtx[0].split('.')[0].split('|')[-1] if vtx else ''
-    sel = vtx if (vtx and vtx_mesh_short == mesh_short) else mesh_short
-    cmds.select(sel, replace=True)
+    if vtx:
+        cmds.select(vtx, replace=True)
+        cmds.select(mesh_short, add=True)
+    else:
+        cmds.select(mesh_short, replace=True)
 
     if not cmds.artAttrCtx('artAttrCtx', exists=True):
         cmds.artAttrCtx('artAttrCtx')

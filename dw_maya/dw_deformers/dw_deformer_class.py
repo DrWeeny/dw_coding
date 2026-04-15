@@ -625,19 +625,46 @@ class BlendShape(Deformer):
     def paint(self) -> None:
         """Open artisan for the active map (base mask or per-target weights)."""
         active = self._require_map()
-        if active == 'weightList':
-            mesh_short = self.mesh_name.split('|')[-1]
-            cmds.select(mesh_short, replace=True)
-            if not cmds.artAttrCtx('artAttrCtx', exists=True):
-                cmds.artAttrCtx('artAttrCtx')
-            mel.eval(f'artSetToolAndSelectAttr "artAttrCtx" "blendShape.{self.node_name}.baseWeights"')
-            cmds.setToolTo('artAttrCtx')
+        mesh_short = self.mesh_name.split('|')[-1]
+        vtx = cmds.filterExpand(selectionMask=31, expand=False) or []
+        if vtx:
+            cmds.select(vtx, replace=True)
+            cmds.select(mesh_short, add=True)
         else:
-            # Per-target weights — fall back to standard deformer paint
-            from dw_maya.dw_paint.weight_source import _paint_deformer
-            _paint_deformer(self)
+            cmds.select(mesh_short, replace=True)
+        if not cmds.artAttrCtx('artAttrCtx', exists=True):
+            cmds.artAttrCtx('artAttrCtx')
+        if active == 'weightList':
+            mel.eval(f'artSetToolAndSelectAttr "artAttrCtx" "blendShape.{self.node_name}.baseWeights"')
+            mel.eval('setToolTo "artAttrCtx"')
+        else:
+            # Step 2b: select a TARGET — pass the target MESH name (not the
+            # attribute/target alias name).
+            # self.targets returns [(alias_name, index), …] in index order.
+            # cmds.blendShape(q, target=True) returns the mesh names in the
+            # same order, so we can look up by the alias index.
+            target_names = [name for name, _ in self.targets]
+            if active not in target_names:
+                raise ValueError(
+                    f"BlendShape target '{active}' not found on '{self.node_name}'. "
+                    f"Available: {target_names}"
+                )
+            target_index = target_names.index(active)
+            # cmds.blendShape(..., target=True) returns the connected TARGET MESH
+            # names in slot order — this is what artBlendShapeSelectTarget needs.
+            target_meshes = cmds.blendShape(self.node_name, query=True, target=True) or []
+            if target_index >= len(target_meshes):
+                raise RuntimeError(
+                    f"Could not resolve mesh for target '{active}' "
+                    f"(index {target_index}) on '{self.node_name}'"
+                )
+            target_mesh = target_meshes[target_index]
+            mel.eval(f'artBlendShapeSelectTarget artAttrCtx "{target_mesh}"')
 
-
+            # artAttrCtx -e -pas "blendShape.blendShape2.paintTargetWeights" `currentCtx`
+            # artBlendShapeSelectTarget artAttrCtx "blendShape2"; // paintTargetWeights
+            # artBlendShapeSelectTarget artAttrCtx "pSphere3"; // target 1/2
+            # artBlendShapeSelectTarget artAttrCtx "pSphere4"; // target 2/2
 # ---------------------------------------------------------------------------
 # Wire
 # ---------------------------------------------------------------------------

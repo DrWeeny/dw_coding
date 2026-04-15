@@ -476,7 +476,8 @@ class VertexMapEditor(DynEvalWidget):
 
     def _flood(self):
         """Execute flood operation."""
-        from ..sim_cmds.vtx_map_management import flood_map
+        from dw_maya.dw_paint.operations import flood
+        from dw_maya.dw_nucleus_utils.dw_core import set_nucx_map_data, get_nucx_map_data
 
         value = self.flood_value.value()
         mode = self.mode_group.checkedButton().property("editMode")
@@ -493,7 +494,12 @@ class VertexMapEditor(DynEvalWidget):
             clamp = None
 
         logger.info(f"Flooding {map_name} with {value} ({mode.value})")
-        flood_map(nucx, map_name, value, mode.value.lower(), clamp=clamp)
+
+        vertex_count = cmds.polyEvaluate(mesh, vertex=True)
+        test_weights = [0.0] * vertex_count
+        flood_op = flood.FloodOperation(mesh)
+        result_weight = flood_op.flood_selected(test_weights, value, mode, clamp[0], clamp[1])
+        set_nucx_map_data(nucx, map_name, result_weight)
 
         self.floodRequested.emit(value, mode.value)
 

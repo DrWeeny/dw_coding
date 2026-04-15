@@ -1,4 +1,6 @@
 import re
+import traceback
+
 try:
     from typing import List, Optional, Union, Dict, Tuple, Literal
 except ImportError:
@@ -281,7 +283,8 @@ def modify_weights(weight_list: List[Union[float, int]],
                 arr[indices] = value
 
         except Exception as e:
-            raise ValueError(f"Error processing mask: {str(e)}")
+            _msg = traceback.format_exc()
+            raise ValueError(f"Error processing mask: \n{_msg}\n------")
 
     # Apply clamping if specified
     if min_value is not None:
