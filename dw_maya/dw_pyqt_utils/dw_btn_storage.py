@@ -346,9 +346,10 @@ class VtxStorageButton(QtWidgets.QPushButton):
     def current_weight_node(self):
         if not self._current_weight_node:
             _node, _attr, _type = get_current_artisan_map()
-            return f"{_node}.{_attr}"
-        else:
-            return self._current_weight_node
+            if _node and _attr:
+                return f"{_node}.{_attr}"
+            return None
+        return self._current_weight_node
 
     @current_weight_node.setter
     def current_weight_node(self, node:str):
@@ -362,7 +363,7 @@ class VtxStorageButton(QtWidgets.QPushButton):
     def _update_button_state(self, has_data: bool):
         """Update button appearance based on storage state"""
         if has_data:
-            if self.storage["weights"] == 'weights':
+            if self.storage["weights"] and not self.storage["selection"]:
                 self.setStyleSheet("""
                     QPushButton {
                         background-color: rgb(70, 110, 85);

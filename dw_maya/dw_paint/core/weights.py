@@ -17,7 +17,11 @@ logger = get_logger()
 # Type Aliases
 WeightList = List[float]
 WeightArray = np.ndarray
-ComponentMask = List[Union[List[int], Tuple[int, int]]]
+# Each mask element can be:
+#   int            — single vertex index
+#   [i]            — single vertex index (legacy)
+#   [start, end]   — exclusive range  (legacy)
+ComponentMask = List[Union[int, List[int], Tuple[int, int]]]
 OperationType = Literal['multiply', 'add', 'replace']
 
 
@@ -207,7 +211,7 @@ class WeightDataFactory:
 def modify_weights(weight_list: List[Union[float, int]],
                    value: float,
                    operation: Literal['multiply', 'add', 'replace'] = 'replace',
-                   mask: List[Union[List[int], List[float]]] = None,
+                   mask: Optional[List[Union[int, List[int]]]] = None,
                    min_value: float = None,
                    max_value: float = None) -> List[float]:
     """
@@ -217,10 +221,18 @@ def modify_weights(weight_list: List[Union[float, int]],
         weight_list: List of numerical values (float or int)
         value: Value to multiply, add, or replace with
         operation: 'multiply', 'add', or 'replace'
-        mask: List of index specifications, where each spec can be:
-              - Single index as [i]
-              - Range as [start, end] (end is exclusive)
-              Example: [[0,5], [9], [100,150]] will affect indices 0-4, 9, and 100-149
+        mask: Optional list of vertex index specs.  Three formats are accepted
+              and can be mixed in the same mask:
+
+              - ``int``        — single index,  e.g. ``5``
+              - ``[i]``        — single index (legacy), e.g. ``[5]``
+              - ``[start, end]`` — exclusive range (legacy), e.g. ``[0, 10]``
+
+              Examples::
+
+                  [0, 1, 5, 12]          # flat list of ints (new)
+                  [[0], [5], [100, 150]] # legacy nested lists
+                  [0, [10, 20], 99]      # mixed
         min_value: Optional minimum value to clamp results
         max_value: Optional maximum value to clamp results
 
@@ -256,23 +268,30 @@ def modify_weights(weight_list: List[Union[float, int]],
         try:
             mask_arange = []
             for m in mask:
-                if not isinstance(m, list):
-                    raise TypeError(f"Each mask element must be a list, got {type(m)}")
+                if isinstance(m, int):
+                    # flat int — single vertex index
+                    if m >= len(arr):
+                        raise ValueError(f"Index {m} out of range for array of length {len(arr)}")
+                    mask_arange.append(np.array([m]))
 
-                if len(m) not in (1, 2):
-                    raise ValueError(f"Mask elements must be [index] or [start,end], got {m}")
+                elif isinstance(m, (list, tuple)):
+                    if len(m) not in (1, 2):
+                        raise ValueError(f"Mask elements must be [index] or [start,end], got {m}")
 
-                if len(m) == 1:
-                    if m[0] >= len(arr):
-                        raise ValueError(f"Index {m[0]} out of range for array of length {len(arr)}")
-                    mask_arange.append(np.array([m[0]]))
+                    if len(m) == 1:
+                        if m[0] >= len(arr):
+                            raise ValueError(f"Index {m[0]} out of range for array of length {len(arr)}")
+                        mask_arange.append(np.array([m[0]]))
+                    else:
+                        start, end = m
+                        if end > len(arr):
+                            raise ValueError(f"End index {end} out of range for array of length {len(arr)}")
+                        if start >= end:
+                            raise ValueError(f"Start index {start} must be less than end index {end}")
+                        mask_arange.append(np.arange(start, end))
+
                 else:
-                    start, end = m
-                    if end > len(arr):
-                        raise ValueError(f"End index {end} out of range for array of length {len(arr)}")
-                    if start >= end:
-                        raise ValueError(f"Start index {start} must be less than end index {end}")
-                    mask_arange.append(np.arange(start, end))
+                    raise TypeError(f"Each mask element must be an int or list, got {type(m)}")
 
             indices = np.concatenate(mask_arange)
             if operation == 'multiply':

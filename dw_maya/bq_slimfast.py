@@ -280,6 +280,16 @@ class SlimfastController:
             return False
         return True
 
+    @property
+    def active_source(self) -> Optional[WeightSource]:
+        """The currently active WeightSource, or None."""
+        return self._active
+
+    @property
+    def active_map(self) -> Optional[str]:
+        """The currently active map name, or None."""
+        return self._active_map
+
     # ------------------------------------------------------------------
     # Weight operations — all uniform, no type branching
     # ------------------------------------------------------------------
@@ -296,16 +306,14 @@ class SlimfastController:
 
     @keep_selection
     def set_weight(self, value: float) -> None:
-        """Flood-replace a scalar weight on the current vertex selection."""
-        if isinstance(value, SliderWithButton):
-            value = value.value
+        """Set a scalar weight on the current vertex selection (replace mode)."""
         if not self._require_active():
             return
 
         sel_obj = cmds.ls(sl=True, o=True) or []
         sel_all = cmds.ls(sl=True, fl=True) or []
-        print(f"my selection: {sel_all}")
-        print(f"obj selection: {sel_obj}")
+        logger.debug(f"set_weight — selection: {sel_all}")
+        logger.debug(f"set_weight — objects:   {sel_obj}")
         if len(sel_all) > len(sel_obj):
             sel = [i for i in sel_all if "." in i]
         else:
@@ -315,13 +323,11 @@ class SlimfastController:
             vtx = cmds.ls(vtx, fl=True) or []
             if vtx:
                 indices = dw_maya.dw_maya_utils.extract_id(vtx)
-                mask = [[i] for i in indices]
-                apply_operation(self._active, 'flood', value=value, mask=mask)
-                print("applied replace on selected vertices")
+                apply_operation(self._active, 'flood', value=value, mask=indices)
+                logger.debug(f"set_weight — applied replace on {len(indices)} vertices")
                 return
-        else:
-            apply_operation(self._active, 'flood', value=value)
-            print("applied replace on all vertices")
+        apply_operation(self._active, 'flood', value=value)
+        logger.debug("set_weight — applied replace on all vertices")
 
     def smooth(self, iterations: int = 1) -> None:
         """Topology-based smooth via numpy path."""
@@ -339,7 +345,6 @@ class SlimfastController:
         the active source, so no manual isinstance check is needed — the MEL
         command is routed through the source's own paint context.
         """
-        from dw_maya.dw_nucleus_utils.dw_ncloth_class import NClothMap
         if isinstance(self._active, NClothMap):
             try:
                 for _ in range(iterations):
@@ -437,6 +442,34 @@ class SlimfastController:
         """Select border vertices of the current component selection."""
         selectBorder()
 
+    def invert_selection(self) -> None:
+        """Invert the current vertex selection.
+
+        Uses the active mesh when a source is loaded for a precise inversion.
+        Falls back to Maya's built-in ``InvertSelection`` otherwise so the
+        button is always functional.
+        """
+        if self._active:
+            mesh = self._active.mesh_name
+            n = self._active.vtx_count
+            mel.eval(f'doMenuComponentSelection("{mesh}", "vertex")')
+            current = set(
+                cmds.ls(cmds.filterExpand(selectionMask=31, expand=True) or [], fl=True)
+            )
+            all_vtx = {f'{mesh}.vtx[{i}]' for i in range(n)}
+            inverted = list(all_vtx - current)
+            if inverted:
+                indices = dw_maya.dw_maya_utils.extract_id(inverted)
+                ranges = dw_maya.dw_maya_utils.create_maya_ranges(indices)
+                cmds.select([f'{mesh}.vtx[{r}]' for r in ranges], replace=True)
+            else:
+                cmds.select(clear=True)
+        else:
+            try:
+                mel.eval('InvertSelection')
+            except Exception as e:
+                logger.warning(f"Invert selection failed: {e}")
+
     def set_artisan_value(self, value: float) -> None:
         """Push value to artisan context (absolute/replace mode).
 
@@ -445,7 +478,6 @@ class SlimfastController:
         """
         if not self._require_active():
             return
-        from dw_maya.dw_nucleus_utils.dw_ncloth_class import NClothMap
         if isinstance(self._active, NClothMap):
             try:
                 dw_maya.dw_nucleus_utils.dw_nucleus_paint.set_cfx_brush_val(
@@ -519,7 +551,6 @@ class SlimfastWidget(QtWidgets.QWidget):
 
     def _build_deformer_group(self) -> QtWidgets.QGroupBox:
         grp = QtWidgets.QGroupBox('Deformer')
-        grp.setCheckable(True)
         lay = QtWidgets.QVBoxLayout(grp)
         lay.setSpacing(4)
 
@@ -563,6 +594,13 @@ class SlimfastWidget(QtWidgets.QWidget):
         self._source_combo.setMinimumWidth(220)
         self._source_combo.setToolTip('Select deformer / map to paint')
         lay.addWidget(self._source_combo)
+
+        # --- BlendShape target combo (show only for blendShape nodes) ---
+        self._bs_target_combo = QtWidgets.QComboBox()
+        self._bs_target_combo.setMinimumWidth(220)
+        self._bs_target_combo.setToolTip('BlendShape target map')
+        self._bs_target_combo.hide()
+        lay.addWidget(self._bs_target_combo)
 
         # --- Map type badge (nucleus only) ---
         self._map_type_label = QtWidgets.QLabel()
@@ -654,8 +692,8 @@ class SlimfastWidget(QtWidgets.QWidget):
         self._iter_slider.valueChanged.connect(self._iter_spinbox.setValue)
         self._iter_spinbox.valueChanged.connect(self._iter_slider.setValue)
 
-        flood_btn = QtWidgets.QPushButton('Flood')
-        flood_btn.setFixedWidth(48)
+        flood_btn = QtWidgets.QPushButton('Apply')
+        flood_btn.setToolTip('Apply smooth N times to all vertices')
         flood_btn.clicked.connect(self._on_smooth_flood)
         iter_row.addWidget(flood_btn)
         lay.addLayout(iter_row)
@@ -674,8 +712,14 @@ class SlimfastWidget(QtWidgets.QWidget):
         lay = QtWidgets.QVBoxLayout(grp)
         lay.setSpacing(4)
 
-        self._sel_all_btn = QtWidgets.QPushButton('ALL  (shift = invert)')
-        lay.addWidget(self._sel_all_btn)
+        # ALL + Invert on the same row
+        all_row = QtWidgets.QHBoxLayout()
+        self._sel_all_btn = QtWidgets.QPushButton('Select ALL')
+        self._invert_btn = QtWidgets.QPushButton('Invert')
+        self._invert_btn.setToolTip('Invert current vertex selection (always active)')
+        all_row.addWidget(self._sel_all_btn)
+        all_row.addWidget(self._invert_btn)
+        lay.addLayout(all_row)
 
         sel_row = QtWidgets.QHBoxLayout()
         self._sel0_btn = QtWidgets.QPushButton('Weight = 0')
@@ -699,9 +743,6 @@ class SlimfastWidget(QtWidgets.QWidget):
         self._tol_slider.setRange(0, 100)
         self._tol_slider.setValue(0)
         tol_row.addWidget(self._tol_slider, stretch=1)
-
-        self._tol_slider.valueChanged.connect(lambda v: self._tol_spinbox.setValue(v / 100.0))
-        self._tol_spinbox.valueChanged.connect(lambda v: self._tol_slider.setValue(int(v * 100)))
         lay.addLayout(tol_row)
 
         self._border_btn = QtWidgets.QPushButton('Border selection')
@@ -721,8 +762,9 @@ class SlimfastWidget(QtWidgets.QWidget):
         # Mode toggle
         self._mode_group.buttonClicked.connect(self._on_mode_changed)
 
-        # Flat source combo
+        # Flat source combo + blendShape target combo
         self._source_combo.currentIndexChanged.connect(self._on_source_combo_changed)
+        self._bs_target_combo.currentIndexChanged.connect(self._on_bs_target_changed)
 
         # Deformer group
         self._copy_btn.clicked.connect(self._ctrl.copy_weights)
@@ -733,14 +775,19 @@ class SlimfastWidget(QtWidgets.QWidget):
         # Weights group
         self._set0_btn.clicked.connect(partial(self._ctrl.set_weight, 0.0))
         self._set1_btn.clicked.connect(partial(self._ctrl.set_weight, 1.0))
-        self._weight_slider.button_clicked.connect(lambda: self._ctrl.set_weight(self._weight_slider.value))
+        self._weight_slider.button_clicked.connect(self._on_set_weight)
         self._weight_slider.value_changed.connect(self._ctrl.set_artisan_value)
 
         # Select group
         self._sel_all_btn.clicked.connect(self._on_select_all)
+        self._invert_btn.clicked.connect(self._on_invert_selection)
         self._sel0_btn.clicked.connect(self._on_select_zero)
         self._sel1_btn.clicked.connect(self._on_select_one)
         self._border_btn.clicked.connect(self._ctrl.border_selection)
+
+        # Tolerance slider ↔ spinbox sync
+        self._tol_slider.valueChanged.connect(self._on_tol_slider_changed)
+        self._tol_spinbox.valueChanged.connect(self._on_tol_spinbox_changed)
 
     # ------------------------------------------------------------------
     # Slots
@@ -749,6 +796,34 @@ class SlimfastWidget(QtWidgets.QWidget):
     @Slot()
     def _on_refresh(self) -> None:
         self._ctrl.refresh()
+
+    @Slot()
+    def _on_set_weight(self) -> None:
+        """Relay slider value to the controller (avoids lambda in signal wiring)."""
+        self._ctrl.set_weight(self._weight_slider.value)
+
+    @Slot(int)
+    def _on_tol_slider_changed(self, int_val: int) -> None:
+        self._tol_spinbox.blockSignals(True)
+        self._tol_spinbox.setValue(int_val / 100.0)
+        self._tol_spinbox.blockSignals(False)
+
+    @Slot(float)
+    def _on_tol_spinbox_changed(self, float_val: float) -> None:
+        self._tol_slider.blockSignals(True)
+        self._tol_slider.setValue(int(float_val * 100))
+        self._tol_slider.blockSignals(False)
+
+    @Slot(int)
+    def _on_bs_target_changed(self, index: int) -> None:
+        """Activate the blendShape map selected in the secondary combo."""
+        map_name = self._bs_target_combo.itemData(index)
+        if map_name:
+            self._ctrl.select_map(map_name)
+
+    @Slot()
+    def _on_invert_selection(self) -> None:
+        self._ctrl.invert_selection()
 
     @Slot(QtWidgets.QAbstractButton)
     def _on_mode_changed(self, btn: QtWidgets.QAbstractButton) -> None:
@@ -770,21 +845,14 @@ class SlimfastWidget(QtWidgets.QWidget):
         """Rebuild the flat source combo from (node_labels, map_lists).
 
         Layout rules:
-        - Every source gets at least one row.
-        - Single-map deformers (cluster, softMod, wire, …) → one row
-          labelled with just the node name, coloured by type.
-        - BlendShape → one row per map:
-            "blendShape1  base weights"   (for 'weightList')
-            "blendShape1  › smile"        (for target maps)
-        - NClothMap → one row per map:
-            "nClothShape1  › thickness"
-            "nClothShape1  › stretchMap"
-            …
-        - A disabled separator row is inserted between deformer and
-          nucleus groups when both are present.
+        - Single-map deformers (cluster, softMod, wire, …) → one row.
+        - BlendShape → one row; available target maps go into _bs_target_combo
+          which is shown/hidden by _on_source_combo_changed.
+        - NClothMap → one row per map (nucleus maps are numerous).
+        - A disabled separator row separates deformer and nucleus groups.
 
-        Each selectable item stores (source_idx, map_name) in Qt.UserRole
-        so _on_source_combo_changed can resolve both in one step.
+        UserRole  stores (source_idx, default_map_name).
+        UserRole+1 stores (node_type, all_maps_list) for downstream logic.
         """
         self._source_model = QtGui.QStandardItemModel()
 
@@ -795,11 +863,11 @@ class SlimfastWidget(QtWidgets.QWidget):
             self._source_combo.blockSignals(True)
             self._source_combo.setModel(self._source_model)
             self._source_combo.blockSignals(False)
+            self._bs_target_combo.hide()
             return
 
-        # Determine whether we need a nucleus separator
         nucleus_types = {'nCloth', 'nRigid'}
-        # node_labels are like "[cluster] cluster1" — extract the type token
+
         def _type_from_label(lbl: str) -> str:
             if lbl.startswith('['):
                 return lbl[1:lbl.index(']')]
@@ -807,7 +875,6 @@ class SlimfastWidget(QtWidgets.QWidget):
 
         types = [_type_from_label(lbl) for lbl in node_labels]
         has_deformer = any(t not in nucleus_types for t in types)
-        has_nucleus  = any(t in nucleus_types     for t in types)
         separator_inserted = False
         first_selectable_row = None
 
@@ -817,7 +884,7 @@ class SlimfastWidget(QtWidgets.QWidget):
             node_name = label.split('] ', 1)[-1] if '] ' in label else label
             color = self._SOURCE_COLORS.get(node_type, '#cccccc')
 
-            # --- separator before first nucleus entry ---
+            # Separator before first nucleus entry
             if node_type in nucleus_types and not separator_inserted and has_deformer:
                 sep = QtGui.QStandardItem('─── nCloth / nRigid ───')
                 sep.setEnabled(False)
@@ -826,25 +893,22 @@ class SlimfastWidget(QtWidgets.QWidget):
                 separator_inserted = True
 
             if node_type == 'blendShape':
-                # BlendShape: one row per map with special label for weightList
-                for map_name in maps:
-                    if map_name == 'weightList':
-                        display = f'{node_name}  base weights'
-                    else:
-                        display = f'{node_name}  › {map_name}'
-                    item = QtGui.QStandardItem(display)
-                    item.setData((source_idx, map_name), Qt.UserRole)
-                    item.setForeground(QtGui.QBrush(QtGui.QColor(color)))
-                    self._source_model.appendRow(item)
-                    if first_selectable_row is None:
-                        first_selectable_row = self._source_model.rowCount() - 1
+                # One row — target maps are handled by _bs_target_combo
+                item = QtGui.QStandardItem(node_name)
+                item.setData((source_idx, maps[0] if maps else 'weightList'), Qt.UserRole)
+                item.setData((node_type, maps), Qt.UserRole + 1)
+                item.setForeground(QtGui.QBrush(QtGui.QColor(color)))
+                self._source_model.appendRow(item)
+                if first_selectable_row is None:
+                    first_selectable_row = self._source_model.rowCount() - 1
 
             elif node_type in nucleus_types:
-                # Nucleus: one row per map
+                # Nucleus: one row per map (many maps, no secondary combo)
                 for map_name in maps:
                     display = f'{node_name}  › {map_name}'
                     item = QtGui.QStandardItem(display)
                     item.setData((source_idx, map_name), Qt.UserRole)
+                    item.setData((node_type, maps), Qt.UserRole + 1)
                     item.setForeground(QtGui.QBrush(QtGui.QColor(color)))
                     self._source_model.appendRow(item)
                     if first_selectable_row is None:
@@ -855,6 +919,7 @@ class SlimfastWidget(QtWidgets.QWidget):
                 map_name = maps[0] if maps else 'weightList'
                 item = QtGui.QStandardItem(node_name)
                 item.setData((source_idx, map_name), Qt.UserRole)
+                item.setData((node_type, maps), Qt.UserRole + 1)
                 item.setForeground(QtGui.QBrush(QtGui.QColor(color)))
                 self._source_model.appendRow(item)
                 if first_selectable_row is None:
@@ -866,16 +931,16 @@ class SlimfastWidget(QtWidgets.QWidget):
             self._source_combo.setCurrentIndex(first_selectable_row)
         self._source_combo.blockSignals(False)
 
-        # Activate the first real entry
+        # Activate first entry — also handles BS combo show/hide
         if first_selectable_row is not None:
-            item = self._source_model.item(first_selectable_row)
-            src_idx, map_name = item.data(Qt.UserRole)
-            self._ctrl.select_source(src_idx)
-            self._ctrl.select_map(map_name)
+            self._on_source_combo_changed(first_selectable_row)
 
     @Slot(int)
     def _on_source_combo_changed(self, combo_index: int) -> None:
-        """Decode (source_idx, map_name) from the selected row and activate both."""
+        """Decode (source_idx, map_name) from the selected row and activate both.
+
+        Also shows/hides and populates _bs_target_combo for blendShape nodes.
+        """
         if combo_index < 0:
             return
         model = self._source_combo.model()
@@ -890,6 +955,21 @@ class SlimfastWidget(QtWidgets.QWidget):
         source_idx, map_name = data
         self._ctrl.select_source(source_idx)
         self._ctrl.select_map(map_name)
+
+        # Show/populate blendShape target combo when needed
+        extra = item.data(Qt.UserRole + 1)
+        node_type = extra[0] if extra else ''
+        maps = extra[1] if extra else []
+        if node_type == 'blendShape' and maps:
+            self._bs_target_combo.blockSignals(True)
+            self._bs_target_combo.clear()
+            for m in maps:
+                label = 'base weights' if m == 'weightList' else m
+                self._bs_target_combo.addItem(label, m)
+            self._bs_target_combo.blockSignals(False)
+            self._bs_target_combo.show()
+        else:
+            self._bs_target_combo.hide()
 
     @Slot(object)
     def _on_active_changed(self, source: Optional[WeightSource]) -> None:
@@ -906,7 +986,7 @@ class SlimfastWidget(QtWidgets.QWidget):
                 2: ('● Texture', '#ddcc44'),
             }
             try:
-                active_map = self._ctrl._active_map
+                active_map = self._ctrl.active_map
                 mt = source.map_type(active_map) if active_map else 0
                 text, color = _MAP_TYPE_INFO.get(mt, (f'● type={mt}', '#aaaaaa'))
                 self._map_type_label.setText(text)
@@ -936,8 +1016,9 @@ class SlimfastWidget(QtWidgets.QWidget):
 
     @Slot(float)
     def _on_envelope_changed(self, value: float) -> None:
-        if self._ctrl._active and not isinstance(self._ctrl._active, NClothMap):
-            env_attr = f'{self._ctrl._active.node_name}.envelope'
+        source = self._ctrl.active_source
+        if source and not isinstance(source, NClothMap):
+            env_attr = f'{source.node_name}.envelope'
             if cmds.objExists(env_attr):
                 try:
                     cmds.setAttr(env_attr, value)
@@ -957,8 +1038,7 @@ class SlimfastWidget(QtWidgets.QWidget):
         self._on_smooth(self._iter_spinbox.value())
 
     def _on_select_all(self) -> None:
-        mods = QtWidgets.QApplication.keyboardModifiers()
-        self._ctrl.select_all(1 if (mods & Qt.ShiftModifier) else 0)
+        self._ctrl.select_all(0)
 
     def _on_select_zero(self) -> None:
         mods = QtWidgets.QApplication.keyboardModifiers()
@@ -999,13 +1079,16 @@ class SlimfastWidget(QtWidgets.QWidget):
             "<b>Slimfast 2.0</b> — weight painting tool<br><br>"
             "<b>Mode toggle:</b> switch between deformer, nCloth, or both<br>"
             "<b>↺ Refresh:</b> re-scan selection for weight sources<br>"
+            "<b>BlendShape:</b> a second combo appears for target maps<br>"
             "<b>Copy / Paste:</b> transfer weights between sources<br>"
             "<b>Paint:</b> open Maya artisan for the active source<br>"
             "<b>Set 0 / 1:</b> flood all vertices<br>"
             "<b>Weight slider → Set:</b> flood current selection<br>"
             "<b>Smooth:</b> artisan path needs paint tool active;<br>"
             "&nbsp;&nbsp;&nbsp;&nbsp;numpy path works any time<br>"
-            "<b>Select vertices:</b><br>"
+            "<b>Select ALL:</b> select all vertices of the active mesh<br>"
+            "<b>Invert:</b> invert current component selection (always active)<br>"
+            "<b>Weight = 0/1:</b><br>"
             "&nbsp;&nbsp;click = select<br>"
             "&nbsp;&nbsp;Ctrl+click = deselect<br>"
             "&nbsp;&nbsp;Shift+click = toggle<br>"
