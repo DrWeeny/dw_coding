@@ -449,26 +449,8 @@ class SlimfastController:
         Falls back to Maya's built-in ``InvertSelection`` otherwise so the
         button is always functional.
         """
-        if self._active:
-            mesh = self._active.mesh_name
-            n = self._active.vtx_count
-            mel.eval(f'doMenuComponentSelection("{mesh}", "vertex")')
-            current = set(
-                cmds.ls(cmds.filterExpand(selectionMask=31, expand=True) or [], fl=True)
-            )
-            all_vtx = {f'{mesh}.vtx[{i}]' for i in range(n)}
-            inverted = list(all_vtx - current)
-            if inverted:
-                indices = dw_maya.dw_maya_utils.extract_id(inverted)
-                ranges = dw_maya.dw_maya_utils.create_maya_ranges(indices)
-                cmds.select([f'{mesh}.vtx[{r}]' for r in ranges], replace=True)
-            else:
-                cmds.select(clear=True)
-        else:
-            try:
-                mel.eval('InvertSelection')
-            except Exception as e:
-                logger.warning(f"Invert selection failed: {e}")
+        from dw_maya.dw_maya_utils import invert_selection
+        invert_selection()
 
     def set_artisan_value(self, value: float) -> None:
         """Push value to artisan context (absolute/replace mode).
