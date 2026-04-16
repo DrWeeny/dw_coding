@@ -1068,8 +1068,12 @@ class SlimfastWidget(QtWidgets.QWidget):
         if data is None:
             return
         source_idx, map_name = data
+        # select_source already calls select_map(maps[0]) internally,
+        # so only call select_map if we need a different map than the default.
         self._ctrl.select_source(source_idx)
-        self._ctrl.select_map(map_name)
+        active_maps = self._ctrl.active_source.available_maps() if self._ctrl.active_source else []
+        if active_maps and map_name != active_maps[0]:
+            self._ctrl.select_map(map_name)
 
         # Show/populate blendShape target combo when needed
         extra = item.data(Qt.UserRole + 1)
@@ -1094,14 +1098,14 @@ class SlimfastWidget(QtWidgets.QWidget):
             w.setEnabled(has_source)
 
         # Keep storage buttons in sync with the currently active source/map
+        # Only update current_weight_node (the "restore target").
+        # Do NOT overwrite weight_source — it belongs to stored data.
         active_map = self._ctrl.active_map
         for btn in self._storage_buttons:
             if source and active_map:
                 btn.current_weight_node = f'{source.node_name}.{active_map}'
-                btn.weight_source = source
             else:
                 btn.current_weight_node = None
-                btn.weight_source = None
 
         # --- Map type badge (nucleus only) ---
         if isinstance(source, NClothMap):
@@ -1226,9 +1230,21 @@ class SlimfastWidget(QtWidgets.QWidget):
     # ------------------------------------------------------------------
 
     @classmethod
+    def _instance_alive(cls) -> bool:
+        """Check if the singleton widget is still a valid C++ object."""
+        if cls._instance is None:
+            return False
+        try:
+            cls._instance.isVisible()
+            return True
+        except RuntimeError:
+            cls._instance = None
+            return False
+
+    @classmethod
     def show_window(cls) -> 'SlimfastWidget':
         """Show as a floating window, reusing an existing instance."""
-        if cls._instance is None or not cls._instance.isVisible():
+        if not cls._instance_alive():
             cls._instance = cls()
         cls._instance.show()
         cls._instance.raise_()

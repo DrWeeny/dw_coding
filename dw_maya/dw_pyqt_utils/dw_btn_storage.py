@@ -429,20 +429,22 @@ class VtxStorageButton(QtWidgets.QPushButton):
             logger.debug(f"combine_data: stored={len(self.storage['weights'])}, "
                          f"current={len(new_weights) if new_weights else 0}")
             if mode == "add":
-                self.storage["weights"] = list(
-                    set(self.storage["weights"]) | set(new_weights))
+                self.storage["weights"] = (
+                    np.array(self.storage["weights"]) + np.array(new_weights)).tolist()
             elif mode == "sub":
-                self.storage["weights"] = list(
-                    set(self.storage["weights"]) - set(new_weights))
+                self.storage["weights"] = (
+                    np.array(self.storage["weights"]) - np.array(new_weights)).tolist()
             elif mode == "intersect":
-                self.storage["weights"] = list(
-                    set(self.storage["weights"]) & set(new_weights))
+                self.storage["weights"] = np.minimum(
+                    np.array(self.storage["weights"]), np.array(new_weights)).tolist()
             elif mode == "multiply":
                 self.storage["weights"] = (
                     np.array(self.storage["weights"]) * np.array(new_weights)).tolist()
             elif mode == "divide":
-                self.storage["weights"] = (
-                    np.array(self.storage["weights"]) / np.array(new_weights)).tolist()
+                stored = np.array(self.storage["weights"])
+                current = np.array(new_weights)
+                self.storage["weights"] = np.where(
+                    current != 0, stored / current, stored).tolist()
 
         if self.storage['selection']:
             sel = cmds.ls(sl=True)
