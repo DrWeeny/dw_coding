@@ -630,7 +630,7 @@ class SlimfastWidget(QtWidgets.QWidget):
         return panel
 
     def _build_deformer_group(self) -> QtWidgets.QGroupBox:
-        grp = QtWidgets.QGroupBox('Deformer')
+        grp = QtWidgets.QGroupBox('')
         lay = QtWidgets.QVBoxLayout(grp)
         lay.setSpacing(4)
 
@@ -1092,6 +1092,16 @@ class SlimfastWidget(QtWidgets.QWidget):
         for w in (self._paint_btn, self._copy_btn, self._paste_btn,
                   self._set0_btn, self._set1_btn, self._weight_slider):
             w.setEnabled(has_source)
+
+        # Keep storage buttons in sync with the currently active source/map
+        active_map = self._ctrl.active_map
+        for btn in self._storage_buttons:
+            if source and active_map:
+                btn.current_weight_node = f'{source.node_name}.{active_map}'
+                btn.weight_source = source
+            else:
+                btn.current_weight_node = None
+                btn.weight_source = None
 
         # --- Map type badge (nucleus only) ---
         if isinstance(source, NClothMap):

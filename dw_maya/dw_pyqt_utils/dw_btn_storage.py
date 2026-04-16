@@ -258,8 +258,20 @@ class VtxStorageButton(QtWidgets.QPushButton):
         # Create Menu
         menu = QtWidgets.QMenu(self)
 
-        header = menu.addAction("storage")
+        # Header shows the detected context
+        cur_node = self.current_weight_node
+        if cur_node:
+            header_text = f"[{cur_node}]"
+        else:
+            header_text = "storage (no map detected)"
+        header = menu.addAction(header_text)
         header.setEnabled(False)
+
+        # Show stored data info if any
+        if self.storage.get('weight_node'):
+            stored_info = menu.addAction(f"stored: {self.storage['weight_node']}")
+            stored_info.setEnabled(False)
+
         menu.addSeparator()
 
         # Add actions
@@ -320,9 +332,13 @@ class VtxStorageButton(QtWidgets.QPushButton):
         if weight_source is not None:
             self.weight_source = weight_source
         if not weight_node:
+            # Try artisan context first (active paint session)
             node, _attr, _type = get_current_artisan_map()
             if node:
                 weight_node = f"{node}.{_attr}"
+            else:
+                # Fallback to the node set by the parent UI (e.g. bq_slimfast)
+                weight_node = self.current_weight_node
         logger.debug(f"store_current_data: weight_node={weight_node}, "
                      f"weight_source={self.weight_source}, "
                      f"sel_store={sel_store}, weight_store={weight_store}")
