@@ -13,6 +13,7 @@ from dw_logger import get_logger
 from dw_maya.dw_maya_utils import extract_id, component_in_list, create_maya_ranges
 from maya import cmds
 from dw_maya.dw_paint import get_current_artisan_map
+from dw_maya.dw_decorators.dw_undo import singleUndoChunk
 import numpy as np
 
 logger = get_logger()
@@ -477,6 +478,7 @@ class VtxStorageButton(QtWidgets.QPushButton):
     # Restore
     # ------------------------------------------------------------------
 
+    @singleUndoChunk
     def restore_data(self, selection=True, weights=True):
         """Restore stored weights and selection."""
         logger.debug(f"restore_data: selection={selection}, weights={weights}, "

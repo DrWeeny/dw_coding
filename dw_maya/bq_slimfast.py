@@ -40,6 +40,7 @@ import dw_maya.dw_paint
 import dw_maya.dw_pyqt_utils.dw_btn_storage
 from dw_maya.dw_paint.protocol import WeightSource
 from dw_maya.dw_decorators.dw_keep_selection import keep_selection
+from dw_maya.dw_decorators.dw_undo import singleUndoChunk
 from dw_maya.dw_paint.weight_source import (
     resolve_weight_sources,
     paint_weight_source,
@@ -331,6 +332,7 @@ class SlimfastController:
                 )
 
     @keep_selection
+    @singleUndoChunk
     def set_weight(self, value: float) -> None:
         """Set a scalar weight on the current vertex selection (replace mode)."""
         if not self._require_active():
@@ -355,6 +357,7 @@ class SlimfastController:
         apply_operation(self._active, 'flood', value=value)
         logger.debug("set_weight — applied replace on all vertices")
 
+    @singleUndoChunk
     def smooth(self, iterations: int = 1) -> None:
         """Topology-based smooth via numpy path."""
         if not self._require_active():
@@ -364,6 +367,7 @@ class SlimfastController:
         except Exception as e:
             logger.error(f"Smooth failed: {e}")
 
+    @singleUndoChunk
     def smooth_artisan(self, iterations: int = 1) -> None:
         """Smooth via Maya artisan (requires paint tool to be active).
 
@@ -401,6 +405,7 @@ class SlimfastController:
                 f"'{self._active.node_name}' map='{self._active_map}'"
             )
 
+    @singleUndoChunk
     def paste_weights(self) -> None:
         """Paste clipboard weights to the active source."""
         if not self._require_active():
