@@ -333,15 +333,19 @@ class SlimfastController:
 
     @keep_selection
     @singleUndoChunk
-    def set_weight(self, value: float) -> None:
-        """Set a scalar weight on the current vertex selection (replace mode)."""
+    def set_weight(self, value: float, op: str = 'replace') -> None:
+        """Set a scalar weight on the current vertex selection.
+
+        Args:
+            value: Weight value to apply.
+            op: Operation mode — ``'replace'``, ``'add'``, or ``'multiply'``.
+        """
         if not self._require_active():
             return
 
         sel_obj = cmds.ls(sl=True, o=True) or []
         sel_all = cmds.ls(sl=True, fl=True) or []
-        logger.debug(f"set_weight — selection: {sel_all}")
-        logger.debug(f"set_weight — objects:   {sel_obj}")
+        logger.debug(f"set_weight — selection: {sel_all}, op={op}")
         if len(sel_all) > len(sel_obj):
             sel = [i for i in sel_all if "." in i]
         else:
@@ -351,11 +355,11 @@ class SlimfastController:
             vtx = cmds.ls(vtx, fl=True) or []
             if vtx:
                 indices = dw_maya.dw_maya_utils.extract_id(vtx)
-                apply_operation(self._active, 'flood', value=value, mask=indices)
-                logger.debug(f"set_weight — applied replace on {len(indices)} vertices")
+                apply_operation(self._active, 'flood', value=value, op=op, mask=indices)
+                logger.debug(f"set_weight — applied {op} on {len(indices)} vertices")
                 return
-        apply_operation(self._active, 'flood', value=value)
-        logger.debug("set_weight — applied replace on all vertices")
+        apply_operation(self._active, 'flood', value=value, op=op)
+        logger.debug(f"set_weight — applied {op} on all vertices")
 
     @singleUndoChunk
     def smooth(self, iterations: int = 1) -> None:
@@ -739,6 +743,19 @@ class SlimfastWidget(QtWidgets.QWidget):
         set_row.addWidget(self._set1_btn)
         lay.addLayout(set_row)
 
+        # --- Operation mode radio buttons ---
+        op_row = QtWidgets.QHBoxLayout()
+        self._op_group = QtWidgets.QButtonGroup(self)
+        for label, op in [('Replace', 'replace'), ('Add', 'add'), ('Multiply', 'multiply')]:
+            btn = QtWidgets.QRadioButton(label)
+            btn.setProperty('op', op)
+            if op == 'replace':
+                btn.setChecked(True)
+            self._op_group.addButton(btn)
+            op_row.addWidget(btn)
+        op_row.addStretch()
+        lay.addLayout(op_row)
+
         self._weight_slider = SliderWithButton(
             label='weight', btn_label='Set',
             min_val=0.0, max_val=1.0, default=0.5,
@@ -857,9 +874,9 @@ class SlimfastWidget(QtWidgets.QWidget):
         self._paint_btn.clicked.connect(self._ctrl.paint)
         self._envelope_slider.valueChanged.connect(self._on_envelope_changed)
 
-        # Weights group
-        self._set0_btn.clicked.connect(partial(self._ctrl.set_weight, 0.0))
-        self._set1_btn.clicked.connect(partial(self._ctrl.set_weight, 1.0))
+        # Weights group — Set 0/1 share the same op mode as the slider
+        self._set0_btn.clicked.connect(partial(self._on_set_weight, 0.0))
+        self._set1_btn.clicked.connect(partial(self._on_set_weight, 1.0))
         self._weight_slider.button_clicked.connect(self._on_set_weight)
         self._weight_slider.value_changed.connect(self._ctrl.set_artisan_value)
 
@@ -917,10 +934,24 @@ class SlimfastWidget(QtWidgets.QWidget):
     def _on_refresh(self) -> None:
         self._ctrl.refresh()
 
+    def _current_op(self) -> str:
+        """Return the currently selected weight operation mode."""
+        checked = self._op_group.checkedButton()
+        if checked:
+            return checked.property('op') or 'replace'
+        return 'replace'
+
     @Slot()
-    def _on_set_weight(self) -> None:
-        """Relay slider value to the controller (avoids lambda in signal wiring)."""
-        self._ctrl.set_weight(self._weight_slider.value)
+    def _on_set_weight(self, value: float = None) -> None:
+        """Relay value and op mode to the controller.
+
+        Args:
+            value: Explicit value (used by Set 0 / Set 1).
+                   Falls back to the slider value when omitted.
+        """
+        if value is None:
+            value = self._weight_slider.value
+        self._ctrl.set_weight(value, self._current_op())
 
     @Slot(int)
     def _on_tol_slider_changed(self, int_val: int) -> None:
