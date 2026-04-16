@@ -40,6 +40,8 @@ class VtxStorageButton(QtWidgets.QPushButton):
         super().__init__()
         self.btn_type = None
         self._current_weight_node = None
+        # Optional WeightSource — bypasses cmds.getAttr for complex attr paths
+        self.weight_source = None
         self.storage: Dict[str, Any] = {
             'weights': [],
             'selection': {},
@@ -201,8 +203,21 @@ class VtxStorageButton(QtWidgets.QPushButton):
         elif action == remove_action:
             self.remove_requested.emit()
 
-    def store_current_data(self, weight_node:str=None, sel_store = True, weight_store=True):
-        """Store current weights and selection"""
+    def store_current_data(self, weight_node: str = None, weight_source=None, sel_store=True, weight_store=True):
+        """Store current weights and selection.
+
+        Args:
+            weight_node: Optional explicit node.attr string (e.g. 'deltaMush1.weights').
+                If omitted, resolved from the active artisan context.
+            weight_source: Optional WeightSource instance. When provided it is stored on
+                the button and used in place of ``cmds.getAttr`` to retrieve weights,
+                which is necessary for deformers whose attribute path is not simply
+                ``node.attr`` (e.g. deltaMush, blendShape targets).
+            sel_store: Whether to capture the current vertex selection.
+            weight_store: Whether to capture the current weights.
+        """
+        if weight_source is not None:
+            self.weight_source = weight_source
         if not weight_node:
             node, _attr, _type = get_current_artisan_map()
             if node:
@@ -245,7 +260,12 @@ class VtxStorageButton(QtWidgets.QPushButton):
     def _get_weights_for_storage(self, weight_node):
         node, attr = weight_node.rsplit('.', 1)
         _type = cmds.nodeType(node)
-        weights = cmds.getAttr(weight_node)
+        # WeightSource.get_weights() resolves the real attr path (e.g.
+        # deltaMush1.weightList[0].weights[0:N]) so prefer it over a raw getAttr.
+        if self.weight_source is not None:
+            weights = self.weight_source.get_weights()
+        else:
+            weights = cmds.getAttr(weight_node)
         self.storage["weight_node"] = weight_node
         self.storage["weight_type"] = _type
         self.storage["weights"] = weights

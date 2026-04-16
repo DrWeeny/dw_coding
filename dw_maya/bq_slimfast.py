@@ -894,6 +894,7 @@ class SlimfastWidget(QtWidgets.QWidget):
         active_map = self._ctrl.active_map
         if source and active_map:
             btn.current_weight_node = f'{source.node_name}.{active_map}'
+            btn.weight_source = source
 
         btn.remove_requested.connect(partial(self._on_remove_storage, btn))
         self._storage_layout.addWidget(btn)
