@@ -539,6 +539,9 @@ class SlimfastWidget(QtWidgets.QWidget):
 
     _instance: Optional['SlimfastWidget'] = None
 
+    # QProperty so external scripts / shelf buttons can read/write smooth iterations
+    smooth_iterations_changed = Signal(int)
+
     def __init__(self, parent: Optional[QtWidgets.QWidget] = None):
         super().__init__(parent or _maya_main_window())
         self.setWindowTitle('Slim fast 2.0')
@@ -550,6 +553,11 @@ class SlimfastWidget(QtWidgets.QWidget):
 
         self._build_ui()
         self._connect_signals()
+
+        # Restore persisted preferences
+        settings = QtCore.QSettings('DrWeeny', 'SlimfastWidget')
+        saved_iter = settings.value('smooth_iterations', 25, type=int)
+        self.set_smooth_iterations(saved_iter)
 
     # ------------------------------------------------------------------
     # UI construction
@@ -890,6 +898,43 @@ class SlimfastWidget(QtWidgets.QWidget):
         # Tolerance slider ↔ spinbox sync
         self._tol_slider.valueChanged.connect(self._on_tol_slider_changed)
         self._tol_spinbox.valueChanged.connect(self._on_tol_spinbox_changed)
+
+    # ------------------------------------------------------------------
+    # QProperty — smooth iterations
+    # ------------------------------------------------------------------
+
+    def get_smooth_iterations(self) -> int:
+        """Return the current smooth iteration count."""
+        return self._iter_spinbox.value()
+
+    def set_smooth_iterations(self, value: int) -> None:
+        """Set the smooth iteration count (clamped to 1–200).
+
+        Args:
+            value: Number of smooth iterations.
+
+        Example::
+
+            widget.smooth_iterations = 10
+        """
+        self._iter_spinbox.setValue(max(1, min(200, value)))
+
+    smooth_iterations = QtCore.Property(
+        int,
+        get_smooth_iterations,
+        set_smooth_iterations,
+        notify=smooth_iterations_changed,
+    )
+
+    # ------------------------------------------------------------------
+    # Close event — persist smooth iterations
+    # ------------------------------------------------------------------
+
+    def closeEvent(self, event) -> None:
+        """Persist smooth iteration count on close."""
+        settings = QtCore.QSettings('DrWeeny', 'SlimfastWidget')
+        settings.setValue('smooth_iterations', self.get_smooth_iterations())
+        super().closeEvent(event)
 
     # ------------------------------------------------------------------
     # Slots
