@@ -675,6 +675,39 @@ class SlimfastController:
         from dw_maya.dw_maya_utils import invert_selection
         invert_selection()
 
+    @singleUndoChunk
+    def remap_weights(self, old_min: float, old_max: float,
+                      new_min: float, new_max: float) -> None:
+        """Remap (fit) weights from [old_min, old_max] to [new_min, new_max].
+
+        Args:
+            old_min: Source range minimum.
+            old_max: Source range maximum.
+            new_min: Target range minimum.
+            new_max: Target range maximum.
+        """
+        if not self._require_active():
+            return
+        old_range = old_max - old_min
+        new_range = new_max - new_min
+        if abs(old_range) < 1e-9:
+            logger.warning("remap_weights: old_min == old_max, nothing to remap.")
+            return
+        try:
+            weights = self._active.get_weights()
+            remapped = [
+                new_min + (w - old_min) / old_range * new_range
+                for w in weights
+            ]
+            remapped = [max(min(v, 1.0), 0.0) for v in remapped]
+            self._active.set_weights(remapped)
+            logger.info(
+                f"remap_weights: [{old_min},{old_max}] → [{new_min},{new_max}] "
+                f"applied to {len(remapped)} weights."
+            )
+        except Exception as e:
+            logger.error(f"remap_weights failed: {e}")
+
     def set_artisan_value(self, value: float) -> None:
         """Push value to artisan context (absolute/replace mode).
 
@@ -827,6 +860,7 @@ class SlimfastWidget(QtWidgets.QWidget):
         select_grp = self._build_select_group()
         self._advanced_section = self._build_advanced_section()
         self._transfer_section = self._build_transfer_section()
+        self._remap_section = self._build_remap_section()
         self._storage_panel = self._build_storage_panel()
 
         # Menu bar — View > Storage expanded (reads QSettings for initial state)
@@ -846,6 +880,7 @@ class SlimfastWidget(QtWidgets.QWidget):
         left_col.addWidget(select_grp)
         left_col.addWidget(self._advanced_section)
         left_col.addWidget(self._transfer_section)
+        left_col.addWidget(self._remap_section)
         left_col.addStretch()
         main_area.addLayout(left_col, stretch=1)
         main_area.addWidget(self._storage_panel)
@@ -853,9 +888,9 @@ class SlimfastWidget(QtWidgets.QWidget):
         root.addLayout(main_area)
 
     def _build_menu_bar(self) -> QtWidgets.QMenuBar:
-        """Build top menu bar with a View menu to toggle the storage panel and sections."""
+        """Build top menu bar with a Pref menu to toggle the storage panel and sections."""
         menu_bar = QtWidgets.QMenuBar(self)
-        view_menu = menu_bar.addMenu('View')
+        view_menu = menu_bar.addMenu('Pref')
 
         settings = QtCore.QSettings('DrWeeny', 'SlimfastWidget')
 
@@ -873,7 +908,7 @@ class SlimfastWidget(QtWidgets.QWidget):
         # --- Advanced ops section ---
         self._adv_section_action = QtWidgets.QAction('Show Advanced ops', self)
         self._adv_section_action.setCheckable(True)
-        adv_visible = settings.value('adv_section_visible', True, type=bool)
+        adv_visible = settings.value('adv_section_visible', False, type=bool)
         self._advanced_section.setVisible(bool(adv_visible))
         self._adv_section_action.setChecked(bool(adv_visible))
         self._adv_section_action.toggled.connect(self._advanced_section.setVisible)
@@ -887,6 +922,15 @@ class SlimfastWidget(QtWidgets.QWidget):
         self._transfer_section_action.setChecked(bool(tr_visible))
         self._transfer_section_action.toggled.connect(self._transfer_section.setVisible)
         view_menu.addAction(self._transfer_section_action)
+
+        # --- Remap section ---
+        self._remap_section_action = QtWidgets.QAction('Show Remap / Fit', self)
+        self._remap_section_action.setCheckable(True)
+        remap_visible = settings.value('remap_section_visible', False, type=bool)
+        self._remap_section.setVisible(bool(remap_visible))
+        self._remap_section_action.setChecked(bool(remap_visible))
+        self._remap_section_action.toggled.connect(self._remap_section.setVisible)
+        view_menu.addAction(self._remap_section_action)
 
         return menu_bar
 
@@ -1087,6 +1131,64 @@ class SlimfastWidget(QtWidgets.QWidget):
 
         return section
 
+    def _build_remap_section(self) -> CollapsibleSection:
+        """Build the collapsible 'Remap / Fit' section.
+
+        Remaps current weights from [old_min, old_max] to [new_min, new_max].
+
+        Returns:
+            A CollapsibleSection ready to be added to the left column.
+        """
+        section = CollapsibleSection('Remap / Fit')
+        lay = section.content_layout
+
+        # Old range row
+        old_row = QtWidgets.QHBoxLayout()
+        old_row.addWidget(QtWidgets.QLabel('Old'))
+        self._remap_old_min = QtWidgets.QDoubleSpinBox()
+        self._remap_old_max = QtWidgets.QDoubleSpinBox()
+        for sp in (self._remap_old_min, self._remap_old_max):
+            sp.setRange(-99.0, 99.0)
+            sp.setDecimals(3)
+            sp.setFixedWidth(68)
+        self._remap_old_min.setValue(0.0)
+        self._remap_old_max.setValue(1.0)
+        old_row.addWidget(QtWidgets.QLabel('min'))
+        old_row.addWidget(self._remap_old_min)
+        old_row.addWidget(QtWidgets.QLabel('max'))
+        old_row.addWidget(self._remap_old_max)
+        old_row.addStretch()
+        lay.addLayout(old_row)
+
+        # New range row
+        new_row = QtWidgets.QHBoxLayout()
+        new_row.addWidget(QtWidgets.QLabel('New'))
+        self._remap_new_min = QtWidgets.QDoubleSpinBox()
+        self._remap_new_max = QtWidgets.QDoubleSpinBox()
+        for sp in (self._remap_new_min, self._remap_new_max):
+            sp.setRange(-99.0, 99.0)
+            sp.setDecimals(3)
+            sp.setFixedWidth(68)
+        self._remap_new_min.setValue(0.0)
+        self._remap_new_max.setValue(1.0)
+        new_row.addWidget(QtWidgets.QLabel('min'))
+        new_row.addWidget(self._remap_new_min)
+        new_row.addWidget(QtWidgets.QLabel('max'))
+        new_row.addWidget(self._remap_new_max)
+        new_row.addStretch()
+        lay.addLayout(new_row)
+
+        remap_btn = QtWidgets.QPushButton('Apply Remap')
+        remap_btn.setFixedHeight(26)
+        remap_btn.setStyleSheet(
+            'QPushButton { background-color: #504040; color: white; }'
+            'QPushButton:hover { background-color: #705050; }'
+        )
+        remap_btn.clicked.connect(self._on_remap_apply)
+        lay.addWidget(remap_btn)
+
+        return section
+
     def _build_storage_panel(self) -> QtWidgets.QWidget:
         """Compact square-button storage column (no title, top-right position)."""
         panel = QtWidgets.QWidget(self)
@@ -1138,20 +1240,23 @@ class SlimfastWidget(QtWidgets.QWidget):
         refresh_btn.setToolTip('Update list from selection')
         refresh_btn.clicked.connect(self._on_refresh)
         top_row.addWidget(refresh_btn)
-
-        help_btn = QtWidgets.QPushButton('?')
-        help_btn.setFixedWidth(24)
-        help_btn.clicked.connect(self._show_help)
-        top_row.addWidget(help_btn)
         lay.addLayout(top_row)
 
-        # --- Mesh label ---
+        # --- Mesh label + pick button ---
+        mesh_row = QtWidgets.QHBoxLayout()
         self._mesh_label = QtWidgets.QLabel('Nothing selected')
-        self._mesh_label.setAlignment(Qt.AlignCenter)
+        self._mesh_label.setAlignment(Qt.AlignVCenter | Qt.AlignLeft)
         font = self._mesh_label.font()
         font.setBold(True)
         self._mesh_label.setFont(font)
-        lay.addWidget(self._mesh_label)
+        mesh_row.addWidget(self._mesh_label, stretch=1)
+
+        self._pick_mesh_btn = QtWidgets.QPushButton('◎')
+        self._pick_mesh_btn.setFixedSize(24, 24)
+        self._pick_mesh_btn.setToolTip('Select the active mesh in the viewport')
+        self._pick_mesh_btn.clicked.connect(self._on_pick_mesh)
+        mesh_row.addWidget(self._pick_mesh_btn)
+        lay.addLayout(mesh_row)
 
         # --- Single flat combo: one row per (source × map) pair ---
         # Each item stores (source_index, map_name) in Qt.UserRole.
@@ -1236,7 +1341,7 @@ class SlimfastWidget(QtWidgets.QWidget):
 
         self._weight_slider = SliderWithButton(
             label='weight', btn_label='Set',
-            min_val=0.0, max_val=1.0, default=0.5,
+            min_val=-1.0, max_val=1.0, default=0.5,
             decimals=2, step=0.01
         )
         lay.addWidget(self._weight_slider)
@@ -1406,6 +1511,7 @@ class SlimfastWidget(QtWidgets.QWidget):
         settings.setValue('smooth_iterations', self.get_smooth_iterations())
         settings.setValue('adv_section_visible', self._advanced_section.isVisible())
         settings.setValue('transfer_section_visible', self._transfer_section.isVisible())
+        settings.setValue('remap_section_visible', self._remap_section.isVisible())
         super().closeEvent(event)
 
     # ------------------------------------------------------------------
@@ -1454,6 +1560,16 @@ class SlimfastWidget(QtWidgets.QWidget):
             return
         self._ctrl.transfer_weights(src_weights, src_ws.mesh_name, tgt_ws)
 
+    @Slot()
+    def _on_remap_apply(self) -> None:
+        """Apply remap/fit weight operation using the spinbox ranges."""
+        self._ctrl.remap_weights(
+            old_min=self._remap_old_min.value(),
+            old_max=self._remap_old_max.value(),
+            new_min=self._remap_new_min.value(),
+            new_max=self._remap_new_max.value(),
+        )
+
     @Slot(bool)
     def _on_storage_toggled(self, checked: bool) -> None:
         """Show or hide the storage panel and persist the user preference."""
@@ -1492,6 +1608,18 @@ class SlimfastWidget(QtWidgets.QWidget):
     @Slot()
     def _on_refresh(self) -> None:
         self._ctrl.refresh()
+
+    @Slot()
+    def _on_pick_mesh(self) -> None:
+        """Select the active mesh transform in the viewport."""
+        source = self._ctrl.active_source
+        if source:
+            try:
+                cmds.select(source.mesh_name, replace=True)
+            except Exception as e:
+                logger.warning(f"Could not select mesh: {e}")
+        else:
+            logger.warning("No active source — refresh first.")
 
     def _current_op(self) -> str:
         """Return the currently selected weight operation mode."""
