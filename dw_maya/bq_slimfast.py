@@ -39,6 +39,7 @@ except ImportError:
 import dw_maya.dw_paint
 import dw_maya.dw_pyqt_utils.dw_btn_storage
 from dw_maya.dw_paint.protocol import WeightSource
+from dw_maya.dw_paint.vertex_color_alpha import create_alpha_map
 from dw_maya.dw_decorators.dw_keep_selection import keep_selection
 from dw_maya.dw_decorators.dw_undo import singleUndoChunk
 from dw_maya.dw_paint.weight_source import (
@@ -378,10 +379,11 @@ class SlimfastController:
     def smooth_artisan(self, iterations: int = 1) -> None:
         """Smooth via Maya artisan (requires paint tool to be active).
 
-        The correct artisan context is determined by the node type stored on
-        the active source, so no manual isinstance check is needed — the MEL
-        command is routed through the source's own paint context.
+        Routes to the correct artisan context depending on source type:
+        NClothMap, VertexColorAlpha, or standard deformer.
         """
+        from dw_maya.dw_paint.vertex_color_alpha import VertexColorAlpha
+
         if isinstance(self._active, NClothMap):
             try:
                 for _ in range(iterations):
@@ -391,6 +393,17 @@ class SlimfastController:
                 raise RuntimeError(
                     f"Click \"Paint\" before using artisan smooth. Detail: {e}"
                 )
+        elif isinstance(self._active, VertexColorAlpha):
+            ctx = 'dwAlphaPaintCtx'
+            # Ensure the paint context is active
+            if cmds.currentCtx() != ctx:
+                self._active.paint()
+            # Switch to smooth, flood, then restore
+            cmds.artUserPaintCtx(ctx, edit=True, selectedattroper='smooth')
+            for _ in range(iterations):
+                cmds.artUserPaintCtx(ctx, edit=True, clear=True)
+            cmds.artUserPaintCtx(ctx, edit=True, selectedattroper='additive')
+            logger.info(f"Alpha artisan smooth x{iterations}.")
         else:
             try:
                 mel.eval('artAttrPaintOperation artAttrCtx Smooth')
@@ -955,6 +968,12 @@ class SlimfastWidget(QtWidgets.QWidget):
             action.toggled.connect(partial(self._on_mode_visibility_changed, mode_key))
             modes_menu.addAction(action)
             self._mode_visibility_actions[mode_key] = action
+
+        # --- Create menu ---
+        create_menu = menu_bar.addMenu('Create')
+        act_new_alpha = QtWidgets.QAction('New vertex alpha map…', self)
+        act_new_alpha.triggered.connect(self._on_create_alpha_map)
+        create_menu.addAction(act_new_alpha)
 
         return menu_bar
 
@@ -1665,6 +1684,47 @@ class SlimfastWidget(QtWidgets.QWidget):
                 logger.warning(f"Could not select mesh: {e}")
         else:
             logger.warning("No active source — refresh first.")
+
+    def _on_create_alpha_map(self) -> None:
+        """Open a dialog to create a new vertex color alpha map on the selected mesh."""
+        sel = cmds.ls(selection=True, transforms=True) or []
+        if not sel:
+            QtWidgets.QMessageBox.warning(
+                self, 'Create alpha map',
+                'Please select a mesh transform first.'
+            )
+            return
+
+        mesh = sel[0]
+
+        # Ask for the colorSet name
+        name, ok = QtWidgets.QInputDialog.getText(
+            self, 'New vertex alpha map',
+            f'ColorSet name on "{mesh}":',
+            QtWidgets.QLineEdit.Normal,
+            'alphaMap',
+        )
+        if not ok or not name.strip():
+            return
+
+        # Ask for default fill value (0 = black, 1 = white)
+        items = ['0.0  (black / empty)', '1.0  (white / full)']
+        item, ok2 = QtWidgets.QInputDialog.getItem(
+            self, 'Default value', 'Initial fill:', items, 0, False
+        )
+        if not ok2:
+            return
+        default_val = 0.0 if item.startswith('0') else 1.0
+
+        try:
+            create_alpha_map(mesh, color_set=name.strip(), default_value=default_val)
+            logger.info(f"Alpha map '{name}' created on '{mesh}'.")
+        except Exception as e:
+            QtWidgets.QMessageBox.critical(self, 'Create alpha map', str(e))
+            return
+
+        # Refresh so the new map appears in the source list
+        self._on_refresh()
 
     def _on_mode_visibility_changed(self, mode_key: str, visible: bool) -> None:
         """Show/hide a mode radio button and fall back to 'All' if needed.

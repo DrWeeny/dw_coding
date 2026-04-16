@@ -83,10 +83,8 @@ def install_mel_procs() -> None:
         global proc {ctx}_before_stroke_cmd(){{
             {py}("{ctx}.before_stroke_cmd()");}}
         global proc {ctx}_set_value_cmd(int $shape_id, int $v_id, float $value, string $shape_long){{
-            print("[dwAlpha MEL] set_value_cmd hit: v_id=" + $v_id + " val=" + $value + "\\n");
             {py}("{ctx}.set_value_cmd(" + $shape_id + "," + $v_id + "," + $value + ",'" + $shape_long + "')");}}
         global proc {ctx}_during_stroke_cmd(){{
-            print("[dwAlpha MEL] during_stroke_cmd\\n");
             {py}("{ctx}.during_stroke_cmd()");}}
         global proc {ctx}_after_stroke_cmd(){{
             {py}("{ctx}.after_stroke_cmd()");}}
@@ -95,7 +93,6 @@ def install_mel_procs() -> None:
     '''
     mel.eval(mel_code)
     _MEL_PROCS_INSTALLED = True
-    logger.debug("VertexColorAlpha MEL procs installed.")
 
 
 # ---------------------------------------------------------------------------
@@ -128,22 +125,18 @@ class AlphaPaintController:
 
     def on_cmd(self) -> None:
         """Context activated — refresh alpha cache."""
-        logger.debug("[dwAlpha] on_cmd")
         self._alphas = self.source.get_weights()
 
     def off_cmd(self) -> None:
         """Context deactivated."""
-        logger.debug("[dwAlpha] off_cmd")
 
     def before_stroke_cmd(self) -> None:
         """Click — before first stamp projection."""
-        logger.debug("[dwAlpha] before_stroke_cmd")
         self._stamp_hits = {}
         self._stroke_completed = False
 
     def init_cmd(self, shape: str) -> str:
         """First stamp hits a shape — must return '-path 1' for artisan."""
-        logger.debug(f"[dwAlpha] init_cmd: shape={shape}")
         return '-path 1'
 
     def set_value_cmd(self, shape_id: int, v_id: int,
@@ -158,12 +151,10 @@ class AlphaPaintController:
 
     def after_stroke_cmd(self) -> None:
         """Click/drag release — mark stroke as complete for undo."""
-        logger.debug("[dwAlpha] after_stroke_cmd")
         self._stroke_completed = True
 
     def final_cmd(self, shape: str = '') -> None:
         """Called on release — apply remaining stamp and flush."""
-        logger.debug(f"[dwAlpha] final_cmd: shape={shape}")
         self._apply_stamp()
         self._flush_dirty()
 
@@ -252,7 +243,6 @@ class AlphaPaintController:
                         neighbours.add(vid)
             cache[i] = list(neighbours)
         self._neighbour_cache = cache
-        logger.debug(f"[dwAlpha] neighbour cache built for {n} vertices.")
 
     def _flush_dirty(self) -> None:
         """Write only the changed vertices to Maya (incremental update)."""
@@ -287,7 +277,6 @@ class AlphaPaintController:
 
         count = len(self._dirty_verts)
         self._dirty_verts.clear()
-        logger.debug(f"[dwAlpha] flushed {count} dirty vertices.")
 
 
 class VertexColorAlpha(WeightSource):
@@ -354,7 +343,6 @@ class VertexColorAlpha(WeightSource):
         # 2. Create controller and store in __main__ under context name
         controller = AlphaPaintController(self)
         __main__.__dict__[_CTX_NAME] = controller
-        logger.debug(f"[dwAlpha] controller stored as __main__.{_CTX_NAME}")
 
         # 3. Ensure the correct colorSet is active
         cmds.polyColorSet(self._mesh_name, currentColorSet=True,
@@ -390,19 +378,7 @@ class VertexColorAlpha(WeightSource):
         cmds.select(self._mesh_name, replace=True)
         cmds.setToolTo(_CTX_NAME)
 
-        # 7. Debug: verify init_cmd return value through MEL
-        from maya import mel
-        try:
-            test_result = mel.eval(f'{_CTX_NAME}_init_cmd("test")')
-            logger.debug(f"[dwAlpha] MEL test init_cmd returned: '{test_result}' (type={type(test_result)})")
-        except Exception as e:
-            logger.error(f"[dwAlpha] MEL test init_cmd FAILED: {e}")
-
-
-        logger.info(
-            f"Alpha paint brush active on '{self._color_set}'. "
-            f"Paint directly — only alpha is affected."
-        )
+        logger.info(f"Alpha paint brush active on '{self._color_set}'.")
 
     # ------------------------------------------------------------------
     # get / set weights — alpha channel only
@@ -548,4 +524,41 @@ class VertexColorAlpha(WeightSource):
             else:
                 result.append(1.0)
         return result
+
+
+# ---------------------------------------------------------------------------
+# Convenience factory
+# ---------------------------------------------------------------------------
+
+def create_alpha_map(mesh: str, color_set: str = '', default_value: float = 0.0) -> 'VertexColorAlpha':
+    """Create a new colorSet on *mesh* and fill its alpha with *default_value*.
+
+    Args:
+        mesh:          Transform or shape name.
+        color_set:     Name for the new colorSet.  Defaults to ``'alphaMap'``.
+        default_value: Initial alpha value for all vertices (0.0 = black).
+
+    Returns:
+        A ready-to-use :class:`VertexColorAlpha` instance.
+    """
+    if not color_set:
+        color_set = 'alphaMap'
+
+    # Resolve to transform
+    if cmds.objectType(mesh) == 'mesh':
+        parents = cmds.listRelatives(mesh, parent=True, fullPath=True) or [mesh]
+        mesh = parents[0]
+
+    # Create the colorSet if it doesn't exist
+    existing = cmds.polyColorSet(mesh, q=True, allColorSets=True) or []
+    if color_set not in existing:
+        cmds.polyColorSet(mesh, create=True, colorSet=color_set, representation='RGBA')
+        logger.info(f"Created colorSet '{color_set}' on '{mesh}'.")
+    else:
+        logger.info(f"ColorSet '{color_set}' already exists on '{mesh}', reusing.")
+
+    source = VertexColorAlpha(mesh, color_set=color_set)
+    n = source.vtx_count
+    source.set_weights([float(default_value)] * n)
+    return source
 
