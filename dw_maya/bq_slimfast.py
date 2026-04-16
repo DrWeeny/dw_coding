@@ -604,6 +604,67 @@ class SlimfastController:
             (min(zs) + max(zs)) * 0.5,
         )
 
+    @singleUndoChunk
+    def transfer_weights(self,
+                         src_weights: List[float],
+                         src_mesh: str,
+                         tgt_ws: 'WeightSource') -> None:
+        """Transfer weights from a source mesh to the target WeightSource.
+
+        Uses nearest-neighbour interpolation in world space, so source and
+        target may have completely different topologies.
+
+        Args:
+            src_weights: Per-vertex weight list from the source mesh.
+            src_mesh:    Source mesh (transform or shape) name in the scene.
+            tgt_ws:      Target WeightSource to receive the transferred weights.
+        """
+        if not src_weights:
+            logger.warning("transfer_weights: source has no stored weights.")
+            return
+        if tgt_ws is None:
+            logger.warning("transfer_weights: no active target source.")
+            return
+
+        try:
+            import maya.api.OpenMaya as om2
+            import numpy as np
+
+            def _get_world_positions(mesh_name: str) -> 'np.ndarray':
+                sel = om2.MSelectionList()
+                sel.add(mesh_name)
+                dag = sel.getDagPath(0)
+                fn = om2.MFnMesh(dag)
+                pts = fn.getPoints(om2.MSpace.kWorld)
+                return np.array([(p.x, p.y, p.z) for p in pts], dtype=np.float64)
+
+            src_pos = _get_world_positions(src_mesh)
+            tgt_pos = _get_world_positions(tgt_ws.mesh_name)
+
+            src_arr = np.array(src_weights, dtype=np.float64)
+
+            # Nearest-neighbour query
+            try:
+                from scipy.spatial import KDTree
+                tree = KDTree(src_pos)
+                _, nn_idx = tree.query(tgt_pos)
+            except ImportError:
+                # Brute-force fallback (slower but no scipy dependency)
+                nn_idx = []
+                for tp in tgt_pos:
+                    dists = np.sum((src_pos - tp) ** 2, axis=1)
+                    nn_idx.append(int(np.argmin(dists)))
+                nn_idx = np.array(nn_idx)
+
+            new_weights = src_arr[nn_idx].tolist()
+            tgt_ws.set_weights(new_weights)
+            logger.info(
+                f"transfer_weights: {len(new_weights)} weights transferred "
+                f"from '{src_mesh}' → '{tgt_ws.node_name}'"
+            )
+        except Exception as e:
+            logger.error(f"transfer_weights failed: {e}")
+
     def invert_selection(self) -> None:
         """Invert the current vertex selection.
 
@@ -764,7 +825,8 @@ class SlimfastWidget(QtWidgets.QWidget):
         weights_grp = self._build_weights_group()
         smooth_grp = self._build_smooth_group()
         select_grp = self._build_select_group()
-        advanced_section = self._build_advanced_section()
+        self._advanced_section = self._build_advanced_section()
+        self._transfer_section = self._build_transfer_section()
         self._storage_panel = self._build_storage_panel()
 
         # Menu bar — View > Storage expanded (reads QSettings for initial state)
@@ -782,7 +844,8 @@ class SlimfastWidget(QtWidgets.QWidget):
         left_col.addWidget(weights_grp)
         left_col.addWidget(smooth_grp)
         left_col.addWidget(select_grp)
-        left_col.addWidget(advanced_section)
+        left_col.addWidget(self._advanced_section)
+        left_col.addWidget(self._transfer_section)
         left_col.addStretch()
         main_area.addLayout(left_col, stretch=1)
         main_area.addWidget(self._storage_panel)
@@ -790,23 +853,41 @@ class SlimfastWidget(QtWidgets.QWidget):
         root.addLayout(main_area)
 
     def _build_menu_bar(self) -> QtWidgets.QMenuBar:
-        """Build top menu bar with a View menu to toggle the storage panel."""
+        """Build top menu bar with a View menu to toggle the storage panel and sections."""
         menu_bar = QtWidgets.QMenuBar(self)
         view_menu = menu_bar.addMenu('View')
 
+        settings = QtCore.QSettings('DrWeeny', 'SlimfastWidget')
+
+        # --- Storage panel ---
         self._storage_action = QtWidgets.QAction('Storage expanded', self)
         self._storage_action.setCheckable(True)
-
-        # Persist user preference via QSettings
-        settings = QtCore.QSettings('DrWeeny', 'SlimfastWidget')
         expanded = settings.value('storage_expanded', True, type=bool)
-
-        # Apply initial visibility directly, then connect for future changes
         self._storage_panel.setVisible(bool(expanded))
         self._storage_action.setChecked(bool(expanded))
         self._storage_action.toggled.connect(self._on_storage_toggled)
-
         view_menu.addAction(self._storage_action)
+
+        view_menu.addSeparator()
+
+        # --- Advanced ops section ---
+        self._adv_section_action = QtWidgets.QAction('Show Advanced ops', self)
+        self._adv_section_action.setCheckable(True)
+        adv_visible = settings.value('adv_section_visible', True, type=bool)
+        self._advanced_section.setVisible(bool(adv_visible))
+        self._adv_section_action.setChecked(bool(adv_visible))
+        self._adv_section_action.toggled.connect(self._advanced_section.setVisible)
+        view_menu.addAction(self._adv_section_action)
+
+        # --- Transfer section ---
+        self._transfer_section_action = QtWidgets.QAction('Show Transfer', self)
+        self._transfer_section_action.setCheckable(True)
+        tr_visible = settings.value('transfer_section_visible', False, type=bool)
+        self._transfer_section.setVisible(bool(tr_visible))
+        self._transfer_section_action.setChecked(bool(tr_visible))
+        self._transfer_section_action.toggled.connect(self._transfer_section.setVisible)
+        view_menu.addAction(self._transfer_section_action)
+
         return menu_bar
 
     def _build_advanced_section(self) -> CollapsibleSection:
@@ -944,6 +1025,65 @@ class SlimfastWidget(QtWidgets.QWidget):
 
         # Show/hide sub-widgets based on mode
         self._adv_mode_combo.currentTextChanged.connect(self._on_adv_mode_changed)
+
+        return section
+
+    def _build_transfer_section(self) -> 'CollapsibleSection':
+        """Build the collapsible 'Transfer weights' section.
+
+        The user stores a source mesh's weights in the embedded slot button,
+        then switches to a different mesh/deformer as the active target and
+        clicks Transfer.  Cross-topology nearest-neighbour interpolation is
+        used so source and target may have completely different vertex counts.
+
+        Returns:
+            A CollapsibleSection ready to be added to the left column.
+        """
+        section = CollapsibleSection('Transfer weights')
+        lay = section.content_layout
+
+        # -- Source slot (embedded VtxStorageButton) -----------------------
+        src_row = QtWidgets.QHBoxLayout()
+        src_label = QtWidgets.QLabel('Source')
+        src_label.setFixedWidth(48)
+        src_row.addWidget(src_label)
+
+        self._transfer_src_btn = dw_maya.dw_pyqt_utils.dw_btn_storage.VtxStorageButton()
+        self._transfer_src_btn.setFixedSize(44, 44)
+        self._transfer_src_btn.setText('Src')
+        self._transfer_src_btn.setToolTip(
+            'Right-click → Store  to capture the source mesh weights.\n'
+            'Then switch to the target deformer and click Transfer.'
+        )
+        src_row.addWidget(self._transfer_src_btn)
+
+        set_src_btn = QtWidgets.QPushButton('← Active')
+        set_src_btn.setFixedWidth(60)
+        set_src_btn.setToolTip('Set this slot\'s source from the currently active deformer')
+        set_src_btn.clicked.connect(self._on_transfer_set_source)
+        src_row.addWidget(set_src_btn)
+        src_row.addStretch()
+        lay.addLayout(src_row)
+
+        # -- Target label (reflects active source) -------------------------
+        tgt_row = QtWidgets.QHBoxLayout()
+        tgt_lbl = QtWidgets.QLabel('Target')
+        tgt_lbl.setFixedWidth(48)
+        tgt_row.addWidget(tgt_lbl)
+        self._transfer_tgt_label = QtWidgets.QLabel('— (active source) —')
+        self._transfer_tgt_label.setStyleSheet('color: #aaaaaa; font-size: 11px;')
+        tgt_row.addWidget(self._transfer_tgt_label, stretch=1)
+        lay.addLayout(tgt_row)
+
+        # -- Transfer button -----------------------------------------------
+        transfer_btn = QtWidgets.QPushButton('Transfer ▶')
+        transfer_btn.setFixedHeight(28)
+        transfer_btn.setStyleSheet(
+            'QPushButton { background-color: #405060; color: white; }'
+            'QPushButton:hover { background-color: #506070; }'
+        )
+        transfer_btn.clicked.connect(self._on_transfer_apply)
+        lay.addWidget(transfer_btn)
 
         return section
 
@@ -1261,14 +1401,58 @@ class SlimfastWidget(QtWidgets.QWidget):
     # ------------------------------------------------------------------
 
     def closeEvent(self, event) -> None:
-        """Persist smooth iteration count on close."""
+        """Persist smooth iteration count and section visibilities on close."""
         settings = QtCore.QSettings('DrWeeny', 'SlimfastWidget')
         settings.setValue('smooth_iterations', self.get_smooth_iterations())
+        settings.setValue('adv_section_visible', self._advanced_section.isVisible())
+        settings.setValue('transfer_section_visible', self._transfer_section.isVisible())
         super().closeEvent(event)
 
     # ------------------------------------------------------------------
     # Slots
     # ------------------------------------------------------------------
+
+    @Slot()
+    def _on_transfer_set_source(self) -> None:
+        """Pre-fill the transfer source slot from the currently active deformer."""
+        source = self._ctrl.active_source
+        active_map = self._ctrl.active_map
+        if source and active_map:
+            self._transfer_src_btn.current_weight_node = f'{source.node_name}.{active_map}'
+            self._transfer_src_btn.weight_source = source
+            logger.debug(f"Transfer source set to {source.node_name}.{active_map}")
+        else:
+            logger.warning("No active source to set as transfer source.")
+
+    @Slot()
+    def _on_transfer_apply(self) -> None:
+        """Execute the cross-topology weight transfer."""
+        src_weights = self._transfer_src_btn.stored_weights
+        if not src_weights:
+            QtWidgets.QMessageBox.warning(
+                self, 'Transfer',
+                'Source slot is empty.\n'
+                'Right-click the Src button and choose "Store weights", '
+                'then come back and click Transfer.'
+            )
+            return
+        src_ws = self._transfer_src_btn.weight_source
+        if src_ws is None:
+            QtWidgets.QMessageBox.warning(
+                self, 'Transfer',
+                'Source slot has no associated deformer.\n'
+                'Use "← Active" to capture the source first.'
+            )
+            return
+        tgt_ws = self._ctrl.active_source
+        if tgt_ws is None:
+            QtWidgets.QMessageBox.warning(
+                self, 'Transfer',
+                'No active target deformer.\n'
+                'Select the target mesh, refresh, and pick a deformer.'
+            )
+            return
+        self._ctrl.transfer_weights(src_weights, src_ws.mesh_name, tgt_ws)
 
     @Slot(bool)
     def _on_storage_toggled(self, checked: bool) -> None:
@@ -1517,6 +1701,12 @@ class SlimfastWidget(QtWidgets.QWidget):
                 btn.current_weight_node = f'{source.node_name}.{active_map}'
             else:
                 btn.current_weight_node = None
+
+        # Update transfer section target label
+        if source and active_map:
+            self._transfer_tgt_label.setText(f'{source.node_name} › {active_map}')
+        else:
+            self._transfer_tgt_label.setText('— (active source) —')
 
         # --- Map type badge (nucleus only) ---
         if isinstance(source, NClothMap):

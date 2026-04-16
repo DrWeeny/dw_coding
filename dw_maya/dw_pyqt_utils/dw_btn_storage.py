@@ -100,6 +100,20 @@ class VtxStorageButton(QtWidgets.QPushButton):
         self.setMouseTracking(True)
         self._setup_ui()
 
+    # ------------------------------------------------------------------
+    # Public accessors for stored data
+    # ------------------------------------------------------------------
+
+    @property
+    def stored_weights(self) -> list:
+        """Return the list of stored vertex weights (empty if none stored)."""
+        return self.storage.get('weights') or []
+
+    @property
+    def stored_selection(self) -> dict:
+        """Return the stored selection dict (empty if none stored)."""
+        return self.storage.get('selection') or {}
+
     def _setup_ui(self):
         """Setup the button's UI."""
         self.setStyleSheet(self._make_stylesheet(False, False))
