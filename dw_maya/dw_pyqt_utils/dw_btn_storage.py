@@ -101,19 +101,8 @@ class VtxStorageButton(QtWidgets.QPushButton):
         self._setup_ui()
 
     def _setup_ui(self):
-        """Setup the button's UI"""
-        self.setStyleSheet("""
-            QPushButton {
-                background-color: rgb(128, 128, 128);
-                border: none;
-                border-radius: 2px;
-                padding: 5px;
-                color: white;
-            }
-            QPushButton:hover {
-                background-color: rgb(140, 140, 140);
-            }
-        """)
+        """Setup the button's UI."""
+        self.setStyleSheet(self._make_stylesheet(False, False))
 
     # ------------------------------------------------------------------
     # Zone helpers
@@ -605,74 +594,53 @@ class VtxStorageButton(QtWidgets.QPushButton):
         self._current_weight_node = node
 
     # ------------------------------------------------------------------
-    # Visual state
+    # Visual state — stylesheet constants
     # ------------------------------------------------------------------
+
+    # Base CSS template — fill {bg} and {bg_hover}
+    _CSS_SOLID = (
+        "QPushButton {{ background-color: {bg}; border: none; border-radius: 2px; "
+        "padding: 5px; color: white; }}"
+        "QPushButton:hover {{ background-color: {bg_hover}; }}"
+    )
+    _CSS_GRADIENT = (
+        "QPushButton {{ background: qlineargradient("
+        "spread:pad, x1:0, y1:0, x2:1, y2:1, "
+        "stop:0 {c0}, stop:0.5 {c0}, stop:0.51 {c1}, stop:1 {c1}"
+        "); border: none; border-radius: 2px; padding: 5px; color: white; }}"
+    )
+
+    # Named colour tokens
+    _C_EMPTY    = ("rgb(128, 128, 128)", "rgb(140, 140, 140)")
+    _C_WEIGHTS  = ("rgb(70, 110, 85)",   "rgb(80, 120, 95)")
+    _C_SEL      = ("rgb(194, 177, 109)", "rgb(204, 187, 119)")
+
+    def _make_stylesheet(self, has_w: bool, has_s: bool) -> str:
+        """Return the appropriate stylesheet string for the current state.
+
+        Args:
+            has_w: Button has stored weights.
+            has_s: Button has stored selection.
+        """
+        if has_w and has_s:
+            return self._CSS_GRADIENT.format(c0=self._C_WEIGHTS[0], c1=self._C_SEL[0])
+        if has_w:
+            return self._CSS_SOLID.format(bg=self._C_WEIGHTS[0], bg_hover=self._C_WEIGHTS[1])
+        if has_s:
+            return self._CSS_SOLID.format(bg=self._C_SEL[0], bg_hover=self._C_SEL[1])
+        return self._CSS_SOLID.format(bg=self._C_EMPTY[0], bg_hover=self._C_EMPTY[1])
 
     def _update_button_state(self, has_data: bool):
         """Update button appearance and label based on storage state."""
+        has_w = has_data and bool(self.storage["weights"])
+        has_s = has_data and bool(self.storage["selection"])
+
         if has_data:
             weight_node = self.storage.get('weight_node') or ''
             if weight_node:
                 label = weight_node.split('.')[0]
                 self.setText(label[:14] + '…' if len(label) > 14 else label)
-
-            has_w = bool(self.storage["weights"])
-            has_s = bool(self.storage["selection"])
-
-            if has_w and not has_s:
-                self.setStyleSheet("""
-                    QPushButton {
-                        background-color: rgb(70, 110, 85);
-                        border: none;
-                        border-radius: 2px;
-                        padding: 5px;
-                        color: white;
-                    }
-                    QPushButton:hover {
-                        background-color: rgb(80, 120, 95);
-                    }
-                """)
-            elif has_w and has_s:
-                self.setStyleSheet("""
-                    QPushButton {
-                        background: qlineargradient(
-                            spread:pad,
-                            x1:0, y1:0,
-                            x2:1, y2:1,
-                            stop:0 rgb(70, 110, 85),
-                            stop:0.5 rgb(70, 110, 85),
-                            stop:0.51 rgb(194, 177, 109),
-                            stop:1 rgb(194, 177, 109)
-                        );
-                        border: none;
-                        border-radius: 2px;
-                        padding: 5px;
-                        color: white;
-                    }
-                """)
-            else:
-                self.setStyleSheet("""
-                    QPushButton {
-                        background-color: rgb(194, 177, 109);
-                        border: none;
-                        border-radius: 2px;
-                        padding: 5px;
-                        color: white;
-                    }
-                    QPushButton:hover {
-                        background-color: rgb(204, 187, 119);
-                    }
-                """)
         else:
-            self.setStyleSheet("""
-                QPushButton {
-                    background-color: rgb(128, 128, 128);
-                    border: none;
-                    border-radius: 2px;
-                    padding: 5px;
-                    color: white;
-                }
-                QPushButton:hover {
-                    background-color: rgb(140, 140, 140);
-                }
-            """)
+            self.setText('')
+
+        self.setStyleSheet(self._make_stylesheet(has_w, has_s))

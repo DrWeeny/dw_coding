@@ -477,6 +477,133 @@ class SlimfastController:
         """Select border vertices of the current component selection."""
         selectBorder()
 
+    @singleUndoChunk
+    def apply_vector_weights(self, direction: str, falloff: str = 'linear',
+                              invert: bool = False, mode: str = 'vector') -> None:
+        """Distribute weights by projection along a world-space direction.
+
+        Args:
+            direction: Predefined axis key (``'x+'``, ``'x-'``, ``'y+'``, ``'y-'``,
+                       ``'z+'``, ``'z-'``) or a ``'x,y,z'`` custom vector string.
+                       Ignored when mode is ``'normal'``.
+            falloff:   Curve type — ``'linear'``, ``'quadratic'``, ``'smooth'``, ``'smooth2'``.
+            invert:    Invert the result.
+            mode:      ``'vector'`` | ``'projection'`` | ``'distance'`` | ``'normal'``.
+        """
+        if not self._require_active():
+            return
+        if mode == 'normal':
+            dir_arg = 'y+'  # ignored but required by apply_operation signature
+        elif ',' in direction:
+            try:
+                parts = [float(v.strip()) for v in direction.split(',')]
+                dir_arg = tuple(parts)
+            except ValueError:
+                logger.error(f"Invalid custom direction '{direction}' — use 'x,y,z' format.")
+                return
+        else:
+            dir_arg = direction
+        try:
+            apply_operation(self._active, 'vector',
+                            direction=dir_arg, falloff=falloff, invert=invert, mode=mode)
+        except Exception as e:
+            logger.error(f"Vector weights failed: {e}")
+
+    @singleUndoChunk
+    def apply_radial_weights(self,
+                              falloff: str = 'linear',
+                              invert: bool = False,
+                              center: tuple = None,
+                              radius: float = None) -> None:
+        """Distribute weights by radial distance from a centre point.
+
+        When *center* or *radius* are ``None``, they are resolved in this order:
+        1. Current soft-selection radius (Maya ``softSelectFalloffCurve`` / ``softSelectDistance``).
+        2. Bounding-box centre / max extent of the current vertex selection.
+
+        Args:
+            falloff: Curve type — ``'linear'``, ``'quadratic'``, ``'smooth'``, ``'smooth2'``.
+            invert:  Invert the result.
+            center:  Explicit ``(x, y, z)`` world-space centre.  Auto if ``None``.
+            radius:  Explicit max radius.  Auto if ``None``.
+        """
+        if not self._require_active():
+            return
+
+        resolved_center = center
+        resolved_radius = radius
+
+        # Auto-resolve from selection / soft selection
+        if resolved_center is None or resolved_radius is None:
+            sel = cmds.ls(sl=True, fl=True) or []
+            vtx = cmds.filterExpand(sel, selectionMask=31) or []
+
+            if vtx and resolved_center is None:
+                positions = [cmds.xform(v, q=True, ws=True, t=True) for v in vtx]
+                xs = [p[0] for p in positions]
+                ys = [p[1] for p in positions]
+                zs = [p[2] for p in positions]
+                resolved_center = (
+                    (min(xs) + max(xs)) * 0.5,
+                    (min(ys) + max(ys)) * 0.5,
+                    (min(zs) + max(zs)) * 0.5,
+                )
+
+            if resolved_radius is None:
+                # Try soft-selection distance first
+                try:
+                    ss_enabled = cmds.softSelect(q=True, sse=True)
+                    if ss_enabled:
+                        resolved_radius = cmds.softSelect(q=True, ssd=True)
+                except Exception:
+                    pass
+
+        logger.debug(f"apply_radial_weights: center={resolved_center} radius={resolved_radius}")
+        try:
+            apply_operation(self._active, 'radial',
+                            falloff=falloff, invert=invert,
+                            center=resolved_center, radius=resolved_radius)
+        except Exception as e:
+            logger.error(f"Radial weights failed: {e}")
+
+    def get_soft_select_radius(self) -> float:
+        """Return the current Maya soft-selection radius, or 0.0 if disabled."""
+        try:
+            if cmds.softSelect(q=True, sse=True):
+                return float(cmds.softSelect(q=True, ssd=True))
+        except Exception:
+            pass
+        return 0.0
+
+    def get_selection_center(self) -> tuple:
+        """Return the world-space bounding-box centre of the current selection.
+
+        Returns:
+            ``(x, y, z)`` tuple, or ``(0.0, 0.0, 0.0)`` when nothing is selected.
+        """
+        sel = cmds.ls(sl=True, fl=True) or []
+        vtx = cmds.filterExpand(sel, selectionMask=31) or []
+        if not vtx:
+            # Fall back to object bounding box
+            objs = cmds.ls(sl=True) or []
+            if objs:
+                bb = cmds.exactWorldBoundingBox(*objs)
+                return (
+                    (bb[0] + bb[3]) * 0.5,
+                    (bb[1] + bb[4]) * 0.5,
+                    (bb[2] + bb[5]) * 0.5,
+                )
+            return (0.0, 0.0, 0.0)
+        positions = [cmds.xform(v, q=True, ws=True, t=True) for v in vtx]
+        xs = [p[0] for p in positions]
+        ys = [p[1] for p in positions]
+        zs = [p[2] for p in positions]
+        return (
+            (min(xs) + max(xs)) * 0.5,
+            (min(ys) + max(ys)) * 0.5,
+            (min(zs) + max(zs)) * 0.5,
+        )
+
     def invert_selection(self) -> None:
         """Invert the current vertex selection.
 
@@ -531,6 +658,69 @@ class SlimfastSignals(QtCore.QObject):
 
 
 # ---------------------------------------------------------------------------
+# Reusable collapsible section widget
+# ---------------------------------------------------------------------------
+
+class CollapsibleSection(QtWidgets.QWidget):
+    """A titled toggle button that shows/hides a content widget.
+
+    Args:
+        title:    Label shown on the toggle button.
+        parent:   Optional parent widget.
+
+    Example::
+
+        section = CollapsibleSection('▶  Advanced ops')
+        section.content_layout.addWidget(some_widget)
+    """
+
+    def __init__(self, title: str = '', parent: Optional[QtWidgets.QWidget] = None):
+        super().__init__(parent)
+
+        self._toggle_btn = QtWidgets.QToolButton()
+        self._toggle_btn.setStyleSheet(
+            'QToolButton { border: none; color: #aaaaaa; font-weight: bold; '
+            'text-align: left; padding: 2px 4px; }'
+            'QToolButton:hover { color: #dddddd; }'
+        )
+        self._toggle_btn.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
+        self._toggle_btn.setArrowType(Qt.RightArrow)
+        self._toggle_btn.setText(title)
+        self._toggle_btn.setCheckable(True)
+        self._toggle_btn.setChecked(False)
+
+        # Horizontal rule beside the button
+        line = QtWidgets.QFrame()
+        line.setFrameShape(QtWidgets.QFrame.HLine)
+        line.setFrameShadow(QtWidgets.QFrame.Sunken)
+        line.setStyleSheet('color: #555555;')
+
+        header = QtWidgets.QHBoxLayout()
+        header.setContentsMargins(0, 2, 0, 2)
+        header.setSpacing(4)
+        header.addWidget(self._toggle_btn)
+        header.addWidget(line, stretch=1)
+
+        self._content = QtWidgets.QWidget()
+        self._content.setVisible(False)
+        self.content_layout = QtWidgets.QVBoxLayout(self._content)
+        self.content_layout.setContentsMargins(8, 4, 0, 4)
+        self.content_layout.setSpacing(4)
+
+        root = QtWidgets.QVBoxLayout(self)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(0)
+        root.addLayout(header)
+        root.addWidget(self._content)
+
+        self._toggle_btn.toggled.connect(self._on_toggled)
+
+    def _on_toggled(self, checked: bool) -> None:
+        self._toggle_btn.setArrowType(Qt.DownArrow if checked else Qt.RightArrow)
+        self._content.setVisible(checked)
+
+
+# ---------------------------------------------------------------------------
 # Main widget
 # ---------------------------------------------------------------------------
 
@@ -574,6 +764,7 @@ class SlimfastWidget(QtWidgets.QWidget):
         weights_grp = self._build_weights_group()
         smooth_grp = self._build_smooth_group()
         select_grp = self._build_select_group()
+        advanced_section = self._build_advanced_section()
         self._storage_panel = self._build_storage_panel()
 
         # Menu bar — View > Storage expanded (reads QSettings for initial state)
@@ -591,6 +782,7 @@ class SlimfastWidget(QtWidgets.QWidget):
         left_col.addWidget(weights_grp)
         left_col.addWidget(smooth_grp)
         left_col.addWidget(select_grp)
+        left_col.addWidget(advanced_section)
         left_col.addStretch()
         main_area.addLayout(left_col, stretch=1)
         main_area.addWidget(self._storage_panel)
@@ -616,6 +808,144 @@ class SlimfastWidget(QtWidgets.QWidget):
 
         view_menu.addAction(self._storage_action)
         return menu_bar
+
+    def _build_advanced_section(self) -> CollapsibleSection:
+        """Build the collapsible 'Advanced ops' section (vector / radial weights)."""
+        section = CollapsibleSection('Advanced ops')
+        lay = section.content_layout
+
+        # --- Mode selector ---
+        mode_row = QtWidgets.QHBoxLayout()
+        mode_row.addWidget(QtWidgets.QLabel('Mode'))
+        self._adv_mode_combo = QtWidgets.QComboBox()
+        self._adv_mode_combo.addItems(['vector', 'radial'])
+        mode_row.addWidget(self._adv_mode_combo)
+        mode_row.addStretch()
+        lay.addLayout(mode_row)
+
+        # --- Falloff ---
+        falloff_row = QtWidgets.QHBoxLayout()
+        falloff_row.addWidget(QtWidgets.QLabel('Falloff'))
+        self._adv_falloff_combo = QtWidgets.QComboBox()
+        self._adv_falloff_combo.addItems(['linear', 'quadratic', 'smooth', 'smooth2'])
+        falloff_row.addWidget(self._adv_falloff_combo)
+        falloff_row.addStretch()
+        lay.addLayout(falloff_row)
+
+        # ---- Vector sub-widget ----------------------------------------
+        self._adv_vector_widget = QtWidgets.QWidget()
+        vec_lay = QtWidgets.QVBoxLayout(self._adv_vector_widget)
+        vec_lay.setContentsMargins(0, 0, 0, 0)
+        vec_lay.setSpacing(4)
+
+        # Direction mode (vector / projection / distance / normal)
+        vmode_row = QtWidgets.QHBoxLayout()
+        vmode_row.addWidget(QtWidgets.QLabel('Type'))
+        self._adv_vec_mode_combo = QtWidgets.QComboBox()
+        self._adv_vec_mode_combo.addItems(['vector', 'projection', 'distance', 'normal'])
+        vmode_row.addWidget(self._adv_vec_mode_combo)
+        vmode_row.addStretch()
+        vec_lay.addLayout(vmode_row)
+
+        # Axis radio buttons (hidden in normal mode)
+        self._adv_axis_widget = QtWidgets.QWidget()
+        axis_lay = QtWidgets.QVBoxLayout(self._adv_axis_widget)
+        axis_lay.setContentsMargins(0, 0, 0, 0)
+        axis_lay.setSpacing(2)
+
+        axis_row = QtWidgets.QHBoxLayout()
+        axis_row.addWidget(QtWidgets.QLabel('Direction'))
+        self._adv_axis_group = QtWidgets.QButtonGroup(self)
+        for axis in ('x+', 'x-', 'y+', 'y-', 'z+', 'z-'):
+            btn = QtWidgets.QRadioButton(axis)
+            btn.setProperty('axis', axis)
+            if axis == 'y+':
+                btn.setChecked(True)
+            self._adv_axis_group.addButton(btn)
+            axis_row.addWidget(btn)
+        axis_lay.addLayout(axis_row)
+
+        custom_row = QtWidgets.QHBoxLayout()
+        self._adv_custom_check = QtWidgets.QCheckBox('Custom')
+        self._adv_custom_vec = QtWidgets.QLineEdit('0,1,0')
+        self._adv_custom_vec.setPlaceholderText('x, y, z')
+        self._adv_custom_vec.setEnabled(False)
+        self._adv_custom_check.toggled.connect(self._adv_custom_vec.setEnabled)
+        self._adv_custom_check.toggled.connect(
+            partial(self._toggle_axis_buttons, enable=False)
+        )
+        custom_row.addWidget(self._adv_custom_check)
+        custom_row.addWidget(self._adv_custom_vec, stretch=1)
+        axis_lay.addLayout(custom_row)
+        vec_lay.addWidget(self._adv_axis_widget)
+
+        # Hide axis controls in 'normal' mode
+        self._adv_vec_mode_combo.currentTextChanged.connect(
+            lambda m: self._adv_axis_widget.setVisible(m != 'normal')
+        )
+        lay.addWidget(self._adv_vector_widget)
+
+        # ---- Radial sub-widget ----------------------------------------
+        self._adv_radial_widget = QtWidgets.QWidget()
+        rad_lay = QtWidgets.QVBoxLayout(self._adv_radial_widget)
+        rad_lay.setContentsMargins(0, 0, 0, 0)
+        rad_lay.setSpacing(4)
+        self._adv_radial_widget.setVisible(False)
+
+        # Center picker row
+        center_row = QtWidgets.QHBoxLayout()
+        center_row.addWidget(QtWidgets.QLabel('Center'))
+        self._adv_center_x = QtWidgets.QDoubleSpinBox()
+        self._adv_center_y = QtWidgets.QDoubleSpinBox()
+        self._adv_center_z = QtWidgets.QDoubleSpinBox()
+        for sp in (self._adv_center_x, self._adv_center_y, self._adv_center_z):
+            sp.setRange(-99999.0, 99999.0)
+            sp.setDecimals(3)
+            sp.setFixedWidth(68)
+            center_row.addWidget(sp)
+        pick_btn = QtWidgets.QPushButton('◎')
+        pick_btn.setFixedWidth(24)
+        pick_btn.setToolTip('Set center from current selection bounding box')
+        pick_btn.clicked.connect(self._on_pick_radial_center)
+        center_row.addWidget(pick_btn)
+        rad_lay.addLayout(center_row)
+
+        # Radius row
+        radius_row = QtWidgets.QHBoxLayout()
+        radius_row.addWidget(QtWidgets.QLabel('Radius'))
+        self._adv_radius_spin = QtWidgets.QDoubleSpinBox()
+        self._adv_radius_spin.setRange(0.0, 99999.0)
+        self._adv_radius_spin.setDecimals(3)
+        self._adv_radius_spin.setValue(0.0)
+        self._adv_radius_spin.setSpecialValueText('auto')
+        self._adv_radius_spin.setToolTip('0 = auto from soft-selection or bounding box')
+        radius_row.addWidget(self._adv_radius_spin)
+        ss_btn = QtWidgets.QPushButton('Soft sel')
+        ss_btn.setFixedWidth(56)
+        ss_btn.setToolTip('Read radius from current soft-selection distance')
+        ss_btn.clicked.connect(self._on_read_soft_select_radius)
+        radius_row.addWidget(ss_btn)
+        radius_row.addStretch()
+        rad_lay.addLayout(radius_row)
+
+        lay.addWidget(self._adv_radial_widget)
+
+        # ---- Shared controls ------------------------------------------
+        self._adv_invert_check = QtWidgets.QCheckBox('Invert')
+        lay.addWidget(self._adv_invert_check)
+
+        self._adv_apply_btn = QtWidgets.QPushButton('Apply')
+        self._adv_apply_btn.setStyleSheet(
+            'QPushButton { background-color: #505060; color: white; }'
+            'QPushButton:hover { background-color: #606070; }'
+        )
+        self._adv_apply_btn.clicked.connect(self._on_advanced_apply)
+        lay.addWidget(self._adv_apply_btn)
+
+        # Show/hide sub-widgets based on mode
+        self._adv_mode_combo.currentTextChanged.connect(self._on_adv_mode_changed)
+
+        return section
 
     def _build_storage_panel(self) -> QtWidgets.QWidget:
         """Compact square-button storage column (no title, top-right position)."""
@@ -1246,6 +1576,61 @@ class SlimfastWidget(QtWidgets.QWidget):
 
     def _on_smooth_flood(self) -> None:
         self._on_smooth(self._iter_spinbox.value())
+
+    @Slot()
+    def _on_advanced_apply(self) -> None:
+        """Apply the selected advanced weight distribution operation."""
+        mode = self._adv_mode_combo.currentText()
+        falloff = self._adv_falloff_combo.currentText()
+        invert = self._adv_invert_check.isChecked()
+
+        if mode == 'vector':
+            vec_mode = self._adv_vec_mode_combo.currentText()
+            if vec_mode == 'normal':
+                direction = 'y+'  # unused but required
+            elif self._adv_custom_check.isChecked():
+                direction = self._adv_custom_vec.text().strip()
+            else:
+                checked = self._adv_axis_group.checkedButton()
+                direction = checked.property('axis') if checked else 'y+'
+            self._ctrl.apply_vector_weights(direction, falloff=falloff,
+                                            invert=invert, mode=vec_mode)
+        elif mode == 'radial':
+            cx = self._adv_center_x.value()
+            cy = self._adv_center_y.value()
+            cz = self._adv_center_z.value()
+            center = (cx, cy, cz) if any((cx, cy, cz)) else None
+            radius = self._adv_radius_spin.value() or None
+            self._ctrl.apply_radial_weights(falloff=falloff, invert=invert,
+                                            center=center, radius=radius)
+
+    @Slot(str)
+    def _on_adv_mode_changed(self, mode: str) -> None:
+        """Show the relevant sub-widget for the selected advanced mode."""
+        self._adv_vector_widget.setVisible(mode == 'vector')
+        self._adv_radial_widget.setVisible(mode == 'radial')
+
+    def _toggle_axis_buttons(self, checked: bool, enable: bool = False) -> None:
+        """Enable or disable axis radio buttons (used when custom vector is active)."""
+        for btn in self._adv_axis_group.buttons():
+            btn.setEnabled(not checked)
+
+    @Slot()
+    def _on_pick_radial_center(self) -> None:
+        """Fill center spinboxes from the current selection bounding box."""
+        cx, cy, cz = self._ctrl.get_selection_center()
+        self._adv_center_x.setValue(cx)
+        self._adv_center_y.setValue(cy)
+        self._adv_center_z.setValue(cz)
+
+    @Slot()
+    def _on_read_soft_select_radius(self) -> None:
+        """Read the soft-selection distance and put it in the radius spinbox."""
+        r = self._ctrl.get_soft_select_radius()
+        if r > 0.0:
+            self._adv_radius_spin.setValue(r)
+        else:
+            logger.warning("Soft selection is disabled or radius is 0.")
 
     def _on_select_all(self) -> None:
         self._ctrl.select_all(0)
