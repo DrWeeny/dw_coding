@@ -270,6 +270,9 @@ class SlimfastController:
 
     def _source_label(self, source: WeightSource) -> str:
         """Human-readable label for a WeightSource node."""
+        from dw_maya.dw_paint.vertex_color_alpha import VertexColorAlpha
+        if isinstance(source, VertexColorAlpha):
+            return f"[vtxColor] {source.color_set}"
         try:
             node_type = cmds.nodeType(source.node_name)
         except Exception:
@@ -932,6 +935,27 @@ class SlimfastWidget(QtWidgets.QWidget):
         self._remap_section_action.toggled.connect(self._remap_section.setVisible)
         view_menu.addAction(self._remap_section_action)
 
+        view_menu.addSeparator()
+
+        # --- Visible modes submenu ---
+        modes_menu = view_menu.addMenu('Visible modes')
+        _mode_labels = {
+            'all':       'All',
+            'deformer':  'Deformer',
+            'nucleus':   'nCloth',
+            'vtxColor':  'vtxColor',
+        }
+        self._mode_visibility_actions = {}
+        for mode_key, btn in self._mode_btns.items():
+            action = QtWidgets.QAction(_mode_labels.get(mode_key, mode_key), self)
+            action.setCheckable(True)
+            visible = settings.value(f'mode_visible_{mode_key}', True, type=bool)
+            btn.setVisible(bool(visible))
+            action.setChecked(bool(visible))
+            action.toggled.connect(partial(self._on_mode_visibility_changed, mode_key))
+            modes_menu.addAction(action)
+            self._mode_visibility_actions[mode_key] = action
+
         return menu_bar
 
     def _build_advanced_section(self) -> CollapsibleSection:
@@ -1223,16 +1247,19 @@ class SlimfastWidget(QtWidgets.QWidget):
         lay = QtWidgets.QVBoxLayout(grp)
         lay.setSpacing(4)
 
-        # --- Mode toggle + Refresh + Help ---
+        # --- Mode toggle + Refresh ---
         top_row = QtWidgets.QHBoxLayout()
         self._mode_group = QtWidgets.QButtonGroup(self)
-        for label, mode in [('All', 'all'), ('Deformer', 'deformer'), ('nCloth', 'nucleus')]:
+        self._mode_btns = {}  # mode_key -> QRadioButton, for Pref menu visibility
+        for label, mode in [('All', 'all'), ('Deformer', 'deformer'),
+                             ('nCloth', 'nucleus'), ('vtxColor', 'vtxColor')]:
             btn = QtWidgets.QRadioButton(label)
             btn.setProperty('mode', mode)
             if mode == 'all':
                 btn.setChecked(True)
             self._mode_group.addButton(btn)
             top_row.addWidget(btn)
+            self._mode_btns[mode] = btn
         top_row.addStretch()
 
         refresh_btn = QtWidgets.QPushButton('↺')
@@ -1309,6 +1336,22 @@ class SlimfastWidget(QtWidgets.QWidget):
             'QPushButton:hover { background-color: #c8c830; }'
         )
         lay.addWidget(self._paint_btn)
+
+        # --- Alpha preview toggle (visible only for VertexColorAlpha sources) ---
+        self._alpha_preview_btn = QtWidgets.QPushButton('👁  Alpha B&W preview')
+        self._alpha_preview_btn.setCheckable(True)
+        self._alpha_preview_btn.setFixedHeight(24)
+        self._alpha_preview_btn.setStyleSheet(
+            'QPushButton { background-color: #443355; color: #ccaaee; }'
+            'QPushButton:hover { background-color: #554466; }'
+            'QPushButton:checked { background-color: #775599; color: white; }'
+        )
+        self._alpha_preview_btn.setToolTip(
+            'Toggle greyscale preview of the alpha channel in the viewport'
+        )
+        self._alpha_preview_btn.toggled.connect(self._on_alpha_preview_toggled)
+        self._alpha_preview_btn.hide()
+        lay.addWidget(self._alpha_preview_btn)
 
         return grp
 
@@ -1506,12 +1549,14 @@ class SlimfastWidget(QtWidgets.QWidget):
     # ------------------------------------------------------------------
 
     def closeEvent(self, event) -> None:
-        """Persist smooth iteration count and section visibilities on close."""
+        """Persist smooth iteration count and section/mode visibilities on close."""
         settings = QtCore.QSettings('DrWeeny', 'SlimfastWidget')
         settings.setValue('smooth_iterations', self.get_smooth_iterations())
         settings.setValue('adv_section_visible', self._advanced_section.isVisible())
         settings.setValue('transfer_section_visible', self._transfer_section.isVisible())
         settings.setValue('remap_section_visible', self._remap_section.isVisible())
+        for mode_key, btn in self._mode_btns.items():
+            settings.setValue(f'mode_visible_{mode_key}', btn.isVisible())
         super().closeEvent(event)
 
     # ------------------------------------------------------------------
@@ -1621,6 +1666,39 @@ class SlimfastWidget(QtWidgets.QWidget):
         else:
             logger.warning("No active source — refresh first.")
 
+    def _on_mode_visibility_changed(self, mode_key: str, visible: bool) -> None:
+        """Show/hide a mode radio button and fall back to 'All' if needed.
+
+        If the currently checked button is being hidden, we automatically
+        switch to the 'All' button so the tool stays functional.
+
+        Args:
+            mode_key: Mode identifier string (e.g. ``'nucleus'``).
+            visible:  Whether the button should be visible.
+        """
+        btn = self._mode_btns.get(mode_key)
+        if btn is None:
+            return
+        btn.setVisible(visible)
+        # If the active button is hidden, fall back to 'All'
+        if not visible and btn.isChecked():
+            all_btn = self._mode_btns.get('all')
+            if all_btn and all_btn.isVisible():
+                all_btn.setChecked(True)
+                self._ctrl.set_mode('all')
+
+    @Slot(bool)
+    def _on_alpha_preview_toggled(self, checked: bool) -> None:
+        """Toggle B&W alpha preview on the active VertexColorAlpha source."""
+        from dw_maya.dw_paint.vertex_color_alpha import VertexColorAlpha
+        source = self._ctrl.active_source
+        if not isinstance(source, VertexColorAlpha):
+            return
+        if checked:
+            source.enable_preview()
+        else:
+            source.disable_preview()
+
     def _current_op(self) -> str:
         """Return the currently selected weight operation mode."""
         checked = self._op_group.checkedButton()
@@ -1669,13 +1747,15 @@ class SlimfastWidget(QtWidgets.QWidget):
 
     # Colour palette per backend type
     _SOURCE_COLORS = {
-        'nCloth':      '#4ecdc4',
-        'nRigid':      '#4ecdc4',
-        'blendShape':  '#e8a838',
-        'skinCluster': '#a0c8ff',
-        'cluster':     '#cccccc',
-        'softMod':     '#cccccc',
-        'wire':        '#cccccc',
+        'nCloth':             '#4ecdc4',
+        'nRigid':             '#4ecdc4',
+        'blendShape':         '#e8a838',
+        'skinCluster':        '#a0c8ff',
+        'cluster':            '#cccccc',
+        'softMod':            '#cccccc',
+        'wire':               '#cccccc',
+        'VertexColorAlpha':   '#cc88dd',
+        'vtxColor':           '#cc88dd',
     }
 
     @Slot(list, list)
@@ -1871,6 +1951,16 @@ class SlimfastWidget(QtWidgets.QWidget):
                 self._envelope_slider.setEnabled(False)
         else:
             self._envelope_slider.setEnabled(False)
+
+        # --- Alpha preview button (VertexColorAlpha only) ---
+        from dw_maya.dw_paint.vertex_color_alpha import VertexColorAlpha
+        if isinstance(source, VertexColorAlpha):
+            self._alpha_preview_btn.show()
+        else:
+            # Disable preview if switching away from a vtxColor source
+            if self._alpha_preview_btn.isChecked():
+                self._alpha_preview_btn.setChecked(False)
+            self._alpha_preview_btn.hide()
 
     @Slot(float)
     def _on_envelope_changed(self, value: float) -> None:

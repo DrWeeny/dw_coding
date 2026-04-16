@@ -71,7 +71,7 @@ _ARTISAN_ATTRS: Dict[str, str] = {
 
 def resolve_weight_sources(
         mesh: str,
-        mode: Literal['all', 'deformer', 'nucleus'] = 'all'
+        mode: Literal['all', 'deformer', 'nucleus', 'vtxColor'] = 'all'
 ) -> List[WeightSource]:
     """Return all WeightMap objects available on a mesh.
 
@@ -81,9 +81,10 @@ def resolve_weight_sources(
     Args:
         mesh: Mesh transform name.
         mode: Which backends to include:
-              ``'all'``      — deformers + nucleus maps (default)
+              ``'all'``      — deformers + nucleus maps + vertex colors (default)
               ``'deformer'`` — standard Maya deformers only
               ``'nucleus'``  — nCloth/nRigid per-vertex maps only
+              ``'vtxColor'`` — vertex color alpha maps only
 
     Returns:
         List of :class:`~dw_maya.dw_paint.protocol.WeightMap` instances:
@@ -117,6 +118,16 @@ def resolve_weight_sources(
                 sources.append(NClothMap(nucx_node, mesh))
         except Exception as e:
             logger.debug(f"No nucleus node found for '{mesh}': {e}")
+
+    # Vertex color alpha
+    if mode in ('all', 'vtxColor'):
+        try:
+            from dw_maya.dw_paint.vertex_color_alpha import VertexColorAlpha
+            color_sets = cmds.polyColorSet(mesh, q=True, allColorSets=True) or []
+            for cs in color_sets:
+                sources.append(VertexColorAlpha(mesh, color_set=cs))
+        except Exception as e:
+            logger.debug(f"No vertex color alpha for '{mesh}': {e}")
 
     return sources
 
