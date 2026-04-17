@@ -33,7 +33,6 @@ from __future__ import annotations
 from typing import List
 
 from maya import cmds
-
 from dw_maya.dw_paint.protocol import WeightSource, WeightList
 from dw_logger import get_logger
 
@@ -122,6 +121,8 @@ class AlphaPaintController:
         self._stroke_completed = False
         # Neighbour cache for smooth: {v_id: [neighbour_ids]}
         self._neighbour_cache = {}
+        # When True, _flush_dirty skips preview updates (batched smooth)
+        self._batch_mode = False
 
     def on_cmd(self) -> None:
         """Context activated — refresh alpha cache."""
@@ -245,8 +246,18 @@ class AlphaPaintController:
         self._neighbour_cache = cache
 
     def _flush_dirty(self) -> None:
-        """Write only the changed vertices to Maya (incremental update)."""
+        """Write only the changed vertices to Maya (incremental update).
+
+        In batch_mode nothing is written to Maya — all changes stay in the
+        ``_alphas`` buffer.  The caller is responsible for a single bulk
+        write via ``source.set_weights(controller._alphas)`` when batch ends.
+        """
         if not self._dirty_verts:
+            return
+
+        # In batch mode: keep everything in memory, skip all Maya writes
+        if self._batch_mode:
+            self._dirty_verts.clear()
             return
 
         mesh = self.mesh
@@ -262,7 +273,7 @@ class AlphaPaintController:
                 colorDisplayOption=True, representation=4,
             )
 
-        # Update B&W preview if active
+        # Update B&W preview
         if preview_active:
             existing = cmds.polyColorSet(mesh, q=True, allColorSets=True) or []
             if _PREVIEW_SET in existing:
@@ -275,7 +286,6 @@ class AlphaPaintController:
                         colorDisplayOption=True, representation=4,
                     )
 
-        count = len(self._dirty_verts)
         self._dirty_verts.clear()
 
 
@@ -302,6 +312,7 @@ class VertexColorAlpha(WeightSource):
         super().__init__(f'{mesh_name}@{color_set}', mesh_name)
         self._color_set = color_set
         self._preview_active = False
+        self._batch_mode = False
 
     # ------------------------------------------------------------------
     # Identity helpers
@@ -393,6 +404,10 @@ class VertexColorAlpha(WeightSource):
         n = self.vtx_count
         alphas = [1.0] * n
 
+        # Ensure we read from the real colorSet, not the B&W preview
+        cmds.polyColorSet(self._mesh_name, currentColorSet=True,
+                          colorSet=self._color_set)
+
         try:
             colors = cmds.polyColorPerVertex(
                 f'{self._mesh_name}.vtx[0:{n - 1}]',
@@ -428,17 +443,60 @@ class VertexColorAlpha(WeightSource):
         cmds.polyColorSet(self._mesh_name, currentColorSet=True,
                           colorSet=self._color_set)
 
-        for i, a in enumerate(weights):
-            cmds.polyColorPerVertex(
-                f'{self._mesh_name}.vtx[{i}]',
-                a=float(a),
-                colorDisplayOption=True,
-                representation=4,  # RGBA
-            )
+        # Batch write: use OpenMaya MFnMesh for speed when available
+        try:
+            self._set_weights_api(weights)
+        except Exception:
+            # Fallback to cmds per-vertex
+            for i, a in enumerate(weights):
+                cmds.polyColorPerVertex(
+                    f'{self._mesh_name}.vtx[{i}]',
+                    a=float(a),
+                    colorDisplayOption=True,
+                    representation=4,
+                )
 
-        # Refresh preview if active
-        if self._preview_active:
+        # Refresh preview if active (skip during batch mode)
+        if self._preview_active and not self._batch_mode:
             self._update_preview(weights)
+
+        # Sync artisan controller if active
+        self._sync_artisan_controller(weights)
+
+    def _set_weights_api(self, weights: WeightList) -> None:
+        """Write alpha values using OpenMaya API for better performance."""
+        import maya.api.OpenMaya as om2
+
+        sel = om2.MSelectionList()
+        sel.add(self._mesh_name)
+        dag = sel.getDagPath(0)
+        fn_mesh = om2.MFnMesh(dag)
+
+        # Read existing colors to preserve RGB
+        color_set = self._color_set
+        try:
+            colors = fn_mesh.getVertexColors(color_set)
+        except Exception:
+            # If colorSet has no data yet, fall back to cmds
+            raise RuntimeError("No existing color data — fallback to cmds")
+
+        n = len(weights)
+        vertex_list = list(range(n))
+
+        new_colors = om2.MColorArray()
+        for i in range(n):
+            c = colors[i] if i < len(colors) else om2.MColor((1.0, 1.0, 1.0, 1.0))
+            new_colors.append(om2.MColor((c.r, c.g, c.b, float(weights[i]))))
+
+        fn_mesh.setVertexColors(new_colors, vertex_list, colorSet=color_set)
+
+    def _sync_artisan_controller(self, weights: WeightList) -> None:
+        """Update the artisan paint controller cache if it exists."""
+        import __main__
+        controller = __main__.__dict__.get(_CTX_NAME)
+        if controller and isinstance(controller, AlphaPaintController):
+            if controller.source is self:
+                controller._alphas = list(weights)
 
     # ------------------------------------------------------------------
     # Alpha preview — B&W visualisation
@@ -490,14 +548,30 @@ class VertexColorAlpha(WeightSource):
         cmds.polyColorSet(self._mesh_name, currentColorSet=True,
                           colorSet=_PREVIEW_SET)
 
-        for i, a in enumerate(alphas):
-            v = float(a)
-            cmds.polyColorPerVertex(
-                f'{self._mesh_name}.vtx[{i}]',
-                r=v, g=v, b=v, a=1.0,
-                colorDisplayOption=True,
-                representation=4,
-            )
+        # Use OpenMaya API for speed
+        try:
+            import maya.api.OpenMaya as om2
+            sel = om2.MSelectionList()
+            sel.add(self._mesh_name)
+            dag = sel.getDagPath(0)
+            fn_mesh = om2.MFnMesh(dag)
+
+            colors = om2.MColorArray()
+            vertex_list = list(range(n))
+            for i in range(n):
+                v = float(alphas[i])
+                colors.append(om2.MColor((v, v, v, 1.0)))
+            fn_mesh.setVertexColors(colors, vertex_list, colorSet=_PREVIEW_SET)
+        except Exception:
+            # Fallback to cmds
+            for i, a in enumerate(alphas):
+                v = float(a)
+                cmds.polyColorPerVertex(
+                    f'{self._mesh_name}.vtx[{i}]',
+                    r=v, g=v, b=v, a=1.0,
+                    colorDisplayOption=True,
+                    representation=4,
+                )
 
     # ------------------------------------------------------------------
     # Internals

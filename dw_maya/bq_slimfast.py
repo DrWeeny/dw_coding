@@ -41,7 +41,7 @@ import dw_maya.dw_pyqt_utils.dw_btn_storage
 from dw_maya.dw_paint.protocol import WeightSource
 from dw_maya.dw_paint.vertex_color_alpha import create_alpha_map
 from dw_maya.dw_decorators.dw_keep_selection import keep_selection
-from dw_maya.dw_decorators.dw_undo import singleUndoChunk
+from dw_maya.dw_decorators import singleUndoChunk, timeIt
 from dw_maya.dw_paint.weight_source import (
     resolve_weight_sources,
     paint_weight_source,
@@ -365,6 +365,7 @@ class SlimfastController:
         apply_operation(self._active, 'flood', value=value, op=op)
         logger.debug(f"set_weight — applied {op} on all vertices")
 
+    @timeIt(track_stats=True)
     @singleUndoChunk
     def smooth(self, iterations: int = 1) -> None:
         """Topology-based smooth via numpy path."""
@@ -375,6 +376,7 @@ class SlimfastController:
         except Exception as e:
             logger.error(f"Smooth failed: {e}")
 
+    @timeIt(track_stats=True)
     @singleUndoChunk
     def smooth_artisan(self, iterations: int = 1) -> None:
         """Smooth via Maya artisan (requires paint tool to be active).
@@ -398,11 +400,20 @@ class SlimfastController:
             # Ensure the paint context is active
             if cmds.currentCtx() != ctx:
                 self._active.paint()
+            # Enable batch mode: iterations only update preview, not real colorSet
+            import __main__
+            controller = __main__.__dict__.get(ctx)
+            if controller:
+                controller._batch_mode = True
             # Switch to smooth, flood, then restore
             cmds.artUserPaintCtx(ctx, edit=True, selectedattroper='smooth')
             for _ in range(iterations):
                 cmds.artUserPaintCtx(ctx, edit=True, clear=True)
             cmds.artUserPaintCtx(ctx, edit=True, selectedattroper='additive')
+            # Disable batch mode and write final result to real colorSet once
+            if controller:
+                controller._batch_mode = False
+                self._active.set_weights(controller._alphas)
             logger.info(f"Alpha artisan smooth x{iterations}.")
         else:
             try:
