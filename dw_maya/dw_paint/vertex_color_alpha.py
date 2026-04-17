@@ -425,15 +425,23 @@ class VertexColorAlpha(WeightSource):
 
         return alphas
 
-    def set_weights(self, weights: WeightList) -> None:
+    def set_weights(self, weights: WeightList, **kwargs) -> None:
         """Write per-vertex alpha values, leaving RGB untouched.
 
         Args:
             weights: One float per vertex.
+            **kwargs:
+                id_group (bool): If True, group identical weight values to optimize cmds calls.
+                maya_api (bool): If True, use OpenMaya API for best performance (default).
+                decimals (int): When using id_group, round weights to this many decimals to improve grouping.
 
         Raises:
             ValueError: If length does not match vtx_count.
         """
+        id_group = kwargs.get('id_group', False)
+        maya_api = kwargs.get('maya_api', True)
+        decimals = kwargs.get('decimals', 3)
+
         n = self.vtx_count
         if len(weights) != n:
             raise ValueError(
@@ -446,16 +454,39 @@ class VertexColorAlpha(WeightSource):
 
         # Batch write: use OpenMaya MFnMesh for speed when available
         try:
+            if not maya_api:
+                raise RuntimeError("maya_api is False, falling back to cmds.")
             self._set_weights_api(weights)
-        except Exception:
+        except Exception as e:
+            if maya_api:
+                logger.warning(f"OpenMaya API failed, falling back to cmds. Error: {e}")
+            
             # Fallback to cmds per-vertex
-            for i, a in enumerate(weights):
-                cmds.polyColorPerVertex(
-                    f'{self._mesh_name}.vtx[{i}]',
-                    a=float(a),
-                    colorDisplayOption=True,
-                    representation=4,
-                )
+            if id_group:
+                from dw_maya.dw_maya_utils.dw_maya_components import create_maya_ranges
+                from collections import defaultdict
+
+                weight_groups = defaultdict(list)
+                for i, w in enumerate(weights):
+                    weight_groups[round(w, decimals)].append(i)
+
+                for w_val, indices in weight_groups.items():
+                    ranges = create_maya_ranges(indices)
+                    for r in ranges:
+                        cmds.polyColorPerVertex(
+                            f'{self._mesh_name}.vtx[{r}]',
+                            a=float(w_val),
+                            colorDisplayOption=True,
+                            representation=4,
+                        )
+            else:
+                for i, a in enumerate(weights):
+                    cmds.polyColorPerVertex(
+                        f'{self._mesh_name}.vtx[{i}]',
+                        a=float(a),
+                        colorDisplayOption=True,
+                        representation=4,
+                    )
 
         # Refresh preview if active (skip during batch mode)
         if self._preview_active and not self._batch_mode:
@@ -489,7 +520,7 @@ class VertexColorAlpha(WeightSource):
             c = colors[i] if i < len(colors) else om2.MColor((1.0, 1.0, 1.0, 1.0))
             new_colors.append(om2.MColor((c.r, c.g, c.b, float(weights[i]))))
 
-        fn_mesh.setVertexColors(new_colors, vertex_list, colorSet=color_set)
+        fn_mesh.setVertexColors(new_colors, vertex_list)
 
     def _sync_artisan_controller(self, weights: WeightList) -> None:
         """Update the artisan paint controller cache if it exists."""
@@ -562,7 +593,7 @@ class VertexColorAlpha(WeightSource):
             for i in range(n):
                 v = float(alphas[i])
                 colors.append(om2.MColor((v, v, v, 1.0)))
-            fn_mesh.setVertexColors(colors, vertex_list, colorSet=_PREVIEW_SET)
+            fn_mesh.setVertexColors(colors, vertex_list)
         except Exception:
             # Fallback to cmds
             for i, a in enumerate(alphas):
