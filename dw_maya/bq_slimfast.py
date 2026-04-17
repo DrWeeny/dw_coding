@@ -862,6 +862,10 @@ class SlimfastWidget(QtWidgets.QWidget):
         self._signals = SlimfastSignals(self)
         self._ctrl = SlimfastController(self._signals)
 
+        # Tracks the last active source type key so we can persist smooth mode
+        # before switching to a new source type.
+        self._src_type_key: str = 'deformer'
+
         self._build_ui()
         self._connect_signals()
 
@@ -967,7 +971,7 @@ class SlimfastWidget(QtWidgets.QWidget):
             'all':       'All',
             'deformer':  'Deformer',
             'nucleus':   'nCloth',
-            'vtxAlpha':  'vtxAlpha',
+            'vtxColor':  'vtxAlpha',
         }
         self._mode_visibility_actions = {}
         for mode_key, btn in self._mode_btns.items():
@@ -1282,7 +1286,7 @@ class SlimfastWidget(QtWidgets.QWidget):
         self._mode_group = QtWidgets.QButtonGroup(self)
         self._mode_btns = {}  # mode_key -> QRadioButton, for Pref menu visibility
         for label, mode in [('All', 'all'), ('Deformer', 'deformer'),
-                             ('nCloth', 'nucleus'), ('vtxAlpha', 'vtxAlpha')]:
+                             ('nCloth', 'nucleus'), ('vtxAlpha', 'vtxColor')]:
             btn = QtWidgets.QRadioButton(label)
             btn.setProperty('mode', mode)
             if mode == 'all':
@@ -1425,6 +1429,16 @@ class SlimfastWidget(QtWidgets.QWidget):
         lay = QtWidgets.QVBoxLayout(grp)
         lay.setSpacing(4)
 
+        # Warning label shown only for VertexColorAlpha (slow path)
+        self._smooth_warn_label = QtWidgets.QLabel(
+            '⚠'
+        )
+        self._smooth_warn_label.setToolTip("vertex alpha smooth is slow (~8 s per call)")
+        self._smooth_warn_label.setStyleSheet('color: #e8a838; font-size: 11px;')
+        self._smooth_warn_label.setWordWrap(True)
+        self._smooth_warn_label.hide()
+        lay.addWidget(self._smooth_warn_label)
+
         quick_row = QtWidgets.QHBoxLayout()
         for n in (2, 5, 10, 20):
             btn = QtWidgets.QPushButton(str(n))
@@ -1463,6 +1477,15 @@ class SlimfastWidget(QtWidgets.QWidget):
         mode_row.addWidget(self._smooth_mode)
         mode_row.addStretch()
         lay.addLayout(mode_row)
+
+        # Indeterminate busy bar — shown while smooth is computing
+        self._smooth_busy_bar = QtWidgets.QProgressBar()
+        self._smooth_busy_bar.setRange(0, 0)   # indeterminate
+        self._smooth_busy_bar.setFixedHeight(6)
+        self._smooth_busy_bar.setTextVisible(False)
+        self._smooth_busy_bar.hide()
+        lay.addWidget(self._smooth_busy_bar)
+
         return grp
 
     def _build_select_group(self) -> QtWidgets.QGroupBox:
@@ -1582,6 +1605,9 @@ class SlimfastWidget(QtWidgets.QWidget):
         """Persist smooth iteration count and section/mode visibilities on close."""
         settings = QtCore.QSettings('DrWeeny', 'SlimfastWidget')
         settings.setValue('smooth_iterations', self.get_smooth_iterations())
+        # Persist smooth mode for the currently active source type
+        settings.setValue(f'smooth_mode_{self._src_type_key}',
+                          self._smooth_mode.currentIndex())
         settings.setValue('adv_section_visible', self._advanced_section.isVisible())
         settings.setValue('transfer_section_visible', self._transfer_section.isVisible())
         settings.setValue('remap_section_visible', self._remap_section.isVisible())
@@ -1769,6 +1795,24 @@ class SlimfastWidget(QtWidgets.QWidget):
             source.enable_preview()
         else:
             source.disable_preview()
+
+    # ------------------------------------------------------------------
+    # Source-type helpers
+    # ------------------------------------------------------------------
+
+    def _current_source_type_key(self) -> str:
+        """Return a stable key for the currently active source type.
+
+        Returns:
+            ``'vtxColor'``, ``'nucleus'`` or ``'deformer'``.
+        """
+        from dw_maya.dw_paint.vertex_color_alpha import VertexColorAlpha
+        src = self._ctrl.active_source
+        if isinstance(src, VertexColorAlpha):
+            return 'vtxColor'
+        if isinstance(src, NClothMap):
+            return 'nucleus'
+        return 'deformer'
 
     def _current_op(self) -> str:
         """Return the currently selected weight operation mode."""
@@ -2033,6 +2077,25 @@ class SlimfastWidget(QtWidgets.QWidget):
                 self._alpha_preview_btn.setChecked(False)
             self._alpha_preview_btn.hide()
 
+        # --- Smooth mode: save previous type pref, restore for new type ---
+        settings = QtCore.QSettings('DrWeeny', 'SlimfastWidget')
+        # Persist smooth mode for the type we are leaving
+        settings.setValue(f'smooth_mode_{self._src_type_key}',
+                          self._smooth_mode.currentIndex())
+
+        # Determine new type key and load its saved preference
+        new_key = self._current_source_type_key()
+        self._src_type_key = new_key
+        # Default: vtxColor → numpy (index 1); others → artisan (index 0)
+        default_mode = 1 if new_key == 'vtxColor' else 0
+        saved_mode = settings.value(f'smooth_mode_{new_key}', default_mode, type=int)
+        self._smooth_mode.blockSignals(True)
+        self._smooth_mode.setCurrentIndex(saved_mode)
+        self._smooth_mode.blockSignals(False)
+
+        # Warning visibility
+        self._smooth_warn_label.setVisible(new_key == 'vtxColor')
+
     @Slot(float)
     def _on_envelope_changed(self, value: float) -> None:
         source = self._ctrl.active_source
@@ -2045,13 +2108,18 @@ class SlimfastWidget(QtWidgets.QWidget):
                     logger.warning(f"Could not set envelope: {e}")
 
     def _on_smooth(self, iterations: int) -> None:
-        if self._smooth_mode.currentIndex() == 0:
-            try:
-                self._ctrl.smooth_artisan(iterations)
-            except RuntimeError as e:
-                QtWidgets.QMessageBox.warning(self, 'Smooth', str(e))
-        else:
-            self._ctrl.smooth(iterations)
+        self._smooth_busy_bar.show()
+        QtWidgets.QApplication.processEvents()
+        try:
+            if self._smooth_mode.currentIndex() == 0:
+                try:
+                    self._ctrl.smooth_artisan(iterations)
+                except RuntimeError as e:
+                    QtWidgets.QMessageBox.warning(self, 'Smooth', str(e))
+            else:
+                self._ctrl.smooth(iterations)
+        finally:
+            self._smooth_busy_bar.hide()
 
     def _on_smooth_flood(self) -> None:
         self._on_smooth(self._iter_spinbox.value())
