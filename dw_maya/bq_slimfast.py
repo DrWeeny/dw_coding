@@ -967,7 +967,7 @@ class SlimfastWidget(QtWidgets.QWidget):
             'all':       'All',
             'deformer':  'Deformer',
             'nucleus':   'nCloth',
-            'vtxColor':  'vtxColor',
+            'vtxAlpha':  'vtxAlpha',
         }
         self._mode_visibility_actions = {}
         for mode_key, btn in self._mode_btns.items():
@@ -1282,7 +1282,7 @@ class SlimfastWidget(QtWidgets.QWidget):
         self._mode_group = QtWidgets.QButtonGroup(self)
         self._mode_btns = {}  # mode_key -> QRadioButton, for Pref menu visibility
         for label, mode in [('All', 'all'), ('Deformer', 'deformer'),
-                             ('nCloth', 'nucleus'), ('vtxColor', 'vtxColor')]:
+                             ('nCloth', 'nucleus'), ('vtxAlpha', 'vtxAlpha')]:
             btn = QtWidgets.QRadioButton(label)
             btn.setProperty('mode', mode)
             if mode == 'all':
