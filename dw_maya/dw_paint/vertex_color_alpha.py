@@ -224,26 +224,44 @@ class AlphaPaintController:
         self._stamp_hits.clear()
 
     def _build_neighbour_cache(self) -> None:
-        """Build a per-vertex neighbour map using polyInfo edgeToVertex."""
-        n = len(self._alphas)
-        mesh = self.mesh
-        cache = {}
-        for i in range(n):
-            edges = cmds.polyListComponentConversion(
-                f'{mesh}.vtx[{i}]', toEdge=True
-            ) or []
-            edges = cmds.ls(edges, fl=True) or []
-            neighbours = set()
-            for e in edges:
-                verts = cmds.polyListComponentConversion(e, toVertex=True) or []
-                verts = cmds.ls(verts, fl=True) or []
-                for v in verts:
-                    # Extract vertex id from 'mesh.vtx[id]'
-                    vid = int(v.split('[')[-1].rstrip(']'))
-                    if vid != i:
-                        neighbours.add(vid)
-            cache[i] = list(neighbours)
-        self._neighbour_cache = cache
+        """Build a per-vertex neighbour map using OpenMaya API."""
+        import maya.api.OpenMaya as om2
+
+        try:
+            sel = om2.MSelectionList()
+            sel.add(self.mesh)
+            dag = sel.getDagPath(0)
+
+            it_vtx = om2.MItMeshVertex(dag)
+            cache = {}
+
+            while not it_vtx.isDone():
+                # Bug Fix: getConnectedVertices handles isolated vertices safely
+                connected = it_vtx.getConnectedVertices()
+                cache[it_vtx.index()] = list(connected)
+                it_vtx.next()
+
+            self._neighbour_cache = cache
+        except Exception as e:
+            logger.warning(f"API neighbour cache failed: {e}. Falling back to cmds.")
+            n = len(self._alphas)
+            mesh = self.mesh
+            cache = {}
+            for i in range(n):
+                edges = cmds.polyListComponentConversion(
+                    f'{mesh}.vtx[{i}]', toEdge=True
+                ) or []
+                edges = cmds.ls(edges, fl=True) or []
+                neighbours = set()
+                for e in edges:
+                    verts = cmds.polyListComponentConversion(e, toVertex=True) or []
+                    verts = cmds.ls(verts, fl=True) or []
+                    for v in verts:
+                        vid = int(v.split('[')[-1].rstrip(']'))
+                        if vid != i:
+                            neighbours.add(vid)
+                cache[i] = list(neighbours)
+            self._neighbour_cache = cache
 
     def _flush_dirty(self) -> None:
         """Write only the changed vertices to Maya (incremental update).
@@ -263,28 +281,68 @@ class AlphaPaintController:
         mesh = self.mesh
         color_set = self.color_set
         preview_active = self.source._preview_active
+        
+        # Bug Fix: capture a snapshot of dirty verts to ensure safety during rapid dragging
+        dirty_list = list(self._dirty_verts)
 
-        # Write alpha to the original colorSet
-        cmds.polyColorSet(mesh, currentColorSet=True, colorSet=color_set)
-        for i in self._dirty_verts:
-            cmds.polyColorPerVertex(
-                f'{mesh}.vtx[{i}]',
-                a=float(self._alphas[i]),
-                colorDisplayOption=True, representation=4,
-            )
+        try:
+            import maya.api.OpenMaya as om2
+            sel = om2.MSelectionList()
+            sel.add(mesh)
+            dag = sel.getDagPath(0)
+            fn_mesh = om2.MFnMesh(dag)
 
-        # Update B&W preview
-        if preview_active:
-            existing = cmds.polyColorSet(mesh, q=True, allColorSets=True) or []
-            if _PREVIEW_SET in existing:
-                cmds.polyColorSet(mesh, currentColorSet=True, colorSet=_PREVIEW_SET)
-                for i in self._dirty_verts:
-                    v = float(self._alphas[i])
-                    cmds.polyColorPerVertex(
-                        f'{mesh}.vtx[{i}]',
-                        r=v, g=v, b=v, a=1.0,
-                        colorDisplayOption=True, representation=4,
-                    )
+            # Write alpha to the original colorSet using API
+            colors = fn_mesh.getVertexColors(color_set)
+            new_colors = om2.MColorArray()
+
+            for i in dirty_list:
+                c = colors[i] if i < len(colors) else om2.MColor((1.0, 1.0, 1.0, 1.0))
+                new_colors.append(om2.MColor((c.r, c.g, c.b, float(self._alphas[i]))))
+
+            cmds.polyColorSet(mesh, currentColorSet=True, colorSet=color_set)
+            fn_mesh.setVertexColors(new_colors, dirty_list)
+            
+            # Update B&W preview using API
+            if preview_active:
+                existing = cmds.polyColorSet(mesh, q=True, allColorSets=True) or []
+                if _PREVIEW_SET in existing:
+                    cmds.polyColorSet(mesh, currentColorSet=True, colorSet=_PREVIEW_SET)
+                    preview_colors = om2.MColorArray()
+                    for i in dirty_list:
+                        v = float(self._alphas[i])
+                        preview_colors.append(om2.MColor((v, v, v, 1.0)))
+                    fn_mesh.setVertexColors(preview_colors, dirty_list)
+                    
+            # Always restore the target color set
+            cmds.polyColorSet(mesh, currentColorSet=True, colorSet=color_set)
+
+        except Exception as e:
+            logger.warning(f"API flush failed, falling back to cmds. Error: {e}")
+
+            # Write alpha to the original colorSet
+            cmds.polyColorSet(mesh, currentColorSet=True, colorSet=color_set)
+            for i in dirty_list:
+                cmds.polyColorPerVertex(
+                    f'{mesh}.vtx[{i}]',
+                    a=float(self._alphas[i]),
+                    colorDisplayOption=True, representation=4,
+                )
+
+            # Update B&W preview
+            if preview_active:
+                existing = cmds.polyColorSet(mesh, q=True, allColorSets=True) or []
+                if _PREVIEW_SET in existing:
+                    cmds.polyColorSet(mesh, currentColorSet=True, colorSet=_PREVIEW_SET)
+                    for i in dirty_list:
+                        v = float(self._alphas[i])
+                        cmds.polyColorPerVertex(
+                            f'{mesh}.vtx[{i}]',
+                            r=v, g=v, b=v, a=1.0,
+                            colorDisplayOption=True, representation=4,
+                        )
+                # restore the target color set
+                cmds.polyColorSet(mesh, currentColorSet=True, colorSet=color_set)
 
         self._dirty_verts.clear()
 
@@ -404,6 +462,20 @@ class VertexColorAlpha(WeightSource):
         """
         n = self.vtx_count
         alphas = [1.0] * n
+
+        # Fast API read
+        try:
+            import maya.api.OpenMaya as om2
+            sel = om2.MSelectionList()
+            sel.add(self._mesh_name)
+            dag = sel.getDagPath(0)
+            fn_mesh = om2.MFnMesh(dag)
+
+            colors = fn_mesh.getVertexColors(self._color_set)
+            if len(colors) == n:
+                return [c.a for c in colors]
+        except Exception as e:
+            logger.warning(f"API get_weights failed: {e}. Falling back to cmds.")
 
         # Ensure we read from the real colorSet, not the B&W preview
         cmds.polyColorSet(self._mesh_name, currentColorSet=True,
