@@ -216,9 +216,11 @@ class VtxStorageButton(QtWidgets.QPushButton):
 
         painter = QtGui.QPainter(self)
         painter.setRenderHint(QtGui.QPainter.Antialiasing)
-        highlight = QtGui.QColor(255, 255, 255, 35)
-        painter.setBrush(highlight)
-        painter.setPen(QtCore.Qt.NoPen)
+        # Outline pen — white works on both green and ochre backgrounds
+        pen = QtGui.QPen(QtGui.QColor(255, 255, 255, 180))
+        pen.setWidth(2)
+        painter.setPen(pen)
+        painter.setBrush(QtCore.Qt.NoBrush)
 
         w = self.width()
         h = self.height()
@@ -240,7 +242,9 @@ class VtxStorageButton(QtWidgets.QPushButton):
             ])
             painter.drawPolygon(poly)
         elif self._hovered_zone == self.ZONE_BOTH:
-            painter.drawRect(0, 0, w, h)
+            # Slight fill + border for the "restore both" case
+            painter.setBrush(QtGui.QColor(255, 255, 255, 25))
+            painter.drawRect(1, 1, w - 2, h - 2)
 
         painter.end()
 

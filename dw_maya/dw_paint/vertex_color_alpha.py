@@ -315,8 +315,10 @@ class AlphaPaintController:
                     fn_mesh.setVertexColors(preview_colors, dirty_list)
                     
             # Always restore the target color set
-            cmds.polyColorSet(mesh, currentColorSet=True, colorSet=color_set)
-
+            if preview_active and _PREVIEW_SET in (cmds.polyColorSet(mesh, q=True, allColorSets=True) or []):
+                cmds.polyColorSet(mesh, currentColorSet=True, colorSet=_PREVIEW_SET)
+            else:
+                cmds.polyColorSet(mesh, currentColorSet=True, colorSet=color_set)
         except Exception as e:
             logger.warning(f"API flush failed, falling back to cmds. Error: {e}")
 
@@ -342,8 +344,10 @@ class AlphaPaintController:
                             colorDisplayOption=True, representation=4,
                         )
                 # restore the target color set
-                cmds.polyColorSet(mesh, currentColorSet=True, colorSet=color_set)
-
+                if preview_active and _PREVIEW_SET in existing:
+                    cmds.polyColorSet(mesh, currentColorSet=True, colorSet=_PREVIEW_SET)
+                else:
+                    cmds.polyColorSet(mesh, currentColorSet=True, colorSet=color_set)
         self._dirty_verts.clear()
 
 
