@@ -365,14 +365,33 @@ class SlimfastController:
         apply_operation(self._active, 'flood', value=value, op=op)
         logger.debug(f"set_weight — applied {op} on all vertices")
 
+    def _get_vtx_mask(self) -> Optional[List[int]]:
+        """Retourne les indices de la sélection vertex courante, ou None si tout.
+
+        Retourne None si seul l'objet est sélectionné (pas de composants).
+        """
+        sel_all = cmds.ls(sl=True, fl=True) or []
+        # Uniquement les sélections composant (contiennent un '.')
+        sel = [s for s in sel_all if '.' in s]
+        if not sel:
+            return None
+        vtx = cmds.polyListComponentConversion(sel, toVertex=True)
+        vtx = cmds.ls(vtx, fl=True) or []
+        if vtx:
+            from dw_maya.dw_maya_utils import extract_id
+
+            return extract_id(vtx)
+        return None
+
     @timeIt(track_stats=True)
     @singleUndoChunk
     def smooth(self, iterations: int = 1) -> None:
-        """Topology-based smooth via numpy path."""
+        """Topology-based smooth via numpy path, selection-aware."""
         if not self._require_active():
             return
+        mask = self._get_vtx_mask()
         try:
-            apply_operation(self._active, 'smooth', iterations=iterations, factor=0.5)
+            apply_operation(self._active, 'smooth', iterations=iterations, factor=0.5, mask=mask)
         except Exception as e:
             logger.error(f"Smooth failed: {e}")
 
@@ -385,6 +404,19 @@ class SlimfastController:
         NClothMap, VertexColorAlpha, or standard deformer.
         """
         from dw_maya.dw_paint.vertex_color_alpha import VertexColorAlpha
+
+        mask = self._get_vtx_mask()
+
+        # Si une selection est active : toujours passer par numpy (artisan
+        # flood ignore la sélection composant)
+        if mask is not None:
+            try:
+                apply_operation(self._active, 'smooth', iterations=iterations,
+                                factor=0.5, mask=mask)
+                logger.info(f"Numpy masked smooth x{iterations} sur {len(mask)} vertices.")
+            except Exception as e:
+                logger.error(f"Masked smooth failed: {e}")
+            return
 
         if isinstance(self._active, NClothMap):
             try:

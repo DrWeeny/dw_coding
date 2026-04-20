@@ -229,6 +229,10 @@ def apply_operation(source: WeightSource,
     new_weights: Optional[WeightList] = None
 
     if operation == 'flood':
+        # modify_weights attend [[i]] ou [[start, end]] — normaliser depuis List[int]
+        raw_mask = kwargs.get('mask')
+        if raw_mask is not None:
+            kwargs = {**kwargs, 'mask': [[i] if isinstance(i, int) else i for i in raw_mask]}
         new_weights = _op_flood(weights, **kwargs)
 
     elif operation == 'mirror':
@@ -246,6 +250,24 @@ def apply_operation(source: WeightSource,
             kwargs.get('iterations', 1),
             kwargs.get('factor', 0.5),
         )
+        mask = kwargs.get('mask')
+        if mask is not None and new_weights is not None:
+            # Topologie complète pour le calcul, mais on n'écrit
+            # que les vertices sélectionnés.
+            # Accepte List[int] ou List[List[int]] (format [[i]] ou [[s,e]])
+            result = list(weights)
+            for item in mask:
+                if isinstance(item, list):
+                    # format [[i]] ou [[start, end]]
+                    if len(item) == 1:
+                        idx = item[0]
+                        result[idx] = new_weights[idx]
+                    elif len(item) == 2:
+                        for idx in range(item[0], item[1]):
+                            result[idx] = new_weights[idx]
+                else:
+                    result[item] = new_weights[item]
+            new_weights = result
 
     elif operation == 'vector':
         if 'direction' not in kwargs:

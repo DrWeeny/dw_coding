@@ -29,8 +29,9 @@ Author: DrWeeny
 """
 
 from __future__ import annotations
+import re
 
-from typing import List
+from typing import List, Optional, Set
 
 from maya import cmds
 from dw_maya.dw_paint.protocol import WeightSource, WeightList
@@ -123,6 +124,8 @@ class AlphaPaintController:
         self._neighbour_cache = {}
         # When True, _flush_dirty skips preview updates (batched smooth)
         self._batch_mode = False
+        # Vertex selection mask — None means all vertices are paintable
+        self._vtx_mask: Optional[Set[int]] = None
 
     def on_cmd(self) -> None:
         """Context activated — refresh alpha cache."""
@@ -135,6 +138,31 @@ class AlphaPaintController:
         """Click — before first stamp projection."""
         self._stamp_hits = {}
         self._stroke_completed = False
+        self._vtx_mask = self._read_selection_mask()
+
+    def _read_selection_mask(self) -> Optional[Set[int]]:
+        """Read current vertex selection on this mesh.
+
+        Returns a set of vertex indices if a component selection exists,
+        or None if nothing is selected (all vertices are paintable).
+        """
+        sel_all = cmds.ls(sl=True, fl=True) or []
+        vtx_components = [s for s in sel_all if '.' in s]
+        if not vtx_components:
+            return None
+        vtx = cmds.polyListComponentConversion(vtx_components, toVertex=True)
+        vtx = cmds.ls(vtx, fl=True) or []
+        if not vtx:
+            return None
+        # Filter to vertices belonging to this mesh (namespace-safe)
+        mesh_base = self.mesh.split('|')[-1]
+        indices: Set[int] = set()
+        for v in vtx:
+            if mesh_base in v:
+                m = re.search(r'\[(\d+)\]', v)
+                if m:
+                    indices.add(int(m.group(1)))
+        return indices if indices else None
 
     def init_cmd(self, shape: str) -> str:
         """First stamp hits a shape — must return '-path 1' for artisan."""
@@ -182,6 +210,8 @@ class AlphaPaintController:
             pass
 
         for v_id, opacity in self._stamp_hits.items():
+            if self._vtx_mask is not None and v_id not in self._vtx_mask:
+                continue  # vertex not in selection mask — skip
             if 0 <= v_id < len(self._alphas):
                 old = self._alphas[v_id]
                 if abs(artisan_value) < 1e-6:
@@ -210,6 +240,8 @@ class AlphaPaintController:
         snapshot = list(self._alphas)
 
         for v_id in hit_verts:
+            if self._vtx_mask is not None and v_id not in self._vtx_mask:
+                continue  # vertex not in selection mask — skip
             if 0 <= v_id < len(self._alphas):
                 neighbours = self._neighbour_cache.get(v_id, [])
                 if neighbours:
