@@ -58,6 +58,8 @@ if not MODE > 0:
 if MODE == 0:
     from PySide6 import QtWidgets, QtGui, QtCore
 
+from typing import Optional
+
 def get_houdini_window():
     """
     Get Houdini window.
@@ -216,3 +218,277 @@ class PlotView(QtWidgets.QWidget):
         self.view = QtWidgets.QGraphicsView(self.scene, self)
         layout.addWidget(self.view)
 
+class RangeSlider(QtWidgets.QSlider):
+    """Custom double-handled range slider."""
+
+    rangeChanged = QtCore.Signal(float, float)
+
+    def __init__(self, orientation=QtCore.Qt.Horizontal, parent=None):
+        super().__init__(orientation, parent)
+        self.first_position = 0
+        self.second_position = 99
+        self.setMinimum(0)
+        self.setMaximum(99)
+
+        self.offset = 10
+        self.movement = 0
+        self.isSliderDown = False
+
+    def mousePressEvent(self, event):
+        if event.button() == QtCore.Qt.LeftButton:
+            pos_x = event.pos().x()
+            val = self.minimum() + ((self.maximum() - self.minimum()) * pos_x) / self.width()
+
+            if abs(self.first_position - val) < abs(self.second_position - val):
+                self.first_position = val
+                self.movement = 1
+            else:
+                self.second_position = val
+                self.movement = 2
+
+            self.isSliderDown = True
+            self.update()
+            self._emit_range()
+
+    def mouseMoveEvent(self, event):
+        if self.isSliderDown:
+            pos_x = event.pos().x()
+            val = self.minimum() + ((self.maximum() - self.minimum()) * pos_x) / self.width()
+
+            if self.movement == 1:
+                self.first_position = max(0, min(val, self.second_position - 1))
+            else:
+                self.second_position = min(99, max(val, self.first_position + 1))
+
+            self.update()
+            self._emit_range()
+
+    def mouseReleaseEvent(self, event):
+        self.isSliderDown = False
+        self.movement = 0
+
+    def _emit_range(self):
+        """Emit the current range as normalized values."""
+        min_val = self.first_position / 99.0
+        max_val = self.second_position / 99.0
+        self.rangeChanged.emit(min_val, max_val)
+
+    def paintEvent(self, event):
+        painter = QtGui.QPainter(self)
+        painter.setRenderHint(QtGui.QPainter.Antialiasing)
+
+        # Track
+        track_rect = QtCore.QRect(
+            self.offset, self.height() // 2 - 2,
+                         self.width() - 2 * self.offset, 4
+        )
+        painter.fillRect(track_rect, QtGui.QColor(80, 80, 80))
+
+        # Selected range
+        x1 = int(self.offset + (self.first_position / 99.0) * (self.width() - 2 * self.offset))
+        x2 = int(self.offset + (self.second_position / 99.0) * (self.width() - 2 * self.offset))
+
+        range_rect = QtCore.QRect(x1, self.height() // 2 - 2, x2 - x1, 4)
+        painter.fillRect(range_rect, QtGui.QColor(100, 180, 100))
+
+        # Handles
+        for pos in [self.first_position, self.second_position]:
+            x = int(self.offset + (pos / 99.0) * (self.width() - 2 * self.offset))
+            handle_rect = QtCore.QRect(x - 5, self.height() // 2 - 8, 10, 16)
+            painter.setBrush(QtGui.QColor(200, 200, 200))
+            painter.setPen(QtGui.QColor(100, 100, 100))
+            painter.drawRoundedRect(handle_rect, 3, 3)
+
+    def setRange(self, min_val: float, max_val: float):
+        """Set range from normalized values (0-1)."""
+        self.first_position = int(min_val * 99)
+        self.second_position = int(max_val * 99)
+        self.update()
+
+class RangeSliderWithSpinbox(QtWidgets.QWidget):
+    """Double-handle range slider flanked by two spinboxes.
+
+    Layout::
+
+        [spin_min] [══[▌]═══════[▐]══] [spin_max]
+
+    Intentionally button-free so it composes freely in any parent layout.
+    Typing a value outside the current limits **auto-extends** those limits.
+
+    Signals:
+        range_changed(float, float): Emitted on every handle / spinbox move.
+
+    Args:
+        limit_min: Lower bound (default ``0.0``).
+        limit_max: Upper bound (default ``1.0``).
+        decimals:  Decimal precision (default ``2``).
+        parent:    Optional parent widget.
+
+    Example::
+
+        w = RangeSliderWithSpinbox(limit_min=0.0, limit_max=2.5)
+        w.range_changed.connect(lambda lo, hi: print(lo, hi))
+        w.set_limits(min_w, max_w)   # recalibrate from actual weights
+    """
+
+    range_changed = QtCore.Signal(float, float)
+
+    def __init__(self,
+                 limit_min: float = 0.0,
+                 limit_max: float = 1.0,
+                 decimals: int = 2,
+                 parent: Optional[QtWidgets.QWidget] = None):
+        super().__init__(parent)
+
+        self._limit_min = limit_min
+        self._limit_max = limit_max
+        self._decimals = decimals
+        self._syncing = False
+
+        layout = QtWidgets.QHBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(3)
+
+        self._spin_min = QtWidgets.QDoubleSpinBox()
+        self._spin_min.setDecimals(decimals)
+        self._spin_min.setSingleStep(10 ** -decimals)
+        self._spin_min.setFixedWidth(60)
+        self._spin_min.setRange(-9999.0, 9999.0)   # wide open — limits are logical only
+        self._spin_min.setToolTip('Lower bound — type to extend the range')
+        layout.addWidget(self._spin_min)
+
+        self._slider = RangeSlider(QtCore.Qt.Horizontal)
+        self._slider.setMinimumHeight(22)
+        layout.addWidget(self._slider, stretch=1)
+
+        self._spin_max = QtWidgets.QDoubleSpinBox()
+        self._spin_max.setDecimals(decimals)
+        self._spin_max.setSingleStep(10 ** -decimals)
+        self._spin_max.setFixedWidth(60)
+        self._spin_max.setRange(-9999.0, 9999.0)   # wide open — limits are logical only
+        self._spin_max.setToolTip('Upper bound — type to extend the range')
+        layout.addWidget(self._spin_max)
+
+        # Pre-seed spinbox values so set_limits clamps to the full range.
+        # Block signals to avoid triggering _on_spin_*_changed before the
+        # slider connections are wired — QDoubleSpinBox defaults to 0 which
+        # would otherwise collapse both handles to the left.
+        for sp, val in ((self._spin_min, limit_min), (self._spin_max, limit_max)):
+            sp.blockSignals(True)
+            sp.setValue(val)
+            sp.blockSignals(False)
+        self.set_limits(limit_min, limit_max)
+
+        self._slider.rangeChanged.connect(self._on_slider_changed)
+        self._spin_min.valueChanged.connect(self._on_spin_min_changed)
+        self._spin_max.valueChanged.connect(self._on_spin_max_changed)
+
+    # ------------------------------------------------------------------
+    # Public API
+    # ------------------------------------------------------------------
+
+    def set_limits(self, limit_min: float, limit_max: float) -> None:
+        """Recalibrate the logical slider bounds (does NOT restrict spinbox input).
+
+        The spinboxes always accept any value in [-9999, 9999]; typing outside
+        the current limits simply auto-extends them via the slot logic.
+        """
+        if limit_max <= limit_min:
+            return
+        self._limit_min = limit_min
+        self._limit_max = limit_max
+        self._push_to_slider()
+
+    def set_range(self, lo: float, hi: float) -> None:
+        """Set both handles programmatically, auto-extending limits if needed."""
+        new_lim_min = min(lo, self._limit_min)
+        new_lim_max = max(hi, self._limit_max)
+        if new_lim_min < self._limit_min or new_lim_max > self._limit_max:
+            self.set_limits(new_lim_min, new_lim_max)
+        self._syncing = True
+        self._spin_min.setValue(lo)
+        self._spin_max.setValue(hi)
+        self._syncing = False
+        self._push_to_slider()
+        self.range_changed.emit(self._spin_min.value(), self._spin_max.value())
+
+    def snap_to_min(self) -> None:
+        """Snap both handles to the current lower limit."""
+        self.set_range(self._limit_min, self._limit_min)
+
+    def snap_to_max(self) -> None:
+        """Snap both handles to the current upper limit."""
+        self.set_range(self._limit_max, self._limit_max)
+
+    @property
+    def low(self) -> float:
+        return self._spin_min.value()
+
+    @property
+    def high(self) -> float:
+        return self._spin_max.value()
+
+    @property
+    def limit_min(self) -> float:
+        return self._limit_min
+
+    @property
+    def limit_max(self) -> float:
+        return self._limit_max
+
+    # ------------------------------------------------------------------
+    # Internal helpers
+    # ------------------------------------------------------------------
+
+    def _to_norm(self, val: float) -> float:
+        span = self._limit_max - self._limit_min
+        return 0.0 if span == 0 else (val - self._limit_min) / span
+
+    def _to_real(self, norm: float) -> float:
+        return self._limit_min + norm * (self._limit_max - self._limit_min)
+
+    def _push_to_slider(self) -> None:
+        self._slider.first_position = int(self._to_norm(self._spin_min.value()) * 99)
+        self._slider.second_position = int(self._to_norm(self._spin_max.value()) * 99)
+        self._slider.update()
+
+    # ------------------------------------------------------------------
+    # Slots
+    # ------------------------------------------------------------------
+
+    def _on_slider_changed(self, lo_norm: float, hi_norm: float) -> None:
+        if self._syncing:
+            return
+        self._syncing = True
+        self._spin_min.setValue(self._to_real(lo_norm))
+        self._spin_max.setValue(self._to_real(hi_norm))
+        self._syncing = False
+        self.range_changed.emit(self._spin_min.value(), self._spin_max.value())
+
+    def _on_spin_min_changed(self, val: float) -> None:
+        if self._syncing:
+            return
+        # Auto-extend lower logical limit
+        if val < self._limit_min:
+            self._limit_min = val
+        # Prevent min > max
+        if val > self._spin_max.value():
+            self._syncing = True
+            self._spin_min.setValue(self._spin_max.value())
+            self._syncing = False
+        self._push_to_slider()
+        self.range_changed.emit(self._spin_min.value(), self._spin_max.value())
+
+    def _on_spin_max_changed(self, val: float) -> None:
+        if self._syncing:
+            return
+        # Auto-extend upper logical limit
+        if val > self._limit_max:
+            self._limit_max = val
+        # Prevent max < min
+        if val < self._spin_min.value():
+            self._syncing = True
+            self._spin_max.setValue(self._spin_min.value())
+            self._syncing = False
+        self._push_to_slider()
+        self.range_changed.emit(self._spin_min.value(), self._spin_max.value())
