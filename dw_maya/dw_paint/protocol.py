@@ -218,6 +218,9 @@ class WeightSource(ABC):
             ``'cluster1.weightList[0].weights[0:381]'``
         """
 
+    def get_artisan_name(self) -> str:
+        return "artAttrContext"
+
     @abstractmethod
     def paint(self) -> None:
         """Open Maya's artisan paint tool for the currently active map."""

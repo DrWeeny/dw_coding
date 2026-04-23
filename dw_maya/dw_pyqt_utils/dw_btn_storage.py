@@ -216,6 +216,7 @@ class VtxStorageButton(QtWidgets.QPushButton):
 
         painter = QtGui.QPainter(self)
         painter.setRenderHint(QtGui.QPainter.Antialiasing)
+
         # Outline pen — white works on both green and ochre backgrounds
         pen = QtGui.QPen(QtGui.QColor(255, 255, 255, 180))
         pen.setWidth(2)
@@ -234,7 +235,7 @@ class VtxStorageButton(QtWidgets.QPushButton):
             ])
             painter.drawPolygon(poly)
         elif self._hovered_zone == self.ZONE_SELECTION:
-            # Bottom-right triangle (tan zone)
+            # Bottom-right triangle (ochre zone)
             poly = QtGui.QPolygonF([
                 QtCore.QPointF(w, 0),
                 QtCore.QPointF(w, h),
@@ -297,6 +298,16 @@ class VtxStorageButton(QtWidgets.QPushButton):
             mult_action = menu.addAction("Mult Op Weight")
             div_action = menu.addAction("Divide Op Weight")
 
+        # Apply on current selection (use selection as mask)
+        apply_on_sel_action = None
+        if self.storage['weights']:
+            menu.addSeparator()
+            apply_on_sel_action = menu.addAction("Apply weights on current selection")
+            apply_on_sel_action.setToolTip(
+                "Apply stored weights only on the currently selected vertices.\n"
+                "Unselected vertices keep their existing weights."
+            )
+
         clear_action.setEnabled(bool(self.storage['weights'] or self.storage['selection']))
 
         menu.addSeparator()
@@ -321,6 +332,8 @@ class VtxStorageButton(QtWidgets.QPushButton):
             self.combine_data(mode="multiply")
         elif action == div_action:
             self.combine_data(mode="divide")
+        elif action == apply_on_sel_action and apply_on_sel_action is not None:
+            self.apply_weights_on_selection()
         elif action == remove_action:
             self.remove_requested.emit()
 
@@ -438,16 +451,16 @@ class VtxStorageButton(QtWidgets.QPushButton):
                          f"current={len(new_weights) if new_weights else 0}")
             if mode == "add":
                 self.storage["weights"] = (
-                    np.array(self.storage["weights"]) + np.array(new_weights)).tolist()
+                        np.array(self.storage["weights"]) + np.array(new_weights)).tolist()
             elif mode == "sub":
                 self.storage["weights"] = (
-                    np.array(self.storage["weights"]) - np.array(new_weights)).tolist()
+                        np.array(self.storage["weights"]) - np.array(new_weights)).tolist()
             elif mode == "intersect":
                 self.storage["weights"] = np.minimum(
                     np.array(self.storage["weights"]), np.array(new_weights)).tolist()
             elif mode == "multiply":
                 self.storage["weights"] = (
-                    np.array(self.storage["weights"]) * np.array(new_weights)).tolist()
+                        np.array(self.storage["weights"]) * np.array(new_weights)).tolist()
             elif mode == "divide":
                 stored = np.array(self.storage["weights"])
                 current = np.array(new_weights)
@@ -506,6 +519,81 @@ class VtxStorageButton(QtWidgets.QPushButton):
                 logger.debug("restore_data: nothing to restore (empty storage)")
         except Exception as e:
             logger.error(f"Failed to restore data: {e}", exc_info=True)
+
+    @singleUndoChunk
+    def apply_weights_on_selection(self):
+        """Apply stored weights only on the currently selected vertices.
+
+        The current Maya vertex selection is used as a mask: only those indices
+        receive the stored values.  Every other vertex keeps its current weight.
+        This is useful to stamp stored weights onto a different mesh region
+        without touching the rest.
+        """
+        if not self.storage['weights']:
+            logger.warning("apply_weights_on_selection: no weights stored")
+            return
+
+        weight_node = self.current_weight_node or self.storage.get('weight_node')
+        if not weight_node:
+            logger.warning("apply_weights_on_selection: no weight node resolved")
+            return
+
+        # -- Collect currently selected vertex indices ----------------------
+        sel = cmds.ls(sl=True, flatten=True) or []
+        vtx_sel = sel
+        if component_in_list(sel) != "vtx":
+            vtx_sel = cmds.polyListComponentConversion(sel, tv=True) or []
+            vtx_sel = cmds.ls(vtx_sel, flatten=True) or []
+
+        if not vtx_sel:
+            logger.warning("apply_weights_on_selection: no vertices selected")
+            return
+
+        selected_ids = extract_id(vtx_sel)
+        logger.debug(f"apply_weights_on_selection: {len(selected_ids)} selected vtx, "
+                     f"node={weight_node}")
+
+        # -- Read current full-mesh weights --------------------------------
+        node, attr = weight_node.rsplit('.', 1)
+        source = self.weight_source
+        if source is None:
+            source = _resolve_source_for_node(node, attr)
+
+        if source is not None:
+            current_weights = list(source.get_weights())
+        else:
+            current_weights = list(cmds.getAttr(weight_node) or [])
+
+        stored = self.storage['weights']
+        if len(stored) != len(current_weights):
+            logger.warning(
+                f"apply_weights_on_selection: stored weight count ({len(stored)}) "
+                f"!= current count ({len(current_weights)}) — aborting"
+            )
+            return
+
+        # -- Patch only selected indices -----------------------------------
+        patched = current_weights[:]
+        for idx in selected_ids:
+            if 0 <= idx < len(patched):
+                patched[idx] = stored[idx]
+
+        # -- Write back ----------------------------------------------------
+        if source is not None:
+            available = source.available_maps()
+            if attr in available:
+                source.use_map(attr)
+            source.set_weights(patched)
+        else:
+            _type = self.storage.get('weight_type', '')
+            if _type in ("nCloth", "nRigid"):
+                from dw_maya.dw_nucleus_utils.dw_core import set_nucx_map_data
+                set_nucx_map_data(node, attr, patched)
+            else:
+                from dw_maya.dw_nucleus_utils.dw_core import set_deformer_weights
+                set_deformer_weights(node, patched, attr or "deformer")
+
+        logger.info(f"apply_weights_on_selection: patched {len(selected_ids)} vertices on {weight_node}")
 
     def _set_selection(self):
         rsel = []
@@ -573,7 +661,7 @@ class VtxStorageButton(QtWidgets.QPushButton):
             from dw_maya.dw_nucleus_utils.dw_core import set_nucx_map_data
             set_nucx_map_data(node, attr, stored_weights)
         else:
-            from dw_maya.dw_deformers.dw_core import set_deformer_weights
+            from dw_maya.dw_nucleus_utils.dw_core import set_deformer_weights
             if attr:
                 _type = attr
             else:
@@ -583,6 +671,41 @@ class VtxStorageButton(QtWidgets.QPushButton):
     # ------------------------------------------------------------------
     # Clear / properties
     # ------------------------------------------------------------------
+
+    # ------------------------------------------------------------------
+    # Serialization helpers (for session persistence via DataHub)
+    # ------------------------------------------------------------------
+
+    def to_dict(self) -> dict:
+        """Return a JSON-serializable snapshot of this button's state."""
+        return {
+            'storage': {
+                'weights': list(self.storage.get('weights') or []),
+                'selection': {k: list(v) for k, v in (self.storage.get('selection') or {}).items()},
+                'weight_node': self.storage.get('weight_node') or '',
+                'weight_type': self.storage.get('weight_type') or '',
+                'component_type': self.storage.get('component_type'),
+            },
+            'current_weight_node': self._current_weight_node,
+            'label': self.text(),
+        }
+
+    def from_dict(self, data: dict):
+        """Restore button state from a dict produced by :meth:`to_dict`."""
+        stored = data.get('storage', {})
+        self.storage = {
+            'weights': stored.get('weights', []),
+            'selection': stored.get('selection', {}),
+            'weight_node': stored.get('weight_node', ''),
+            'weight_type': stored.get('weight_type', ''),
+            'component_type': stored.get('component_type'),
+        }
+        self._current_weight_node = data.get('current_weight_node')
+        label = data.get('label', '')
+        if label:
+            self.setText(label)
+        has_data = bool(self.storage['weights'] or self.storage['selection'])
+        self._update_button_state(has_data)
 
     def clear_storage(self):
         """Clear stored data."""
@@ -629,9 +752,9 @@ class VtxStorageButton(QtWidgets.QPushButton):
     )
 
     # Named colour tokens
-    _C_EMPTY    = ("rgb(128, 128, 128)", "rgb(140, 140, 140)")
-    _C_WEIGHTS  = ("rgb(70, 110, 85)",   "rgb(80, 120, 95)")
-    _C_SEL      = ("rgb(194, 177, 109)", "rgb(204, 187, 119)")
+    _C_EMPTY = ("rgb(128, 128, 128)", "rgb(140, 140, 140)")
+    _C_WEIGHTS = ("rgb(70, 110, 85)", "rgb(80, 120, 95)")
+    _C_SEL = ("rgb(194, 177, 109)", "rgb(204, 187, 119)")
 
     def _make_stylesheet(self, has_w: bool, has_s: bool) -> str:
         """Return the appropriate stylesheet string for the current state.

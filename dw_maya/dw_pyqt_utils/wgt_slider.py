@@ -1,222 +1,13 @@
-"""Custom Qt widgets and utilities for DCC integration.
-
-This module pop an error window with a gif
-This module provides reusable Qt widgets and utilities that work across multiple
-Digital Content Creation (DCC) applications including Maya, Houdini and standalone.
-
-Features:
-   - DCC window handling for Maya/Houdini
-   - Custom error dialog with image support
-   - Animated hover effects for widgets
-   - Thumbnail widgets with hover animations
-   - Interactive plotting widgets with draggable points/lines
-   - Tree widget utilities
-
-Classes:
-   ErrorWin: Custom error dialog
-   RectangleHoverEffect: Widget hover animation
-   ThumbWidget: Thumbnail with hover effect
-   PlotPoint: Interactive plot point
-   PlotLine: Interactive Bezier curve
-   PlotView: Custom plotting widget
-
-DCC Support:
-   MODE values:
-       0: Standalone Qt
-       1: Maya + PySide6
-       2: Houdini + PySide6
-
-Example:
-   >>> # Create error dialog in Maya
-   >>> error = ErrorWin(parent=get_maya_window())
-   >>> error.show()
-
-   >>> # Add hover effect to widget
-   >>> effect = RectangleHoverEffect(widget, parent)
-
-Author: DrWeeny
-Version: 1.0.0
 """
-MODE = 0
+Slider with a Spinbox synched
+"""
 
 try:
-    import hou
-    from PySide6 import QtWidgets, QtGui, QtCore
-    MODE = 2
-except:
-    pass
+    from PySide6 import QtCore, QtGui, QtWidgets
+except ImportError:
+    from PySide2 import QtCore, QtGui, QtWidgets
 
-if not MODE > 0:
-    try:
-        import maya.OpenMayaUI as omui
-        from shiboken6 import wrapInstance
-        from PySide6 import QtWidgets, QtGui, QtCore# Changed for PySide6
-        MODE = 1
-    except:
-        pass
-
-if MODE == 0:
-    from PySide6 import QtWidgets, QtGui, QtCore
-
-from typing import Optional
-
-def get_houdini_window():
-    """
-    Get Houdini window.
-    Returns:
-        pointer
-    """
-    win = hou.ui.mainQtWindow()
-    return win
-
-def get_maya_window():
-    """
-    Get Maya main window.
-    Returns:
-        pointer
-    """
-    return wrapInstance(int(omui.MQtUtil.mainWindow()), QtWidgets.QWidget)  # Replace `long` with `int`
-
-def get_all_treeitems(tree_widget):
-    """Get all QTreeWidgetItems of a given QTreeWidget."""
-    items = []
-    iterator = QtWidgets.QTreeWidgetItemIterator(tree_widget)
-    while iterator.value():
-        item = iterator.value()
-        items.append(item)
-        iterator += 1
-    return items
-
-# ---------------------------------------------------------------------------- #
-# -------------------------------- WIDGETS ----------------------------------- #
-
-class ErrorWin(QtWidgets.QDialog):
-    """Error window to display custom messages."""
-    def __init__(self, img=None, parent=None):
-        super().__init__(parent or get_maya_window())
-        self.setObjectName("ErrorWin")
-        self.setWindowTitle("Action Canceled: Vertex Animation Detected")
-        self.resize(400, 100)
-
-        layout = QtWidgets.QHBoxLayout(self)
-        self.setLayout(layout)
-
-        img_path = '/path/to/resources/pic_files'  # Update to a configurable resource path
-        if not img:
-            img = 'MasterYoda-Unlearn.jpg'
-
-        pixmap = QtGui.QPixmap(f"{img_path}/{img}")
-        label = QtWidgets.QLabel(self)
-        label.setPixmap(pixmap)
-        layout.addWidget(label)
-
-        self.move(300, 200)
-
-    def closeEvent(self, event):
-        self.deleteLater()
-
-
-class RectangleHoverEffect(QtCore.QObject):
-    """Hover effect for a QWidget to move it in/out."""
-    def __init__(self, rectangle, parent):
-        super().__init__(parent)
-        if not isinstance(rectangle, QtWidgets.QWidget):
-            raise TypeError("rectangle must be a QWidget")
-        if not rectangle.parent():
-            raise ValueError("rectangle must have a parent")
-
-        self.rectangle = rectangle
-        self.animation = QtCore.QPropertyAnimation()
-        self.animation.setTargetObject(rectangle)
-        self.animation.setPropertyName(b"pos")
-        self.animation.setDuration(300)
-        self.animation.setEasingCurve(QtCore.QEasingCurve.OutQuad)
-        rectangle.parent().installEventFilter(self)
-
-    def eventFilter(self, obj, event):
-        if obj is self.rectangle.parent():
-            start, end = obj.height(), obj.height() - self.rectangle.height()
-            if event.type() == QtCore.QEvent.Enter:
-                self._start_animation(start, end)
-            elif event.type() == QtCore.QEvent.Leave:
-                self._start_animation(end, start)
-        return super().eventFilter(obj, event)
-
-    def _start_animation(self, start, end):
-        self.animation.setStartValue(QtCore.QPoint(0, start))
-        self.animation.setEndValue(QtCore.QPoint(0, end))
-        self.animation.start()
-
-    def __del__(self):
-        self.animation.stop()
-        self.animation.deleteLater()
-
-
-class ThumbWidget(QtWidgets.QFrame):
-    """Custom thumbnail widget with hover effect and click signal."""
-    clicked = QtCore.Signal()
-
-    def __init__(self, title, pixmap, size=40, parent=None):
-        super().__init__(parent)
-        self.setFixedSize(size, size)
-        self.setFrameShape(QtWidgets.QFrame.StyledPanel)
-
-        pixmap_label = QtWidgets.QLabel(self)
-        pixmap_label.setPixmap(pixmap)
-        pixmap_label.setScaledContents(True)
-
-        title_label = QtWidgets.QLabel(title, self)
-        title_label.setStyleSheet("color: #FFFFFF;")
-        title_label.setAlignment(QtCore.Qt.AlignTop | QtCore.Qt.AlignLeft)
-
-        layout = QtWidgets.QVBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.addWidget(pixmap_label)
-        layout.addWidget(title_label)
-
-        RectangleHoverEffect(self, parent)
-
-    def mousePressEvent(self, event):
-        self.clicked.emit()
-
-
-class PlotPoint(QtWidgets.QGraphicsRectItem):
-    """Draggable and selectable plot point for custom graphics."""
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setRect(-6, -6, 12, 12)
-        self.setBrush(QtGui.QBrush(QtGui.QColor(255, 30, 30)))
-        self.setPen(QtGui.QPen(QtGui.QColor(30, 30, 30), 2))
-
-
-class PlotLine(QtWidgets.QGraphicsPathItem):
-    """Bezier curve with draggable control points."""
-    def __init__(self, start, end, parent=None):
-        super().__init__(parent)
-        self.start = start
-        self.end = end
-        self.update_path()
-
-    def update_path(self):
-        """Update the curve path based on control points."""
-        path = QtGui.QPainterPath()
-        path.moveTo(self.start)
-        path.cubicTo(
-            self.start + QtCore.QPointF(50, 0),
-            self.end - QtCore.QPointF(50, 0),
-            self.end,
-        )
-        self.setPath(path)
-
-
-class PlotView(QtWidgets.QWidget):
-    """Custom plot view for managing draggable lines and points."""
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        layout = QtWidgets.QVBoxLayout(self)
-        self.scene = QtWidgets.QGraphicsScene(self)
-        self.view = QtWidgets.QGraphicsView(self.scene, self)
-        layout.addWidget(self.view)
+from typing import Optional, Union
 
 def get_qt_width_from_str(text: str,
                           font: QtGui.QFont = None,
@@ -270,6 +61,124 @@ class WidgetSizeGroup(QtCore.QObject):
         for w in self._widgets:
             w.setMinimumWidth(max_width)
 
+class SliderWithButton(QtWidgets.QWidget):
+    """Horizontal slider bidirectionally synced with a spinbox, plus a button.
+
+    Replaces Maya's ``floatSliderButtonGrp`` which has no PySide6 equivalent.
+
+    QtCore.Signals:
+        value_changed(float): Emitted whenever the slider or spinbox changes.
+        button_clicked():     Emitted when the action button is pressed.
+
+    Args:
+        label:       Label shown to the left.
+        btn_label:   Text on the action button.
+        min_val:     Slider minimum.
+        max_val:     Slider maximum.
+        default:     Initial value.
+        decimals:    Number of decimal places in the spinbox.
+        step:        Single step size for the spinbox.
+        parent:      Optional parent widget.
+
+    Example:
+        slider = SliderWithButton('weight', 'Set', 0.0, 1.0, 0.5)
+        slider.value_changed.connect(on_weight_changed)
+        slider.button_clicked.connect(on_set_clicked)
+    """
+
+    value_changed = QtCore.Signal(float)
+    button_clicked = QtCore.Signal()
+    sliderReleased = QtCore.Signal()
+
+    def __init__(self,
+                 label: str = '',
+                 btn_label: str = 'Set',
+                 min_val: float = None,
+                 max_val: float = None,
+                 default: float = 0.5,
+                 decimals: int = 2,
+                 step: float = 0.01,
+                 label_width = 0,
+                 has_button: bool = True,
+                 parent: Optional[QtWidgets.QWidget] = None):
+        super().__init__(parent)
+
+        self._scale = 10 ** decimals  # int slider resolution
+
+        layout = QtWidgets.QHBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(4)
+
+        if label:
+            lbl = QtWidgets.QLabel(label)
+            if not label_width and label:
+                label_width = get_qt_width_from_str(label)
+            lbl.setFixedWidth(label_width)
+            layout.addWidget(lbl)
+
+        self._spinbox = QtWidgets.QDoubleSpinBox()
+        self._spinbox.setLocale(QtCore.QLocale(QtCore.QLocale.English, QtCore.QLocale.UnitedStates))
+        if isinstance(min_val, (int, float)):
+            self._spinbox.setMinimum(min_val)
+        if isinstance(max_val, (int, float)):
+            self._spinbox.setMaximum(max_val)
+        self._spinbox.setDecimals(decimals)
+        self._spinbox.setSingleStep(step)
+        self._spinbox.setValue(default)
+        self._spinbox.setFixedWidth(58)
+        layout.addWidget(self._spinbox)
+
+        s_min = min_val if isinstance(min_val, (int, float)) else 0.0
+        s_max = max_val if isinstance(max_val, (int, float)) else 1.0
+
+        self._slider = QtWidgets.QSlider(QtCore.Qt.Horizontal)
+        self._slider.setRange(int(s_min * self._scale),
+                              int(s_max * self._scale))
+        self._slider.setValue(int(default * self._scale))
+        layout.addWidget(self._slider, stretch=1)
+
+        self._button = None
+        if has_button:
+            self._button = QtWidgets.QPushButton(btn_label)
+            self._button.setFixedWidth(44)
+            layout.addWidget(self._button)
+
+        # Bidirectional sync
+        self._slider.valueChanged.connect(self._on_slider_changed)
+        self._slider.sliderReleased.connect(self.sliderReleased.emit)
+        self._spinbox.valueChanged.connect(self._on_spinbox_changed)
+        if self._button:
+            self._button.clicked.connect(self.button_clicked)
+
+        self._syncing = False  # prevent feedback loops
+
+    # ------------------------------------------------------------------
+
+    def _on_slider_changed(self, int_val: int) -> None:
+        if self._syncing:
+            return
+        self._syncing = True
+        float_val = int_val / self._scale
+        self._spinbox.setValue(float_val)
+        self._syncing = False
+        self.value_changed.emit(float_val)
+
+    def _on_spinbox_changed(self, float_val: float) -> None:
+        if self._syncing:
+            return
+        self._syncing = True
+        self._slider.setValue(int(float_val * self._scale))
+        self._syncing = False
+        self.value_changed.emit(float_val)
+
+    @property
+    def value(self) -> float:
+        return self._spinbox.value()
+
+    @value.setter
+    def value(self, v: float) -> None:
+        self._spinbox.setValue(v)
+        
 class RangeSlider(QtWidgets.QSlider):
     """Custom double-handled range slider."""
 
@@ -357,124 +266,6 @@ class RangeSlider(QtWidgets.QSlider):
         self.second_position = int(max_val * 99)
         self.update()
 
-
-class SliderWithButton(QtWidgets.QWidget):
-    """Horizontal slider bidirectionally synced with a spinbox, plus a button.
-
-    Replaces Maya's ``floatSliderButtonGrp`` which has no PySide6 equivalent.
-
-    QtCore.Signals:
-        value_changed(float): Emitted whenever the slider or spinbox changes.
-        button_clicked():     Emitted when the action button is pressed.
-
-    Args:
-        label:       Label shown to the left.
-        btn_label:   Text on the action button.
-        min_val:     Slider minimum.
-        max_val:     Slider maximum.
-        default:     Initial value.
-        decimals:    Number of decimal places in the spinbox.
-        step:        Single step size for the spinbox.
-        parent:      Optional parent widget.
-
-    Example:
-        slider = SliderWithButton('weight', 'Set', 0.0, 1.0, 0.5)
-        slider.value_changed.connect(on_weight_changed)
-        slider.button_clicked.connect(on_set_clicked)
-    """
-
-    value_changed = QtCore.Signal(float)
-    button_clicked = QtCore.Signal()
-    sliderReleased = QtCore.Signal()
-
-    def __init__(self,
-                 label: str = '',
-                 btn_label: str = 'Set',
-                 min_val: float = None,
-                 max_val: float = None,
-                 default: float = 0.5,
-                 decimals: int = 2,
-                 step: float = 0.01,
-                 label_width=0,
-                 has_button: bool = True,
-                 parent: Optional[QtWidgets.QWidget] = None):
-        super().__init__(parent)
-
-        self._scale = 10 ** decimals  # int slider resolution
-
-        layout = QtWidgets.QHBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(4)
-
-        if label:
-            lbl = QtWidgets.QLabel(label)
-            if not label_width and label:
-                label_width = get_qt_width_from_str(label)
-            lbl.setFixedWidth(label_width)
-            layout.addWidget(lbl)
-
-        self._spinbox = QtWidgets.QDoubleSpinBox()
-        if isinstance(min_val, (int, float)):
-            self._spinbox.setMinimum(min_val)
-        if isinstance(max_val, (int, float)):
-            self._spinbox.setMaximum(max_val)
-        self._spinbox.setDecimals(decimals)
-        self._spinbox.setSingleStep(step)
-        self._spinbox.setValue(default)
-        self._spinbox.setFixedWidth(58)
-        layout.addWidget(self._spinbox)
-
-        s_min = min_val if isinstance(min_val, (int, float)) else 0.0
-        s_max = max_val if isinstance(max_val, (int, float)) else 1.0
-
-        self._slider = QtWidgets.QSlider(QtCore.Qt.Horizontal)
-        self._slider.setRange(int(s_min * self._scale),
-                              int(s_max * self._scale))
-        self._slider.setValue(int(default * self._scale))
-        layout.addWidget(self._slider, stretch=1)
-
-        self._button = None
-        if has_button:
-            self._button = QtWidgets.QPushButton(btn_label)
-            self._button.setFixedWidth(44)
-            layout.addWidget(self._button)
-
-        # Bidirectional sync
-        self._slider.valueChanged.connect(self._on_slider_changed)
-        self._slider.sliderReleased.connect(self.sliderReleased.emit)
-        self._spinbox.valueChanged.connect(self._on_spinbox_changed)
-        if self._button:
-            self._button.clicked.connect(self.button_clicked)
-
-        self._syncing = False  # prevent feedback loops
-
-    # ------------------------------------------------------------------
-
-    def _on_slider_changed(self, int_val: int) -> None:
-        if self._syncing:
-            return
-        self._syncing = True
-        float_val = int_val / self._scale
-        self._spinbox.setValue(float_val)
-        self._syncing = False
-        self.value_changed.emit(float_val)
-
-    def _on_spinbox_changed(self, float_val: float) -> None:
-        if self._syncing:
-            return
-        self._syncing = True
-        self._slider.setValue(int(float_val * self._scale))
-        self._syncing = False
-        self.value_changed.emit(float_val)
-
-    @property
-    def value(self) -> float:
-        return self._spinbox.value()
-
-    @value.setter
-    def value(self, v: float) -> None:
-        self._spinbox.setValue(v)
-
 class RangeSliderWithSpinbox(QtWidgets.QWidget):
     """Double-handle range slider flanked by two spinboxes.
 
@@ -520,6 +311,7 @@ class RangeSliderWithSpinbox(QtWidgets.QWidget):
         layout.setSpacing(3)
 
         self._spin_min = QtWidgets.QDoubleSpinBox()
+        self._spin_min.setLocale(QtCore.QLocale(QtCore.QLocale.English, QtCore.QLocale.UnitedStates))
         self._spin_min.setDecimals(decimals)
         self._spin_min.setSingleStep(10 ** -decimals)
         self._spin_min.setFixedWidth(60)
@@ -532,6 +324,7 @@ class RangeSliderWithSpinbox(QtWidgets.QWidget):
         layout.addWidget(self._slider, stretch=1)
 
         self._spin_max = QtWidgets.QDoubleSpinBox()
+        self._spin_max.setLocale(QtCore.QLocale(QtCore.QLocale.English, QtCore.QLocale.UnitedStates))
         self._spin_max.setDecimals(decimals)
         self._spin_max.setSingleStep(10 ** -decimals)
         self._spin_max.setFixedWidth(60)
@@ -662,3 +455,4 @@ class RangeSliderWithSpinbox(QtWidgets.QWidget):
             self._syncing = False
         self._push_to_slider()
         self.range_changed.emit(self._spin_min.value(), self._spin_max.value())
+

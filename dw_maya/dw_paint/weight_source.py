@@ -346,8 +346,11 @@ def _paint_deformer(source: WeightSource) -> None:
     if not cmds.artAttrCtx('artAttrCtx', exists=True):
         cmds.artAttrCtx('artAttrCtx')
 
+    # artSetToolAndSelectAttr expects the MEL *command* name ('artAttrCtx'),
+    # NOT the context instance name ('artAttrContext').
+    # The instance name is used for cmds queries/edits; the command name is
+    # used in MEL callbacks (artAttrCallback.mel internally calls it as a proc).
     mel.eval(f'artSetToolAndSelectAttr "artAttrCtx" "{artisan_attr}"')
-
 
 def _paint_nucleus_map(source: WeightSource,
                        nucleus_node: Optional[str] = None) -> None:

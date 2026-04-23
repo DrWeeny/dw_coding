@@ -221,6 +221,9 @@ class NClothMap(WeightSource):
     # Paint
     # ------------------------------------------------------------------
 
+    def get_artisan_name(self) ->str:
+        return "artAttrNClothContext"
+
     def paint(self) -> None:
         """Open Maya's artisan paint tool for the currently active map."""
         from dw_maya.dw_nucleus_utils import artisan_nucx_update

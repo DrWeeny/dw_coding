@@ -21,7 +21,7 @@ Author:  DrWeeny
 
 from __future__ import annotations
 
-from typing import List, Optional
+from typing import List, Optional, Tuple
 from functools import partial
 
 from maya import cmds, mel
@@ -36,10 +36,12 @@ except ImportError:
     from PySide2 import QtCore, QtGui, QtWidgets
     from PySide2.QtCore import Qt, Signal, Slot
     from shiboken2 import wrapInstance
+from dw_utils import data_hub
 import dw_maya.dw_paint
 import dw_maya.dw_pyqt_utils.dw_btn_storage
+from dw_maya.dw_pyqt_utils.wgt_slider import RangeSliderWithSpinbox, RangeSlider, SliderWithButton
 from dw_maya.dw_paint.protocol import WeightSource
-from dw_maya.dw_paint.vertex_color_alpha import create_alpha_map
+from dw_maya.dw_paint.vertex_color_alpha import create_alpha_map, VertexColorAlpha
 from dw_maya.dw_decorators.dw_keep_selection import keep_selection
 from dw_maya.dw_decorators import singleUndoChunk, timeIt
 from dw_maya.dw_paint.weight_source import (
@@ -49,10 +51,20 @@ from dw_maya.dw_paint.weight_source import (
 )
 from dw_maya.dw_nucleus_utils import NClothMap
 import dw_maya.dw_maya_utils
-from dw_maya.dw_maya_utils.dw_maya_components import selectBorder
+from dw_maya.dw_maya_utils.dw_maya_components import selectBorder, extract_id
 import dw_maya.dw_nucleus_utils.dw_core
 import dw_maya.dw_nucleus_utils.dw_nucleus_paint
 from dw_logger import get_logger
+from dw_maya.dw_paint.artisan_maya import (
+    CTX_ALPHA,
+    get_artisan_clamp as _artisan_get_clamp,
+    set_artisan_clamp as _artisan_set_clamp,
+    set_artisan_color_range as _artisan_set_color_range,
+    set_artisan_value as _artisan_set_value,
+    flood_smooth_vtx_map,
+)
+
+import traceback
 
 logger = get_logger()
 
@@ -64,118 +76,6 @@ def _maya_main_window() -> QtWidgets.QMainWindow:
     """Return Maya's main QMainWindow so we can parent to it."""
     ptr = omui.MQtUtil.mainWindow()
     return wrapInstance(int(ptr), QtWidgets.QMainWindow)
-
-
-# ---------------------------------------------------------------------------
-# Reusable composite widget: slider + spinbox + button
-# ---------------------------------------------------------------------------
-
-class SliderWithButton(QtWidgets.QWidget):
-    """Horizontal slider bidirectionally synced with a spinbox, plus a button.
-
-    Replaces Maya's ``floatSliderButtonGrp`` which has no PySide6 equivalent.
-
-    Signals:
-        value_changed(float): Emitted whenever the slider or spinbox changes.
-        button_clicked():     Emitted when the action button is pressed.
-
-    Args:
-        label:       Label shown to the left.
-        btn_label:   Text on the action button.
-        min_val:     Slider minimum.
-        max_val:     Slider maximum.
-        default:     Initial value.
-        decimals:    Number of decimal places in the spinbox.
-        step:        Single step size for the spinbox.
-        parent:      Optional parent widget.
-
-    Example:
-        slider = SliderWithButton('weight', 'Set', 0.0, 1.0, 0.5)
-        slider.value_changed.connect(on_weight_changed)
-        slider.button_clicked.connect(on_set_clicked)
-    """
-
-    value_changed = Signal(float)
-    button_clicked = Signal()
-
-    def __init__(self,
-                 label: str = '',
-                 btn_label: str = 'Set',
-                 min_val: float = 0.0,
-                 max_val: float = 1.0,
-                 default: float = 0.5,
-                 decimals: int = 2,
-                 step: float = 0.01,
-                 parent: Optional[QtWidgets.QWidget] = None):
-        super().__init__(parent)
-
-        self._min = min_val
-        self._max = max_val
-        self._scale = 10 ** decimals  # int slider resolution
-
-        layout = QtWidgets.QHBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(4)
-
-        if label:
-            lbl = QtWidgets.QLabel(label)
-            lbl.setFixedWidth(48)
-            layout.addWidget(lbl)
-
-        self._spinbox = QtWidgets.QDoubleSpinBox()
-        self._spinbox.setRange(min_val, max_val)
-        self._spinbox.setDecimals(decimals)
-        self._spinbox.setSingleStep(step)
-        self._spinbox.setValue(default)
-        self._spinbox.setFixedWidth(58)
-        layout.addWidget(self._spinbox)
-
-        self._slider = QtWidgets.QSlider(Qt.Horizontal)
-        self._slider.setRange(
-            int(min_val * self._scale),
-            int(max_val * self._scale)
-        )
-        self._slider.setValue(int(default * self._scale))
-        layout.addWidget(self._slider, stretch=1)
-
-        self._button = QtWidgets.QPushButton(btn_label)
-        self._button.setFixedWidth(44)
-        layout.addWidget(self._button)
-
-        # Bidirectional sync
-        self._slider.valueChanged.connect(self._on_slider_changed)
-        self._spinbox.valueChanged.connect(self._on_spinbox_changed)
-        self._button.clicked.connect(self.button_clicked)
-
-        self._syncing = False  # prevent feedback loops
-
-    # ------------------------------------------------------------------
-
-    def _on_slider_changed(self, int_val: int) -> None:
-        if self._syncing:
-            return
-        self._syncing = True
-        float_val = int_val / self._scale
-        self._spinbox.setValue(float_val)
-        self._syncing = False
-        self.value_changed.emit(float_val)
-
-    def _on_spinbox_changed(self, float_val: float) -> None:
-        if self._syncing:
-            return
-        self._syncing = True
-        self._slider.setValue(int(float_val * self._scale))
-        self._syncing = False
-        self.value_changed.emit(float_val)
-
-    @property
-    def value(self) -> float:
-        return self._spinbox.value()
-
-    @value.setter
-    def value(self, v: float) -> None:
-        self._spinbox.setValue(v)
-
 
 # ---------------------------------------------------------------------------
 # Controller — all Maya logic, zero PySide6
@@ -200,6 +100,12 @@ class SlimfastController:
         self._clipboard: Optional[List[float]] = None
         self._mesh: Optional[str] = None
         self._mode: str = 'all'
+
+        # Artisan clamp state — kept in sync with set_artisan_clamp so that
+        # bulk numpy operations (flood, smooth) can apply the same limits.
+        self._clamp_mode: str = 'none'   # 'none' | 'lower' | 'upper' | 'both'
+        self._clamp_lower: float = 0.0
+        self._clamp_upper: float = 1.0
 
     # ------------------------------------------------------------------
     # Source / map management
@@ -315,6 +221,109 @@ class SlimfastController:
         except Exception as e:
             logger.error(f"Paint failed: {e}")
 
+    def _resolve_paint_ctx(self) -> Optional[str]:
+        """Return the Artisan context name that matches *self._active*.
+
+        Delegates to :meth:`~WeightSource.get_artisan_name` on the active
+        source so each subclass is responsible for its own ctx name — no
+        ``isinstance`` branching needed here.
+
+        Returns:
+            The context name string, or ``None`` when no source is active.
+        """
+        if self._active is None:
+            return None
+        return self._active.get_artisan_name()
+
+    def get_artisan_clamp(self) -> Optional[Tuple[str, float, float]]:
+        """Read clamp settings from the context resolved for *self._active*.
+
+        Delegates to :func:`~artisan_maya.get_artisan_clamp` so all
+        context-routing logic stays in the dedicated module.
+        """
+        ctx = self._resolve_paint_ctx()
+        if ctx is None:
+            return None
+        result = _artisan_get_clamp(ctx)
+        if result is None:
+            logger.debug(f"Cannot read Artisan context limits for ctx='{ctx}'")
+        return result
+
+    def set_clamp_state(self, clamp_mode: str, cl: float, cu: float) -> None:
+        """Persist the clamp state without pushing it back to the artisan context.
+
+        Called by the UI after it has synchronised its widgets from the artisan
+        context (``get_artisan_clamp``).  We only need to update the stored
+        state so that subsequent numpy operations (flood, smooth) pick it up
+        correctly — we must NOT re-push to the context or we create a feedback loop.
+
+        Args:
+            clamp_mode: ``'none'`` | ``'lower'`` | ``'upper'`` | ``'both'``.
+            cl:         Lower clamp value.
+            cu:         Upper clamp value.
+        """
+        self._clamp_mode = clamp_mode
+        self._clamp_lower = cl
+        self._clamp_upper = cu
+
+    def set_artisan_clamp(self, clamp_mode: str, min_value: float, max_value: float) -> None:
+        """Push clamp settings to the context resolved for *self._active*.
+
+        Persists the values for numpy bulk operations (flood, smooth) then
+        delegates the Maya ctx update to :func:`~artisan_maya.set_artisan_clamp`.
+        """
+        # persist for numpy operations
+        self._clamp_mode = clamp_mode
+        self._clamp_lower = min_value
+        self._clamp_upper = max_value
+
+        ctx = self._resolve_paint_ctx()
+        if ctx is None:
+            return
+        _artisan_set_clamp(clamp_mode, min_value, max_value, ctx)
+
+    def _get_clamp_kwargs(self) -> dict:
+        """Return ``clamp_min`` / ``clamp_max`` kwargs for :func:`apply_operation` flood calls.
+
+        When clamp mode is ``'none'`` we explicitly override :func:`_op_flood`'s
+        restrictive defaults (``clamp_min=0.0, clamp_max=1.0``) with unbounded
+        floats so that weight values outside ``[0, 1]`` are not silently clipped.
+        """
+        if self._clamp_mode == 'none':
+            return {'clamp_min': float('-inf'), 'clamp_max': float('inf')}
+        kw: dict = {}
+        if self._clamp_mode in ('lower', 'both'):
+            kw['clamp_min'] = self._clamp_lower
+        if self._clamp_mode in ('upper', 'both'):
+            kw['clamp_max'] = self._clamp_upper
+        return kw
+
+    def _clamp_weights_post(self, mask: Optional[List[int]] = None) -> None:
+        """Post-process: re-read, clamp, and write back weights when clamp is active.
+
+        Used after smooth operations whose underlying numpy path does not
+        natively support clamp kwargs.
+
+        Args:
+            mask: Optional list of vertex indices to restrict the clamp to.
+                  When ``None`` all vertices are clamped.
+        """
+        if self._clamp_mode == 'none' or self._active is None:
+            return
+        cl = self._clamp_lower if self._clamp_mode in ('lower', 'both') else None
+        cu = self._clamp_upper if self._clamp_mode in ('upper', 'both') else None
+        if cl is None and cu is None:
+            return
+        weights = list(self._active.get_weights())
+        indices = mask if mask is not None else range(len(weights))
+        for i in indices:
+            w = weights[i]
+            if cl is not None and w < cl:
+                weights[i] = cl
+            if cu is not None and w > cu:
+                weights[i] = cu
+        self._active.set_weights(weights)
+
     def _convert_selection_to_vtx(self) -> None:
         """Convert any face / edge selection to vertices in-place.
 
@@ -358,12 +367,46 @@ class SlimfastController:
             vtx = cmds.polyListComponentConversion(sel, toVertex=True)
             vtx = cmds.ls(vtx, fl=True) or []
             if vtx:
-                indices = dw_maya.dw_maya_utils.extract_id(vtx)
-                apply_operation(self._active, 'flood', value=value, op=op, mask=indices)
+                indices = extract_id(vtx)
+                apply_operation(self._active, 'flood', value=value, op=op,
+                                mask=indices, **self._get_clamp_kwargs())
                 logger.debug(f"set_weight — applied {op} on {len(indices)} vertices")
                 return
-        apply_operation(self._active, 'flood', value=value, op=op)
+        apply_operation(self._active, 'flood', value=value, op=op,
+                        **self._get_clamp_kwargs())
         logger.debug(f"set_weight — applied {op} on all vertices")
+
+    def get_weight_range(self) -> Optional[Tuple[float, float]]:
+        """Return ``(min, max)`` of the current map's weights, rounded to 1 decimal.
+
+        Returns ``None`` when no active source / map is set or reading fails.
+        """
+        if not self._require_active():
+            return 0, 1
+        try:
+            weights = self._active.get_weights()
+            if not weights:
+                return 0, 1
+            lo = round(min(weights)) if round(min(weights)) > 1 else 0
+            hi = round(max(weights), 1)
+            return (lo, hi)
+        except Exception as e:
+            logger.debug(f"get_weight_range failed: {traceback.format_exc()}")
+            return None
+
+    def set_artisan_color_range(self, lo: float, hi: float) -> None:
+        """Push display range to the active artisan context.
+
+        Delegates to :func:`~artisan_maya.set_artisan_color_range`.
+        Silently skipped for vertex-alpha (``dwAlphaPaintCtx``).
+        """
+        ctx = self._resolve_paint_ctx()
+        if ctx is None:
+            return
+        try:
+            _artisan_set_color_range(lo, hi, ctx)
+        except Exception as e:
+            logger.debug(f"set_artisan_color_range failed: {e}")
 
     def _get_vtx_mask(self) -> Optional[List[int]]:
         """Retourne les indices de la sélection vertex courante, ou None si tout.
@@ -392,61 +435,57 @@ class SlimfastController:
         mask = self._get_vtx_mask()
         try:
             apply_operation(self._active, 'smooth', iterations=iterations, factor=0.5, mask=mask)
+            self._clamp_weights_post(mask)
         except Exception as e:
             logger.error(f"Smooth failed: {e}")
 
     @timeIt(track_stats=True)
     @singleUndoChunk
     def smooth_artisan(self, iterations: int = 1) -> None:
-        """Smooth via Maya artisan (requires paint tool to be active).
+        """Smooth via Maya artisan flood (all vertices, with viewport feedback).
 
-        Routes to the correct artisan context depending on source type:
-        NClothMap, VertexColorAlpha, or standard deformer.
+        Unlike :meth:`smooth`, this method always takes the artisan path and
+        does NOT fall back to numpy when a vertex selection is active — artisan
+        smooth floods the whole mesh regardless of selection, which is the
+        expected behaviour when the user explicitly chooses 'artisan' mode.
         """
         from dw_maya.dw_paint.vertex_color_alpha import VertexColorAlpha
+        from dw_maya.dw_paint.artisan_maya import _CTX_ALPHA, flood_smooth_vtx_map, _CTX_NUCLEUS
 
-        mask = self._get_vtx_mask()
-
-        # Si une selection est active : toujours passer par numpy (artisan
-        # flood ignore la sélection composant)
-        if mask is not None:
-            try:
-                apply_operation(self._active, 'smooth', iterations=iterations,
-                                factor=0.5, mask=mask)
-                logger.info(f"Numpy masked smooth x{iterations} sur {len(mask)} vertices.")
-            except Exception as e:
-                logger.error(f"Masked smooth failed: {e}")
+        if not self._require_active():
             return
 
+        # ── nCloth / nRigid ─────────────────────────────────────────────
         if isinstance(self._active, NClothMap):
             try:
                 for _ in range(iterations):
-                    dw_maya.dw_nucleus_utils.dw_nucleus_paint.flood_smooth_vtx_map()
+                    flood_smooth_vtx_map(context_name=_CTX_NUCLEUS)
                 logger.info(f"Nucleus artisan smooth x{iterations}.")
             except Exception as e:
                 raise RuntimeError(
                     f"Click \"Paint\" before using artisan smooth. Detail: {e}"
                 )
+
+        # ── VertexColorAlpha ─────────────────────────────────────────────
         elif isinstance(self._active, VertexColorAlpha):
-            ctx = 'dwAlphaPaintCtx'
-            # Ensure the paint context is active
+            ctx = _CTX_ALPHA
             if cmds.currentCtx() != ctx:
                 self._active.paint()
-            # Enable batch mode: iterations only update preview, not real colorSet
             import __main__
             controller = __main__.__dict__.get(ctx)
             if controller:
                 controller._batch_mode = True
-            # Switch to smooth, flood, then restore
             cmds.artUserPaintCtx(ctx, edit=True, selectedattroper='smooth')
             for _ in range(iterations):
                 cmds.artUserPaintCtx(ctx, edit=True, clear=True)
             cmds.artUserPaintCtx(ctx, edit=True, selectedattroper='additive')
-            # Disable batch mode and write final result to real colorSet once
             if controller:
                 controller._batch_mode = False
                 self._active.set_weights(controller._alphas)
+            self._clamp_weights_post()
             logger.info(f"Alpha artisan smooth x{iterations}.")
+
+        # ── Standard deformers ────────────────────────────────
         else:
             try:
                 mel.eval('artAttrPaintOperation artAttrCtx Smooth')
@@ -484,6 +523,37 @@ class SlimfastController:
             return
         self._active.set_weights(self._clipboard)
         logger.info(f"Pasted weights to '{self._active.node_name}'.")
+
+    def select_by_mod(self, vtx_list:list, key_mod:int=0) -> None:
+        if key_mod == 1:
+            cmds.select(vtx_list, toggle=True)
+        elif key_mod == 4:
+            cmds.select(vtx_list, deselect=True)
+        elif key_mod == 5:
+            cmds.select(vtx_list, add=True)
+        else:
+            cmds.select(vtx_list, replace=True)
+
+    def select_vertices_by_range(self,
+                                 min_value:float=0,
+                                 max_value:float=1,
+                                 key_mod:int=0) -> None:
+        """Select vertices near 0 (from_zero=True) or near 1 (False)."""
+        if not self._require_active():
+            return
+        weights = self._active.get_weights()
+        indices = [i for i, w in enumerate(weights) if w <= max_value if w >= min_value]
+
+        mesh = self._active.mesh_name
+        if not indices:
+            cmds.select(clear=True)
+            logger.info("No vertices match the weight criteria.")
+            return
+
+        mel.eval(f'doMenuComponentSelection("{mesh}", "vertex")')
+        ranges = dw_maya.dw_maya_utils.create_maya_ranges(indices)
+        vtx_list = [f'{mesh}.vtx[{r}]' for r in ranges]
+        self.select_by_mod(vtx_list, key_mod)
 
     def select_vertices_by_weight(self,
                                   from_zero: bool = True,
@@ -772,24 +842,48 @@ class SlimfastController:
 
         Routes to the correct artisan context based on the active source's
         node type — no manual isinstance check needed in the UI layer.
+
+        For ``artAttrCtx``-family contexts, also extends ``minvalue`` /
+        ``maxvalue`` when *value* falls outside the current slider range, and
+        calls ``artAttrUpdatePaintValueSlider`` so the Tool Settings slider
+        stays in sync.
         """
+        from dw_maya.dw_paint.artisan_maya import set_brush_val, _CTX_ALPHA
         if not self._require_active():
             return
         if isinstance(self._active, NClothMap):
             try:
-                dw_maya.dw_nucleus_utils.dw_nucleus_paint.set_cfx_brush_val(
-                    value, mod='absolute'
-                )
+                set_brush_val(value, mod='absolute')
             except Exception as e:
                 logger.debug(f"set_cfx_brush_val failed (paint tool not active?): {e}")
             return
-        for ctx in ('artAttrContext', 'artAttrBlendShapeContext'):
+        # ── VertexColorAlpha — artUserPaintCtx ──────────────────────────
+        from dw_maya.dw_paint.vertex_color_alpha import VertexColorAlpha
+        if isinstance(self._active, VertexColorAlpha):
             try:
-                cmds.artAttrCtx(ctx, edit=True, value=value)
-                cmds.artAttrCtx(ctx, edit=True, selectedattroper='absolute')
+                if cmds.artUserPaintCtx(_CTX_ALPHA, exists=True):
+                    cmds.artUserPaintCtx(_CTX_ALPHA, edit=True, value=value)
+            except Exception as e:
+                logger.debug(f"artUserPaintCtx value update failed: {e}")
+            return
+        # ── Standard deformers — artAttrCtx ──────────────────
+        ctx = self._resolve_paint_ctx()
+        if ctx is None:
+            return
+        try:
+            if not cmds.artAttrCtx(ctx, exists=True):
                 return
-            except Exception:
-                continue
+            # Extend the value slider range when needed.
+            # minvalue/maxvalue control the Tool Settings slider bounds only —
+            # they are separate from clamplower/clampupper (the clamp checkboxes).
+            cur_min = cmds.artAttrCtx(ctx, query=True, minvalue=True)
+            cur_max = cmds.artAttrCtx(ctx, query=True, maxvalue=True)
+            new_min = min(cur_min, value)
+            new_max = max(cur_max, value)
+            cmds.artAttrCtx(ctx, edit=True, value=value,
+                            minvalue=new_min, maxvalue=new_max)
+        except Exception as e:
+            logger.debug(f"set_artisan_value failed: {e}")
 
 
 # ---------------------------------------------------------------------------
@@ -881,15 +975,22 @@ class SlimfastWidget(QtWidgets.QWidget):
     """PySide6 replacement for the legacy Slimfast cmds UI."""
 
     _instance: Optional['SlimfastWidget'] = None
+    _HUB_KEY = "slimfast.storage_buttons"
+
+    # Minimum seconds between two automatic clamp-sync reads on mouse-enter.
+    _CLAMP_SYNC_INTERVAL: float = 2.0
 
     # QProperty so external scripts / shelf buttons can read/write smooth iterations
     smooth_iterations_changed = Signal(int)
 
     def __init__(self, parent: Optional[QtWidgets.QWidget] = None):
         super().__init__(parent or _maya_main_window())
-        self.setWindowTitle('Slim fast 2.0')
+        self.setWindowTitle('Slimfast 2.0')
         self.setWindowFlags(Qt.Window)
         self.setMinimumWidth(280)
+
+        self._org = "DrWeeny"
+        self._appname = "SlimfastWidget"
 
         self._signals = SlimfastSignals(self)
         self._ctrl = SlimfastController(self._signals)
@@ -902,9 +1003,21 @@ class SlimfastWidget(QtWidgets.QWidget):
         self._connect_signals()
 
         # Restore persisted preferences
-        settings = QtCore.QSettings('DrWeeny', 'SlimfastWidget')
-        saved_iter = settings.value('smooth_iterations', 25, type=int)
+        settings = QtCore.QSettings(self._org, self._appname)
+        saved_iter = settings.value('smooth_iterations', 40, type=int)
         self.set_smooth_iterations(saved_iter)
+        # Restore smooth mode preference (global — not per source type)
+        saved_smooth = settings.value('smooth_mode', 0, type=int)
+        self._smooth_mode.blockSignals(True)
+        self._smooth_mode.setCurrentIndex(saved_smooth)
+        self._smooth_mode.blockSignals(False)
+        # Restore selection mode (Value vs Range)
+        sel_value_mode = settings.value('sel_value_mode', False, type=bool)
+        if sel_value_mode:
+            self._sel_mode_check.setChecked(True)  # triggers _on_sel_mode_toggled
+
+        # Restore storage buttons from in-session DataHub cache
+        self._restore_storage_from_hub()
 
     # ------------------------------------------------------------------
     # UI construction
@@ -1028,6 +1141,17 @@ class SlimfastWidget(QtWidgets.QWidget):
         """Build the collapsible 'Advanced ops' section (vector / radial weights)."""
         section = CollapsibleSection('Advanced ops')
         lay = section.content_layout
+
+        # Make the advanced section visually distinct with a QGroupBox
+        group_box = QtWidgets.QGroupBox()
+        group_box.setStyleSheet("QGroupBox { margin-top: 1ex; border: 1px solid #444; border-radius: 4px; padding: 4px; }")
+        grp_lay = QtWidgets.QVBoxLayout(group_box)
+        grp_lay.setContentsMargins(4, 8, 4, 4)
+        grp_lay.setSpacing(4)
+        lay.addWidget(group_box)
+
+        # Build everything inside the group_box
+        lay = grp_lay
 
         # --- Mode selector ---
         mode_row = QtWidgets.QHBoxLayout()
@@ -1285,13 +1409,13 @@ class SlimfastWidget(QtWidgets.QWidget):
         layout = QtWidgets.QVBoxLayout(panel)
         layout.setSpacing(4)
         layout.setContentsMargins(2, 2, 2, 2)
-        layout.setAlignment(Qt.AlignTop)
+        layout.setAlignment(QtCore.Qt.AlignTop)
 
         # Dynamic area — storage buttons are inserted here
         self._storage_layout = QtWidgets.QVBoxLayout()
         self._storage_layout.setSpacing(4)
         self._storage_layout.setContentsMargins(0, 0, 0, 0)
-        self._storage_layout.setAlignment(Qt.AlignTop)
+        self._storage_layout.setAlignment(QtCore.Qt.AlignTop)
         layout.addLayout(self._storage_layout)
         self._storage_buttons = []
 
@@ -1314,7 +1438,10 @@ class SlimfastWidget(QtWidgets.QWidget):
         lay.setSpacing(4)
 
         # --- Mode toggle + Refresh ---
-        top_row = QtWidgets.QHBoxLayout()
+        # Wrap radio buttons if there are too many using custom FlowLayout
+        from dw_maya.dw_pyqt_utils.flow_layout import FlowLayout
+        mode_wgt = QtWidgets.QWidget()
+        mode_lay = FlowLayout(mode_wgt, margin=0, spacing=4)
         self._mode_group = QtWidgets.QButtonGroup(self)
         self._mode_btns = {}  # mode_key -> QRadioButton, for Pref menu visibility
         for label, mode in [('All', 'all'), ('Deformer', 'deformer'),
@@ -1324,35 +1451,28 @@ class SlimfastWidget(QtWidgets.QWidget):
             if mode == 'all':
                 btn.setChecked(True)
             self._mode_group.addButton(btn)
-            top_row.addWidget(btn)
+            mode_lay.addWidget(btn)
             self._mode_btns[mode] = btn
-        top_row.addStretch()
+        lay.addWidget(mode_wgt)
 
-        refresh_btn = QtWidgets.QPushButton('↺')
-        refresh_btn.setFixedWidth(28)
-        refresh_btn.setToolTip('Update list from selection')
-        refresh_btn.clicked.connect(self._on_refresh)
-        top_row.addWidget(refresh_btn)
-        lay.addLayout(top_row)
-
-        # --- Mesh label + pick button ---
+        # --- Mesh label + refresh button ---
         mesh_row = QtWidgets.QHBoxLayout()
         self._mesh_label = QtWidgets.QLabel('Nothing selected')
-        self._mesh_label.setAlignment(Qt.AlignVCenter | Qt.AlignLeft)
+        self._mesh_label.setAlignment(QtCore.Qt.AlignVCenter | QtCore.Qt.AlignLeft)
         font = self._mesh_label.font()
         font.setBold(True)
         self._mesh_label.setFont(font)
         mesh_row.addWidget(self._mesh_label, stretch=1)
 
-        self._pick_mesh_btn = QtWidgets.QPushButton('◎')
-        self._pick_mesh_btn.setFixedSize(24, 24)
-        self._pick_mesh_btn.setToolTip('Select the active mesh in the viewport')
-        self._pick_mesh_btn.clicked.connect(self._on_pick_mesh)
-        mesh_row.addWidget(self._pick_mesh_btn)
+        refresh_btn = QtWidgets.QPushButton('↺')
+        refresh_btn.setFixedSize(24, 24)
+        refresh_btn.setToolTip('Update list from selection')
+        refresh_btn.clicked.connect(self._on_refresh)
+        mesh_row.addWidget(refresh_btn)
         lay.addLayout(mesh_row)
 
         # --- Single flat combo: one row per (source × map) pair ---
-        # Each item stores (source_index, map_name) in Qt.UserRole.
+        # Each item stores (source_index, map_name) in QtCore.Qt.UserRole.
         # Non-default maps (blendshape targets, nucleus maps) are shown as
         # "nodeName › mapName"; single-map deformers just show "nodeName".
         self._source_combo = QtWidgets.QComboBox()
@@ -1369,7 +1489,7 @@ class SlimfastWidget(QtWidgets.QWidget):
 
         # --- Map type badge (nucleus only) ---
         self._map_type_label = QtWidgets.QLabel()
-        self._map_type_label.setAlignment(Qt.AlignCenter)
+        self._map_type_label.setAlignment(QtCore.Qt.AlignCenter)
         self._map_type_label.setStyleSheet('font-size: 11px;')
         self._map_type_label.hide()
         lay.addWidget(self._map_type_label)
@@ -1381,6 +1501,7 @@ class SlimfastWidget(QtWidgets.QWidget):
         cp_row.addWidget(self._copy_btn)
         cp_row.addWidget(self._paste_btn)
         lay.addLayout(cp_row)
+
 
         # --- Envelope spinbox ---
         env_row = QtWidgets.QHBoxLayout()
@@ -1402,6 +1523,38 @@ class SlimfastWidget(QtWidgets.QWidget):
             'QPushButton:hover { background-color: #c8c830; }'
         )
         lay.addWidget(self._paint_btn)
+
+        # --- Display range warning (shown only when weights outside 0-1) ---
+        self._display_range_widget = QtWidgets.QWidget()
+        dr_lay = QtWidgets.QVBoxLayout(self._display_range_widget)
+        dr_lay.setContentsMargins(0, 2, 0, 0)
+        dr_lay.setSpacing(2)
+
+        dr_header = QtWidgets.QHBoxLayout()
+        dr_label = QtWidgets.QLabel('⚠  Display range')
+        dr_label.setStyleSheet('color: #e8a020; font-size: 11px;')
+        dr_label.setToolTip(
+            'Weights outside [0, 1] detected.\n'
+            'The artisan color range will be set automatically on Paint.\n'
+            'Adjust manually here if needed.'
+        )
+        dr_header.addWidget(dr_label)
+        dr_header.addStretch()
+        self._display_range_fit_btn = QtWidgets.QPushButton('Fit')
+        self._display_range_fit_btn.setFixedSize(34, 18)
+        self._display_range_fit_btn.setStyleSheet(
+            'QPushButton { background-color: #3a3a2a; color: #cccc88; font-size: 10px; }'
+            'QPushButton:hover { background-color: #4a4a32; }'
+        )
+        self._display_range_fit_btn.setToolTip('Fit range to actual weight min/max')
+        dr_header.addWidget(self._display_range_fit_btn)
+        dr_lay.addLayout(dr_header)
+
+        self._display_range_slider = RangeSliderWithSpinbox(limit_min=0.0, limit_max=1.0, decimals=1)
+        self._display_range_slider.setToolTip('Artisan colorrangelower / colorrangeupper — pushed on Paint')
+        dr_lay.addWidget(self._display_range_slider)
+        self._display_range_widget.hide()
+        lay.addWidget(self._display_range_widget)
 
         # --- Alpha preview toggle (visible only for VertexColorAlpha sources) ---
         self._alpha_preview_btn = QtWidgets.QPushButton('👁  Alpha B&W preview')
@@ -1448,12 +1601,36 @@ class SlimfastWidget(QtWidgets.QWidget):
         op_row.addStretch()
         lay.addLayout(op_row)
 
-        self._weight_slider = SliderWithButton(
-            label='weight', btn_label='Set',
-            min_val=-1.0, max_val=1.0, default=0.5,
-            decimals=2, step=0.01
-        )
+        self._weight_slider = SliderWithButton(label='weight',
+                                               btn_label='Set',
+                                               default=0.5,
+                                               decimals=2,
+                                               step=0.01,
+                                               label_width=48)
         lay.addWidget(self._weight_slider)
+
+        # --- Clamp Widget ---
+        clamp_row = QtWidgets.QHBoxLayout()
+        clamp_row.setContentsMargins(0, 0, 0, 0)
+        clamp_row.setSpacing(4)
+        clamp_lbl = QtWidgets.QLabel('Clamp')
+        clamp_lbl.setFixedWidth(40)
+
+        self._clamp_min_check = QtWidgets.QCheckBox()
+        self._clamp_min_check.setToolTip('Enable Min Clamp')
+
+        self._clamp_slider = RangeSliderWithSpinbox(limit_min=0.0, limit_max=1.0, decimals=3)
+        self._clamp_slider.setToolTip('Clamp Range')
+
+        self._clamp_max_check = QtWidgets.QCheckBox()
+        self._clamp_max_check.setToolTip('Enable Max Clamp')
+
+        clamp_row.addWidget(clamp_lbl)
+        clamp_row.addWidget(self._clamp_min_check)
+        clamp_row.addWidget(self._clamp_slider, stretch=1)
+        clamp_row.addWidget(self._clamp_max_check)
+        lay.addLayout(clamp_row)
+
         return grp
 
     def _build_smooth_group(self) -> QtWidgets.QGroupBox:
@@ -1505,7 +1682,11 @@ class SlimfastWidget(QtWidgets.QWidget):
         mode_row = QtWidgets.QHBoxLayout()
         mode_row.addWidget(QtWidgets.QLabel('via'))
         self._smooth_mode = QtWidgets.QComboBox()
-        self._smooth_mode.addItems(['artisan (viewport)', 'numpy (no viewport)'])
+        self._smooth_mode.addItems(['artisan (viewport)', 'numpy (selection-aware)'])
+        self._smooth_mode.setToolTip(
+            'artisan: flood all vertices via Maya brush (viewport feedback, no selection)\n'
+            'numpy: topology smooth, respects vertex selection, applies clamp'
+        )
         mode_row.addWidget(self._smooth_mode)
         mode_row.addStretch()
         lay.addLayout(mode_row)
@@ -1525,41 +1706,119 @@ class SlimfastWidget(QtWidgets.QWidget):
         lay = QtWidgets.QVBoxLayout(grp)
         lay.setSpacing(4)
 
-        # ALL + Invert on the same row
+        # ── Row 1 : All / Invert / Border ────────────────────────────────
         all_row = QtWidgets.QHBoxLayout()
-        self._sel_all_btn = QtWidgets.QPushButton('Select ALL')
+        self._sel_all_btn = QtWidgets.QPushButton('All')
+        self._sel_all_btn.setToolTip('Select all vertices of the active mesh')
         self._invert_btn = QtWidgets.QPushButton('Invert')
         self._invert_btn.setToolTip('Invert current vertex selection (always active)')
+        self._border_btn = QtWidgets.QPushButton('Border')
+        self._border_btn.setToolTip('Select border vertices')
         all_row.addWidget(self._sel_all_btn)
         all_row.addWidget(self._invert_btn)
+        all_row.addWidget(self._border_btn)
         lay.addLayout(all_row)
 
-        sel_row = QtWidgets.QHBoxLayout()
-        self._sel0_btn = QtWidgets.QPushButton('Weight = 0')
-        self._sel0_btn.setStyleSheet('background-color: #282828; color: #aaaaaa;')
-        self._sel1_btn = QtWidgets.QPushButton('Weight = 1')
-        self._sel1_btn.setStyleSheet('background-color: #bbbbbb; color: #111111;')
-        sel_row.addWidget(self._sel0_btn)
-        sel_row.addWidget(self._sel1_btn)
-        lay.addLayout(sel_row)
+        # ── Mode toggle ───────────────────────────────────────────────────
+        mode_row = QtWidgets.QHBoxLayout()
+        self._sel_mode_check = QtWidgets.QCheckBox('Value mode')
+        self._sel_mode_check.setToolTip(
+            'Unchecked = Range [lo, hi]\n'
+            'Checked   = single Value ± tolerance'
+        )
+        mode_row.addWidget(self._sel_mode_check)
+        mode_row.addStretch()
+        lay.addLayout(mode_row)
 
-        tol_row = QtWidgets.QHBoxLayout()
-        tol_row.addWidget(QtWidgets.QLabel('tolerance'))
-        self._tol_spinbox = QtWidgets.QDoubleSpinBox()
-        self._tol_spinbox.setRange(0.0, 1.0)
-        self._tol_spinbox.setDecimals(2)
-        self._tol_spinbox.setSingleStep(0.01)
-        self._tol_spinbox.setFixedWidth(60)
-        tol_row.addWidget(self._tol_spinbox)
+        # ── Row 2a : Range mode — RangeSlider + Fit ──────────────────────
+        #   [spin_min][══slider══][spin_max]  [⇥]
+        self._range_slider_row_widget = QtWidgets.QWidget()
+        slider_row = QtWidgets.QHBoxLayout(self._range_slider_row_widget)
+        slider_row.setContentsMargins(0, 0, 0, 0)
+        slider_row.setSpacing(3)
 
-        self._tol_slider = QtWidgets.QSlider(Qt.Horizontal)
-        self._tol_slider.setRange(0, 100)
-        self._tol_slider.setValue(0)
-        tol_row.addWidget(self._tol_slider, stretch=1)
-        lay.addLayout(tol_row)
+        self._range_sel = RangeSliderWithSpinbox(limit_min=0.0, limit_max=1.0, decimals=2)
+        slider_row.addWidget(self._range_sel, stretch=1)
 
-        self._border_btn = QtWidgets.QPushButton('Border selection')
-        lay.addWidget(self._border_btn)
+        self._range_fit_btn = QtWidgets.QPushButton('⇥')
+        self._range_fit_btn.setFixedWidth(22)
+        self._range_fit_btn.setFixedHeight(22)
+        self._range_fit_btn.setToolTip('Fit limits to current min/max weights')
+        slider_row.addWidget(self._range_fit_btn)
+        lay.addWidget(self._range_slider_row_widget)
+
+        # ── Row 2b : Range mode actions — Select / min / max ─────────────
+        self._range_action_row_widget = QtWidgets.QWidget()
+        range_action_row = QtWidgets.QHBoxLayout(self._range_action_row_widget)
+        range_action_row.setContentsMargins(0, 0, 0, 0)
+        range_action_row.setSpacing(3)
+
+        self._sel_range_btn = QtWidgets.QPushButton('Select')
+        self._sel_range_btn.setToolTip(
+            'Select vertices in range (Shift=add, Ctrl=deselect, Ctrl+Shift=toggle)'
+        )
+        range_action_row.addWidget(self._sel_range_btn)
+
+        self._sel_snap_min_btn = QtWidgets.QPushButton('min')
+        self._sel_snap_min_btn.setFixedWidth(34)
+        self._sel_snap_min_btn.setToolTip('Snap both handles to the lower limit')
+        self._sel_snap_min_btn.setStyleSheet(
+            'background-color: #282828; color: #aaaaaa; font-size: 10px;'
+        )
+        range_action_row.addWidget(self._sel_snap_min_btn)
+
+        self._sel_snap_max_btn = QtWidgets.QPushButton('max')
+        self._sel_snap_max_btn.setFixedWidth(34)
+        self._sel_snap_max_btn.setToolTip('Snap both handles to the upper limit')
+        self._sel_snap_max_btn.setStyleSheet(
+            'background-color: #bbbbbb; color: #111111; font-size: 10px;'
+        )
+        range_action_row.addWidget(self._sel_snap_max_btn)
+        lay.addWidget(self._range_action_row_widget)
+
+        # ── Row 2c : Value mode — Select / value spinbox / ± tol ─────────
+        #   [Select]  [0.50 ↕]  ±  [0.00 ↕]
+        self._value_row_widget = QtWidgets.QWidget()
+        value_row = QtWidgets.QHBoxLayout(self._value_row_widget)
+        value_row.setContentsMargins(0, 0, 0, 0)
+        value_row.setSpacing(3)
+
+        self._sel_value_btn = QtWidgets.QPushButton('Select')
+        self._sel_value_btn.setToolTip(
+            'Select vertices equal to value ± tolerance\n'
+            '(Shift=add, Ctrl=deselect, Ctrl+Shift=toggle)'
+        )
+        value_row.addWidget(self._sel_value_btn)
+
+        self._sel_value_spin = QtWidgets.QDoubleSpinBox()
+        self._sel_value_spin.setRange(-9999.0, 9999.0)
+        self._sel_value_spin.setDecimals(2)
+        self._sel_value_spin.setSingleStep(0.01)
+        self._sel_value_spin.setValue(0.5)
+        self._sel_value_spin.setFixedWidth(62)
+        self._sel_value_spin.setToolTip('Target value')
+        value_row.addWidget(self._sel_value_spin)
+
+        # Tolerance slider + Select button in one composite widget
+        self._sel_tol_slider = SliderWithButton(
+            label='±',
+            min_val=0.0,
+            max_val=1.0,
+            default=0.0,
+            decimals=2,
+            step=0.01,
+            has_button=False)
+
+        self._sel_tol_slider.setToolTip(
+            'Tolerance (0 = exact match)\n'
+            'Select vertices equal to value ± tolerance\n'
+            '(Shift=add, Ctrl=deselect, Ctrl+Shift=toggle)'
+        )
+        value_row.addWidget(self._sel_tol_slider, stretch=1)
+
+        lay.addWidget(self._value_row_widget)
+        self._value_row_widget.hide()   # Range mode by default
+
         return grp
 
     # ------------------------------------------------------------------
@@ -1582,25 +1841,40 @@ class SlimfastWidget(QtWidgets.QWidget):
         # Deformer group
         self._copy_btn.clicked.connect(self._ctrl.copy_weights)
         self._paste_btn.clicked.connect(self._ctrl.paste_weights)
-        self._paint_btn.clicked.connect(self._ctrl.paint)
+        self._paint_btn.clicked.connect(self._on_paint_clicked)
         self._envelope_slider.valueChanged.connect(self._on_envelope_changed)
+
+        # Display range slider — live-push to artisan color range
+        self._display_range_slider.range_changed.connect(
+            lambda lo, hi: self._ctrl.set_artisan_color_range(lo, hi)
+        )
+        self._display_range_fit_btn.clicked.connect(self._refresh_display_range)
 
         # Weights group — Set 0/1 share the same op mode as the slider
         self._set0_btn.clicked.connect(partial(self._on_set_weight, 0.0))
         self._set1_btn.clicked.connect(partial(self._on_set_weight, 1.0))
         self._weight_slider.button_clicked.connect(self._on_set_weight)
-        self._weight_slider.value_changed.connect(self._ctrl.set_artisan_value)
+        self._weight_slider.sliderReleased.connect(
+            lambda: self._ctrl.set_artisan_value(self._weight_slider.value)
+        )
+        self._weight_slider.value_changed.connect(self._on_weight_slider_changed)
+
+        # Clamp section
+        self._clamp_slider.range_changed.connect(self._set_artisan_clamp)
+        self._clamp_min_check.stateChanged.connect(self._set_artisan_clamp)
+        self._clamp_max_check.stateChanged.connect(self._set_artisan_clamp)
 
         # Select group
         self._sel_all_btn.clicked.connect(self._on_select_all)
         self._invert_btn.clicked.connect(self._on_invert_selection)
-        self._sel0_btn.clicked.connect(self._on_select_zero)
-        self._sel1_btn.clicked.connect(self._on_select_one)
         self._border_btn.clicked.connect(self._ctrl.border_selection)
+        self._sel_range_btn.clicked.connect(self._on_select_by_range)
+        self._sel_value_btn.clicked.connect(self._on_select_by_value)
+        self._sel_snap_min_btn.clicked.connect(self._range_sel.snap_to_min)
+        self._sel_snap_max_btn.clicked.connect(self._range_sel.snap_to_max)
+        self._range_fit_btn.clicked.connect(self._on_range_fit)
+        self._sel_mode_check.toggled.connect(self._on_sel_mode_toggled)
 
-        # Tolerance slider ↔ spinbox sync
-        self._tol_slider.valueChanged.connect(self._on_tol_slider_changed)
-        self._tol_spinbox.valueChanged.connect(self._on_tol_spinbox_changed)
 
     # ------------------------------------------------------------------
     # QProperty — smooth iterations
@@ -1628,24 +1902,6 @@ class SlimfastWidget(QtWidgets.QWidget):
         set_smooth_iterations,
         notify=smooth_iterations_changed,
     )
-
-    # ------------------------------------------------------------------
-    # Close event — persist smooth iterations
-    # ------------------------------------------------------------------
-
-    def closeEvent(self, event) -> None:
-        """Persist smooth iteration count and section/mode visibilities on close."""
-        settings = QtCore.QSettings('DrWeeny', 'SlimfastWidget')
-        settings.setValue('smooth_iterations', self.get_smooth_iterations())
-        # Persist smooth mode for the currently active source type
-        settings.setValue(f'smooth_mode_{self._src_type_key}',
-                          self._smooth_mode.currentIndex())
-        settings.setValue('adv_section_visible', self._advanced_section.isVisible())
-        settings.setValue('transfer_section_visible', self._transfer_section.isVisible())
-        settings.setValue('remap_section_visible', self._remap_section.isVisible())
-        for mode_key, btn in self._mode_btns.items():
-            settings.setValue(f'mode_visible_{mode_key}', btn.isVisible())
-        super().closeEvent(event)
 
     # ------------------------------------------------------------------
     # Slots
@@ -1709,6 +1965,28 @@ class SlimfastWidget(QtWidgets.QWidget):
         self._storage_panel.setVisible(checked)
         settings = QtCore.QSettings('DrWeeny', 'SlimfastWidget')
         settings.setValue('storage_expanded', checked)
+
+    # ------------------------------------------------------------------
+    # Session persistence for storage buttons  (DataHub — lives in-process)
+    # ------------------------------------------------------------------
+    def _save_storage_to_hub(self):
+        """Serialise all storage button states into DataHubPub."""
+        hub = data_hub.DataHubPub.Get()
+        snapshot = [btn.to_dict() for btn in self._storage_buttons]
+        hub.publish(self._HUB_KEY, snapshot, overwrite=True, notify=False)
+        logger.debug(f"_save_storage_to_hub: saved {len(snapshot)} buttons")
+
+    def _restore_storage_from_hub(self):
+        """Re-create storage buttons from a previously saved DataHub snapshot."""
+        hub = data_hub.DataHubPub.Get()
+        snapshot = hub.retrieve(self._HUB_KEY)
+        if not snapshot:
+            return
+        logger.debug(f"_restore_storage_from_hub: restoring {len(snapshot)} buttons")
+        for data in snapshot:
+            self._on_add_storage()                   # creates + appends a fresh button
+            btn = self._storage_buttons[-1]
+            btn.from_dict(data)                       # restores storage + label
 
     @Slot()
     def _on_add_storage(self) -> None:
@@ -1838,7 +2116,6 @@ class SlimfastWidget(QtWidgets.QWidget):
         Returns:
             ``'vtxColor'``, ``'nucleus'`` or ``'deformer'``.
         """
-        from dw_maya.dw_paint.vertex_color_alpha import VertexColorAlpha
         src = self._ctrl.active_source
         if isinstance(src, VertexColorAlpha):
             return 'vtxColor'
@@ -1852,6 +2129,82 @@ class SlimfastWidget(QtWidgets.QWidget):
         if checked:
             return checked.property('op') or 'replace'
         return 'replace'
+
+    def _get_artisan_clamp(self) -> None:
+        """Read standard Maya Paint context limits and update UI.
+
+        Signals are blocked while the widgets are updated so that
+        ``_set_artisan_clamp`` is NOT re-triggered (which would push the values
+        back to the context creating a feedback loop).  After the widgets are
+        set we explicitly call ``set_clamp_state`` on the controller so that
+        subsequent numpy operations (flood, smooth) see the same values.
+        """
+        result = self._ctrl.get_artisan_clamp()
+        if not result:
+            return
+
+        clamp_mode, lower_v, upper_v = result
+
+        self._clamp_min_check.blockSignals(True)
+        self._clamp_max_check.blockSignals(True)
+        self._clamp_slider.blockSignals(True)
+
+        self._clamp_min_check.setChecked(clamp_mode in ('lower', 'both'))
+        self._clamp_max_check.setChecked(clamp_mode in ('upper', 'both'))
+        self._clamp_slider.set_range(lower_v, upper_v)
+
+        self._clamp_min_check.blockSignals(False)
+        self._clamp_max_check.blockSignals(False)
+        self._clamp_slider.blockSignals(False)
+
+        # Sync controller stored state so numpy ops use the same limits
+        self._ctrl.set_clamp_state(clamp_mode, lower_v, upper_v)
+
+
+    def _set_artisan_clamp(self, *args) -> None:
+        """Push UI limits down to Maya current Paint Context via controller."""
+        if self._clamp_min_check.isChecked() and self._clamp_max_check.isChecked():
+            clamp_mode = 'both'
+        elif self._clamp_min_check.isChecked():
+            clamp_mode = 'lower'
+        elif self._clamp_max_check.isChecked():
+            clamp_mode = 'upper'
+        else:
+            clamp_mode = 'none'
+
+        cl = self._clamp_slider.low
+        cu = self._clamp_slider.high
+
+        self._ctrl.set_artisan_clamp(clamp_mode, cl, cu)
+
+    @Slot(float)
+    def _on_weight_slider_changed(self, value: float) -> None:
+        """Sync artisan brush value live as the slider / spinbox moves.
+
+        Called on every ``value_changed`` emission from the weight slider
+        (both handle drag and spinbox edit).  We only push to the artisan
+        context — the numpy flood is intentionally deferred to button click
+        so we don't flood on every tick.
+        """
+        self._ctrl.set_artisan_value(value)
+
+    @Slot()
+    def _on_set_weight(self, value: float = None) -> None:
+        """Relay value and op mode to the controller.
+
+        Also syncs the artisan brush value so that the live paint tool and the
+        UI buttons stay coherent — clicking "Set 0.3" makes the artisan brush
+        also paint at 0.3 on the next stroke.
+
+        Args:
+            value: Explicit value (used by Set 0 / Set 1).
+                   Falls back to the slider value when omitted.
+        """
+        if value is None:
+            value = self._weight_slider.value
+        self._ctrl.set_weight(value, self._current_op())
+        # Keep artisan brush in sync with the last-used value
+        self._ctrl.set_artisan_value(value)
 
     @Slot()
     def _on_set_weight(self, value: float = None) -> None:
@@ -1960,8 +2313,8 @@ class SlimfastWidget(QtWidgets.QWidget):
             if node_type == 'blendShape':
                 # One row — target maps are handled by _bs_target_combo
                 item = QtGui.QStandardItem(node_name)
-                item.setData((source_idx, maps[0] if maps else 'weightList'), Qt.UserRole)
-                item.setData((node_type, maps), Qt.UserRole + 1)
+                item.setData((source_idx, maps[0] if maps else 'weightList'), QtCore.Qt.UserRole)
+                item.setData((node_type, maps), QtCore.Qt.UserRole + 1)
                 item.setForeground(QtGui.QBrush(QtGui.QColor(color)))
                 self._source_model.appendRow(item)
                 if first_selectable_row is None:
@@ -1972,8 +2325,8 @@ class SlimfastWidget(QtWidgets.QWidget):
                 for map_name in maps:
                     display = f'{node_name}  › {map_name}'
                     item = QtGui.QStandardItem(display)
-                    item.setData((source_idx, map_name), Qt.UserRole)
-                    item.setData((node_type, maps), Qt.UserRole + 1)
+                    item.setData((source_idx, map_name), QtCore.Qt.UserRole)
+                    item.setData((node_type, maps), QtCore.Qt.UserRole + 1)
                     item.setForeground(QtGui.QBrush(QtGui.QColor(color)))
                     self._source_model.appendRow(item)
                     if first_selectable_row is None:
@@ -1983,8 +2336,8 @@ class SlimfastWidget(QtWidgets.QWidget):
                 # Single-map deformer: one row, just the node name
                 map_name = maps[0] if maps else 'weightList'
                 item = QtGui.QStandardItem(node_name)
-                item.setData((source_idx, map_name), Qt.UserRole)
-                item.setData((node_type, maps), Qt.UserRole + 1)
+                item.setData((source_idx, map_name), QtCore.Qt.UserRole)
+                item.setData((node_type, maps), QtCore.Qt.UserRole + 1)
                 item.setForeground(QtGui.QBrush(QtGui.QColor(color)))
                 self._source_model.appendRow(item)
                 if first_selectable_row is None:
@@ -2000,6 +2353,126 @@ class SlimfastWidget(QtWidgets.QWidget):
         if first_selectable_row is not None:
             self._on_source_combo_changed(first_selectable_row)
 
+    @Slot(object)
+    def _on_active_changed(self, source: Optional[WeightSource]) -> None:
+        has_source = source is not None
+        for w in (self._paint_btn, self._copy_btn, self._paste_btn,
+                  self._set0_btn, self._set1_btn, self._weight_slider):
+            w.setEnabled(has_source)
+
+        # Keep storage buttons in sync with the currently active source/map
+        # Only update current_weight_node (the "restore target").
+        # Do NOT overwrite weight_source — it belongs to stored data.
+        active_map = self._ctrl.active_map
+        for btn in self._storage_buttons:
+            if source and active_map:
+                btn.current_weight_node = f'{source.node_name}.{active_map}'
+            else:
+                btn.current_weight_node = None
+
+        # Update transfer section target label
+        if source and active_map:
+            self._transfer_tgt_label.setText(f'{source.node_name} › {active_map}')
+        else:
+            self._transfer_tgt_label.setText('— (active source) —')
+
+        # --- Map type badge (nucleus only) ---
+        if isinstance(source, NClothMap):
+            _MAP_TYPE_INFO = {
+                0: ('● None  (map disabled)', '#888888'),
+                1: ('● PerVertex', '#4ecdc4'),
+                2: ('● Texture', '#ddcc44'),
+            }
+            try:
+                active_map = self._ctrl.active_map
+                mt = source.map_type(active_map) if active_map else 0
+                text, color = _MAP_TYPE_INFO.get(mt, (f'● type={mt}', '#aaaaaa'))
+                self._map_type_label.setText(text)
+                self._map_type_label.setStyleSheet(f'color: {color}; font-size: 11px;')
+                self._map_type_label.show()
+            except Exception:
+                self._map_type_label.hide()
+        else:
+            self._map_type_label.hide()
+
+        # --- Envelope spinbox ---
+        if has_source and not isinstance(source, NClothMap):
+            env_attr = f'{source.node_name}.envelope'
+            if cmds.objExists(env_attr):
+                try:
+                    val = cmds.getAttr(env_attr)
+                    self._envelope_slider.blockSignals(True)
+                    self._envelope_slider.setValue(val)
+                    self._envelope_slider.blockSignals(False)
+                    self._envelope_slider.setEnabled(True)
+                except Exception:
+                    self._envelope_slider.setEnabled(False)
+            else:
+                self._envelope_slider.setEnabled(False)
+        else:
+            self._envelope_slider.setEnabled(False)
+
+        # --- Alpha preview button (VertexColorAlpha only) ---
+        if isinstance(source, VertexColorAlpha):
+            self._alpha_preview_btn.show()
+        else:
+            # Disable preview if switching away from a vtxColor source
+            if self._alpha_preview_btn.isChecked():
+                self._alpha_preview_btn.setChecked(False)
+            self._alpha_preview_btn.hide()
+
+        # --- Display range banner ---
+        self._refresh_display_range()
+
+    def _refresh_display_range(self) -> None:
+        """Read weight range from the active source and update the display range widget.
+
+        - If weights are strictly inside [0, 1]: hide the banner and pre-set the
+          slider to [0, 1] so Paint will reset Maya's color range to defaults.
+        - If any weight falls outside [0, 1]: show the banner pre-filled with
+          the detected ``(min, max)`` rounded to 1 decimal.
+        """
+        result = self._ctrl.get_weight_range()
+        if result is None:
+            self._display_range_widget.hide()
+            return
+
+        lo, hi = result
+        is_normal = (lo >= 0.0 and hi <= 1.0)
+
+        # Always keep the slider calibrated so _on_paint_clicked can read it
+        self._display_range_slider.blockSignals(True)
+        if is_normal:
+            self._display_range_slider.set_limits(0.0, 1.0)
+            self._display_range_slider.set_range(0.0, 1.0)
+        else:
+            # No padding — padding causes integer-precision drift in the slider
+            # when the limits shift: int(to_norm(0.0) * 99) can round away from 0
+            # producing a spurious -0.1 offset when the max handle is dragged.
+            # The spinboxes already accept any typed value via auto-extend.
+            self._display_range_slider.set_limits(
+                min(lo, 0.0), max(hi, 1.0)
+            )
+            self._display_range_slider.set_range(lo, hi)
+        self._display_range_slider.blockSignals(False)
+
+        self._display_range_widget.setVisible(not is_normal)
+
+    @Slot()
+    def _on_paint_clicked(self) -> None:
+        """Open the paint tool then apply the display colour range.
+
+        ``paint()`` must run first so that the artisan context exists before
+        we try to edit its ``colorrangelower`` / ``colorrangeupper`` flags.
+        The display range slider is always read, even when the banner is
+        hidden (it is pre-seeded to ``[0, 1]`` for normal-range maps so that
+        stale Maya values left over from a previous session are reset).
+        """
+        self._ctrl.paint()
+        lo = self._display_range_slider.low
+        hi = self._display_range_slider.high
+        self._ctrl.set_artisan_color_range(lo, hi)
+
     @Slot(int)
     def _on_source_combo_changed(self, combo_index: int) -> None:
         """Decode (source_idx, map_name) from the selected row and activate both.
@@ -2014,7 +2487,7 @@ class SlimfastWidget(QtWidgets.QWidget):
         item = model.item(combo_index)
         if item is None or not item.isEnabled():
             return
-        data = item.data(Qt.UserRole)
+        data = item.data(QtCore.Qt.UserRole)
         if data is None:
             return
         source_idx, map_name = data
@@ -2026,7 +2499,7 @@ class SlimfastWidget(QtWidgets.QWidget):
             self._ctrl.select_map(map_name)
 
         # Show/populate blendShape target combo when needed
-        extra = item.data(Qt.UserRole + 1)
+        extra = item.data(QtCore.Qt.UserRole + 1)
         node_type = extra[0] if extra else ''
         maps = extra[1] if extra else []
         if node_type == 'blendShape' and maps:
@@ -2214,6 +2687,38 @@ class SlimfastWidget(QtWidgets.QWidget):
     def _on_select_all(self) -> None:
         self._ctrl.select_all(0)
 
+    def _on_select_by_range(self) -> None:
+        """Select vertices within [low, high] of the range slider."""
+        mods = QtWidgets.QApplication.keyboardModifiers()
+        self._ctrl.select_vertices_by_range(
+            self._range_sel.low, self._range_sel.high,
+            self._qt_mods_to_maya(mods)
+        )
+
+    def _on_select_by_value(self) -> None:
+        """Select vertices equal to value ± tolerance."""
+        mods = QtWidgets.QApplication.keyboardModifiers()
+        val = self._sel_value_spin.value()
+        tol = self._sel_tol_spin.value()
+        self._ctrl.select_vertices_by_range(val - tol, val + tol,
+                                            self._qt_mods_to_maya(mods))
+
+    def _on_range_fit(self) -> None:
+        """Fit the range slider limits to the actual min/max of current weights."""
+        w_min, w_max = self._ctrl.get_weight_range()
+        if w_max <= w_min:
+            w_max = w_min + 0.001
+        self._range_sel.set_limits(w_min, w_max)
+        self._range_sel.set_range(w_min, w_max)
+
+    def _on_sel_mode_toggled(self, value_mode: bool) -> None:
+        """Switch between Range and Value selection mode, persist to QSettings."""
+        self._range_slider_row_widget.setVisible(not value_mode)
+        self._range_action_row_widget.setVisible(not value_mode)
+        self._value_row_widget.setVisible(value_mode)
+        settings = QtCore.QSettings(self._org, self._appname)
+        settings.setValue('sel_value_mode', value_mode)
+
     def _on_select_zero(self) -> None:
         mods = QtWidgets.QApplication.keyboardModifiers()
         self._ctrl.select_vertices_by_weight(
@@ -2231,9 +2736,9 @@ class SlimfastWidget(QtWidgets.QWidget):
         )
 
     @staticmethod
-    def _qt_mods_to_maya(mods: Qt.KeyboardModifiers) -> int:
-        shift = bool(mods & Qt.ShiftModifier)
-        ctrl = bool(mods & Qt.ControlModifier)
+    def _qt_mods_to_maya(mods: QtCore.Qt.KeyboardModifiers) -> int:
+        shift = bool(mods & QtCore.Qt.ShiftModifier)
+        ctrl = bool(mods & QtCore.Qt.ControlModifier)
         if ctrl and shift:
             return 5
         if ctrl:
@@ -2245,6 +2750,34 @@ class SlimfastWidget(QtWidgets.QWidget):
     # ------------------------------------------------------------------
     # Help dialog
     # ------------------------------------------------------------------
+    def enterEvent(self, event) -> None:
+        """Called when mouse enters the widget bounding box.
+
+        Soft-syncs the clamp UI from Maya's current artisan context, but
+        throttled to at most once every ``_CLAMP_SYNC_INTERVAL`` seconds so
+        the round-trip to Maya is cheap even when the cursor crosses the
+        window border quickly.
+        """
+        super().enterEvent(event)
+        import time
+        now = time.monotonic()
+        if now - getattr(self, '_last_clamp_sync', 0.0) >= self._CLAMP_SYNC_INTERVAL:
+            self._last_clamp_sync = now
+            self._get_artisan_clamp()
+
+    def closeEvent(self, event) -> None:
+        """Persist smooth iteration count and section/mode visibilities on close."""
+        settings = QtCore.QSettings(self._org, self._appname)
+        settings.setValue('smooth_iterations', self.get_smooth_iterations())
+        # Global smooth mode preference (artisan vs numpy)
+        settings.setValue('smooth_mode', self._smooth_mode.currentIndex())
+        settings.setValue('adv_section_visible', self._advanced_section.isVisible())
+        settings.setValue('transfer_section_visible', self._transfer_section.isVisible())
+        settings.setValue('remap_section_visible', self._remap_section.isVisible())
+        for mode_key, btn in self._mode_btns.items():
+            settings.setValue(f'mode_visible_{mode_key}', btn.isVisible())
+        self._save_storage_to_hub()
+        super().closeEvent(event)
 
     def _show_help(self) -> None:
         msg = QtWidgets.QMessageBox(self)

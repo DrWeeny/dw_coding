@@ -239,7 +239,7 @@ class Deformer(dwnn.MayaNode, WeightSource):
     def paint(self) -> None:
         """Open Maya's artisan paint tool for the active map."""
         from dw_maya.dw_paint.weight_source import _paint_deformer
-        _paint_deformer(self)
+        _paint_deformer(self, self.get_artisan_name())
 
     # ------------------------------------------------------------------
     # Higher-level operations (delegate to dw_paint pure functions)
@@ -622,21 +622,25 @@ class BlendShape(Deformer):
             target=(base_mesh, target_index, target_mesh, in_between_weight)
         )
 
+    def get_artisan_name(self)->str:
+        return "artAttrBlendShapeContext"
+
     def paint(self) -> None:
         """Open artisan for the active map (base mask or per-target weights)."""
         active = self._require_map()
         mesh_short = self.mesh_name.split('|')[-1]
         vtx = cmds.filterExpand(selectionMask=31, expand=False) or []
+        artisan_context_name = self.get_artisan_name()
         if vtx:
             cmds.select(vtx, replace=True)
             cmds.select(mesh_short, add=True)
         else:
             cmds.select(mesh_short, replace=True)
-        if not cmds.artAttrCtx('artAttrCtx', exists=True):
-            cmds.artAttrCtx('artAttrCtx')
+        if not cmds.artAttrCtx(artisan_context_name, exists=True):
+            cmds.artAttrCtx(artisan_context_name)
         if active == 'weightList':
-            mel.eval(f'artSetToolAndSelectAttr "artAttrCtx" "blendShape.{self.node_name}.baseWeights"')
-            mel.eval('setToolTo "artAttrCtx"')
+            mel.eval(f'artSetToolAndSelectAttr "{artisan_context_name}" "blendShape.{self.node_name}.baseWeights"')
+            mel.eval(f'setToolTo "{artisan_context_name}"')
         else:
             target_names = [name for name, _ in self.targets]
             if active not in target_names:
@@ -652,8 +656,8 @@ class BlendShape(Deformer):
                     f"(index {target_index}) on '{self.node_name}'"
                 )
             target_mesh = target_meshes[target_index]
-            mel.eval('setToolTo "artAttrCtx"')
-            mel.eval(f'artSetToolAndSelectAttr "artAttrCtx" "blendShape.{self.node_name}.paintTargetWeights"')
+            mel.eval(f'setToolTo "{artisan_context_name}"')
+            mel.eval(f'artSetToolAndSelectAttr "{artisan_context_name}" "blendShape.{self.node_name}.paintTargetWeights"')
             # artBlendShapeSelectTarget reads the artisan UI's textScrollList
             # (blendShapeTargetList) which may not yet exist when this call
             # fires synchronously.  Deferring pushes it into Maya's event queue
