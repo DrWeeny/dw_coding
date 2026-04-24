@@ -16,6 +16,8 @@ from dw_maya.dw_paint import get_current_artisan_map
 from dw_maya.dw_decorators.dw_undo import singleUndoChunk
 import numpy as np
 
+from dw_maya.dw_pyqt_utils.dw_btn_storage_dnd import DragDropMixin
+
 logger = get_logger()
 
 
@@ -66,7 +68,7 @@ def _resolve_source_for_node(node: str, attr: str):
     return None
 
 
-class VtxStorageButton(QtWidgets.QPushButton):
+class VtxStorageButton(DragDropMixin, QtWidgets.QPushButton):
     """A button that can store and restore vertex weights and selections.
 
     Signals:
@@ -114,6 +116,26 @@ class VtxStorageButton(QtWidgets.QPushButton):
         """Return the stored selection dict (empty if none stored)."""
         return self.storage.get('selection') or {}
 
+    @property
+    def weight_source(self):
+        if self._weight_source:
+            return self._weight_source
+        else:
+            if not self._weight_source and self.storage.get('weight_node'):
+                return self.get_weight_source()
+        return None
+    @weight_source.setter
+    def weight_source(self, value):
+        self._weight_source = value
+
+    def get_weight_source(self):
+        stored_weight_node = self.storage.get('weight_node')
+        if stored_weight_node:
+            node, attr = stored_weight_node.rsplit('.', 1)
+            source = _resolve_source_for_node(node, attr)
+            return source
+        return None
+
     def _setup_ui(self):
         """Setup the button's UI."""
         self.setStyleSheet(self._make_stylesheet(False, False))
@@ -151,6 +173,11 @@ class VtxStorageButton(QtWidgets.QPushButton):
 
     def mousePressEvent(self, event: QtCore.QEvent):
         """Handle mouse press events based on diagonal zone."""
+        if event.button() == QtCore.Qt.MiddleButton:
+            self._drag_start_pos = event.pos()
+            self.grabMouse()  # essential: forces Qt to deliver move events for non-primary buttons
+            return
+
         if event.button() == QtCore.Qt.LeftButton:
             zone = self.get_click_zone(event.pos())
             logger.debug(f"mousePressEvent: zone={zone}")
@@ -166,6 +193,15 @@ class VtxStorageButton(QtWidgets.QPushButton):
 
     def mouseMoveEvent(self, event: QtCore.QEvent):
         """Update tooltip and hover zone based on mouse position."""
+        # Middle-button drag tracking (grabMouse active at this point)
+        if self._drag_start_pos is not None:
+            if (event.pos() - self._drag_start_pos).manhattanLength() >= self._DRAG_THRESHOLD:
+                self.releaseMouse()
+                self._drag_start_pos = None
+                self._start_drag()
+            return  # swallow move while tracking, don't update tooltip/zone
+
+        # Original hover / tooltip logic
         zone = self.get_click_zone(event.pos(), tolerance=0.1)
         if self.storage["weights"] and self.storage["selection"]:
             tooltip_map = {
@@ -182,6 +218,12 @@ class VtxStorageButton(QtWidgets.QPushButton):
         if zone != self._hovered_zone:
             self._hovered_zone = zone
             self.update()
+
+    def mouseReleaseEvent(self, event: QtCore.QEvent):
+        """Cancel drag if middle released before threshold."""
+        if event.button() == QtCore.Qt.MiddleButton and self._drag_start_pos is not None:
+            self.releaseMouse()
+            self._drag_start_pos = None
 
     def enterEvent(self, event: QtCore.QEvent):
         """Show zone tooltips when mouse enters button."""
