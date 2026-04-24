@@ -1923,6 +1923,10 @@ class SlimfastWidget(QtWidgets.QWidget):
     def _on_transfer_apply(self) -> None:
         """Execute the cross-topology weight transfer."""
         src_weights = self._transfer_src_btn.stored_weights
+        if isinstance(src_weights, (list, tuple)):
+            if isinstance(src_weights[0], (list, tuple)):
+                src_weights = src_weights[0]
+
         if not src_weights:
             QtWidgets.QMessageBox.warning(
                 self, 'Transfer',
