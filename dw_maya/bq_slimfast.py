@@ -2699,7 +2699,7 @@ class SlimfastWidget(QtWidgets.QWidget):
         """Select vertices equal to value ± tolerance."""
         mods = QtWidgets.QApplication.keyboardModifiers()
         val = self._sel_value_spin.value()
-        tol = self._sel_tol_spin.value()
+        tol = self._sel_tol_slider.value
         self._ctrl.select_vertices_by_range(val - tol, val + tol,
                                             self._qt_mods_to_maya(mods))
 
