@@ -1315,7 +1315,7 @@ class SlimfastWidget(QtWidgets.QWidget):
         )
         src_row.addWidget(self._transfer_src_btn)
 
-        set_src_btn = QtWidgets.QPushButton('← Active')
+        set_src_btn = QtWidgets.QPushButton('<- Active')
         set_src_btn.setFixedWidth(60)
         set_src_btn.setToolTip('Set this slot\'s source from the currently active deformer')
         set_src_btn.clicked.connect(self._on_transfer_set_source)
@@ -1371,7 +1371,14 @@ class SlimfastWidget(QtWidgets.QWidget):
         old_row.addWidget(self._remap_old_min)
         old_row.addWidget(QtWidgets.QLabel('max'))
         old_row.addWidget(self._remap_old_max)
-        old_row.addStretch()
+
+        self._remap_fit_btn = QtWidgets.QPushButton('-> Fit')
+        self._remap_fit_btn.setFixedWidth(40)
+        self._remap_fit_btn.setFixedHeight(20)
+        self._remap_fit_btn.setToolTip('Auto-fill Old min/max from current weight range')
+        self._remap_fit_btn.clicked.connect(self._on_remap_fit)
+        old_row.addWidget(self._remap_fit_btn)
+
         lay.addLayout(old_row)
 
         # New range row
@@ -1389,7 +1396,14 @@ class SlimfastWidget(QtWidgets.QWidget):
         new_row.addWidget(self._remap_new_min)
         new_row.addWidget(QtWidgets.QLabel('max'))
         new_row.addWidget(self._remap_new_max)
-        new_row.addStretch()
+
+        self._remap_invert_btn = QtWidgets.QPushButton('-> Inv')
+        self._remap_invert_btn.setFixedWidth(40)
+        self._remap_invert_btn.setFixedHeight(20)
+        self._remap_invert_btn.setToolTip('Set Value to the Invert of the Old values')
+        self._remap_invert_btn.clicked.connect(self._on_remap_invert)
+        new_row.addWidget(self._remap_invert_btn)
+
         lay.addLayout(new_row)
 
         remap_btn = QtWidgets.QPushButton('Apply Remap')
@@ -1584,8 +1598,11 @@ class SlimfastWidget(QtWidgets.QWidget):
         self._set0_btn.setStyleSheet('background-color: #282828; color: #aaaaaa;')
         self._set1_btn = QtWidgets.QPushButton('Set to 1')
         self._set1_btn.setStyleSheet('background-color: #bbbbbb; color: #111111;')
+        self.set_invert_btn = QtWidgets.QPushButton('Invert')
+        self.set_invert_btn.setFixedWidth(50)
         set_row.addWidget(self._set0_btn)
         set_row.addWidget(self._set1_btn)
+        set_row.addWidget(self.set_invert_btn)
         lay.addLayout(set_row)
 
         # --- Operation mode radio buttons ---
@@ -1853,6 +1870,8 @@ class SlimfastWidget(QtWidgets.QWidget):
         # Weights group — Set 0/1 share the same op mode as the slider
         self._set0_btn.clicked.connect(partial(self._on_set_weight, 0.0))
         self._set1_btn.clicked.connect(partial(self._on_set_weight, 1.0))
+        self.set_invert_btn.clicked.connect(self._on_remap_invert)
+
         self._weight_slider.button_clicked.connect(self._on_set_weight)
         self._weight_slider.sliderReleased.connect(
             lambda: self._ctrl.set_artisan_value(self._weight_slider.value)
@@ -1870,8 +1889,8 @@ class SlimfastWidget(QtWidgets.QWidget):
         self._border_btn.clicked.connect(self._ctrl.border_selection)
         self._sel_range_btn.clicked.connect(self._on_select_by_range)
         self._sel_value_btn.clicked.connect(self._on_select_by_value)
-        self._sel_snap_min_btn.clicked.connect(self._range_sel.snap_to_min)
-        self._sel_snap_max_btn.clicked.connect(self._range_sel.snap_to_max)
+        self._sel_snap_min_btn.clicked.connect(partial(self._on_select_by_limit, False))
+        self._sel_snap_max_btn.clicked.connect(partial(self._on_select_by_limit, True))
         self._range_fit_btn.clicked.connect(self._on_range_fit)
         self._sel_mode_check.toggled.connect(self._on_sel_mode_toggled)
 
@@ -1915,6 +1934,7 @@ class SlimfastWidget(QtWidgets.QWidget):
         if source and active_map:
             self._transfer_src_btn.current_weight_node = f'{source.node_name}.{active_map}'
             self._transfer_src_btn.weight_source = source
+            self._transfer_src_btn.store_current_data()
             logger.debug(f"Transfer source set to {source.node_name}.{active_map}")
         else:
             logger.warning("No active source to set as transfer source.")
@@ -1962,6 +1982,29 @@ class SlimfastWidget(QtWidgets.QWidget):
             new_min=self._remap_new_min.value(),
             new_max=self._remap_new_max.value(),
         )
+
+    @Slot()
+    def _on_remap_invert(self) -> None:
+        if self._ctrl.active_source:
+            weight_range = self._ctrl.get_weight_range()
+            self._ctrl.remap_weights(old_min=weight_range[0],
+                                     old_max=weight_range[1],
+                                     new_min=weight_range[1],
+                                     new_max=weight_range[0])
+
+    @Slot()
+    def _on_remap_fit(self) -> None:
+        """Fill Old min/max from the actual weight range of the active source."""
+        w_min, w_max = self._ctrl.get_weight_range()
+        self._remap_old_min.setValue(w_min)
+        self._remap_old_max.setValue(w_max)
+
+    @Slot()
+    def _on_remap_invert(self) -> None:
+        """Fill Old min/max from the actual weight range of the active source."""
+        w_min, w_max = self._remap_old_min.value(), self._remap_old_max.value()
+        self._remap_new_min.setValue(w_max)
+        self._remap_new_max.setValue(w_min)
 
     @Slot(bool)
     def _on_storage_toggled(self, checked: bool) -> None:
@@ -2699,13 +2742,58 @@ class SlimfastWidget(QtWidgets.QWidget):
             self._qt_mods_to_maya(mods)
         )
 
-    def _on_select_by_value(self) -> None:
+    def _on_select_by_limit(self, max_limit:bool=True):
+        """
+        When on clicking on min and max for selection of points
+        Args:
+            max_limit (bool): if False it takes the lowest value
+        """
+        # check if something is selected
+        source = self._ctrl.active_source
+        if source:
+            weight_range = self._ctrl.get_weight_range()
+            # for updating slider widget if visible
+            gui_min_limit = self._range_sel.limit_min
+            gui_max_limit = self._range_sel.limit_max
+
+            if max_limit:
+                value = weight_range[1]
+                # updating slider
+                if self._range_sel.isVisible():
+                    if value > 1 and value != gui_max_limit:
+                        self._range_sel.set_range(gui_min_limit, value)
+                    self._range_sel.snap_to_max()
+
+            else:
+                value = weight_range[0]
+                # updating slider
+                if self._range_sel.isVisible():
+                    if value > 0 and value != gui_min_limit:
+                        self._range_sel.set_range(value, gui_max_limit)
+                    self._range_sel.snap_to_min()
+            # updating combobox
+            if self._sel_value_spin.isVisible():
+                # update single value selected
+                self._sel_value_spin.setValue(value)
+                # update tolerance
+                self._sel_tol_slider.value = 0
+            self._on_select_by_value(value, 0)
+
+    def _on_select_by_value(self, value=None, tolerance=None) -> None:
         """Select vertices equal to value ± tolerance."""
         mods = QtWidgets.QApplication.keyboardModifiers()
-        val = self._sel_value_spin.value()
-        tol = self._sel_tol_slider.value
-        self._ctrl.select_vertices_by_range(val - tol, val + tol,
-                                            self._qt_mods_to_maya(mods))
+        if value is None and tolerance is None:
+            val = self._sel_value_spin.value()
+            tol = self._sel_tol_slider.value
+            self._ctrl.select_vertices_by_range(val - tol, val + tol,
+                                                self._qt_mods_to_maya(mods))
+        else:
+            if not isinstance(tolerance, (float, int)):
+                tolerance = 0
+            if isinstance(value, (float, int)):
+                self._ctrl.select_vertices_by_range(value - tolerance,
+                                                    value + tolerance,
+                                                    self._qt_mods_to_maya(mods))
 
     def _on_range_fit(self) -> None:
         """Fit the range slider limits to the actual min/max of current weights."""

@@ -1,89 +1,131 @@
-import maya.cmds as cmds
+"""Pythonic wrapper around cmds.ls — returns typed node objects.
 
-import importlib
+Instead of raw strings, lsNode() returns the richest available Python
+class for each node: Cluster, BlendShape, nConstraint… falling back to
+MayaNode for anything not explicitly registered.
+
+The type registry is built once at import time from the same
+_DEFORMER_CLASSES dict used by make_deformer(), so adding a new deformer
+class automatically makes it available here too.
+
+Usage::
+
+    from dw_maya.dw_lsNode import lsNode
+
+    lsNode('cluster1')              # → Cluster
+    lsNode(type='blendShape')       # → [BlendShape, BlendShape, …]
+    lsNode(type='nComponent')       # → [nComponent, …]
+    lsNode('pCube1')                # → MayaNode  (fallback)
+    lsNode('*', type='transform')   # → [MayaNode, …]  — same flags as cmds.ls
+
+Author: DrWeeny
+"""
+
+from __future__ import annotations
+
+from typing import List, Type
+
+from maya import cmds
+
+from dw_maya.dw_maya_nodes import MayaNode
+from dw_maya.dw_deformers.dw_deformer_class import _DEFORMER_CLASSES
+from dw_maya.dw_nucleus_utils.dw_nconstraint_class import nConstraint, nComponent
 from dw_logger import get_logger
 
 logger = get_logger()
 
 
-class NodeClassLoadError(Exception):
-    """Custom exception for node class loading failures"""
-    pass
+# ---------------------------------------------------------------------------
+# Registry — built once at import time
+# ---------------------------------------------------------------------------
+# _DEFORMER_CLASSES already contains:
+#   cluster, softMod, blendShape, wire, skinCluster
+# We extend it with nucleus and constraint nodes.
+
+_NODE_CLASSES: dict[str, Type] = {
+    **_DEFORMER_CLASSES,
+    'nComponent':        nComponent,
+    'dynamicConstraint': nConstraint,
+}
+
+_DEFAULT_CLASS: Type = MayaNode
 
 
-def getTypeClass():
-    """
-    Retrieve a mapping of node types to their corresponding classes.
-    Includes error logging for failed imports.
+def register_node_class(node_type: str, cls: Type) -> None:
+    """Register a custom class for a Maya node type.
 
-    Returns:
-        dict: Mapping of node types to their classes
-
-    Raises:
-        NodeClassLoadError: If critical classes fail to load
-    """
-    type_mapping = {
-        'nComponent': 'dw_maya.dw_nucleus_utils.nComponent',
-        'dynamicConstraint': 'dw_maya.dw_nucleus_utils.nConstraint',
-        'default': 'dw_maya.dw_maya_nodes.MayaNode'
-    }
-
-    node_classes = {}
-    failed_imports = []
-
-    for node_type, class_path in type_mapping.items():
-        try:
-            module_path, class_name = class_path.rsplit(".", 1)
-            module = importlib.import_module(module_path)
-            node_classes[node_type] = getattr(module, class_name)
-            logger.debug(f"Successfully loaded {class_path} for {node_type}")
-        except ImportError as e:
-            failed_imports.append((node_type, class_path, str(e)))
-            logger.error(f"Failed to import {class_path} for {node_type}: {e}")
-        except AttributeError as e:
-            failed_imports.append((node_type, class_path, str(e)))
-            logger.error(f"Class {class_name} not found in {module_path}: {e}")
-
-    # Check if default class loaded
-    if 'default' not in node_classes:
-        error_msg = f"Failed to load critical default class. Import failures: {failed_imports}"
-        logger.critical(error_msg)
-        raise NodeClassLoadError(error_msg)
-
-    return node_classes
-
-
-def lsNode(*args, **kwargs):
-    """
-    List Maya nodes as Python objects with error logging.
+    Call this from your own module to teach lsNode() about new node types
+    without modifying this file.
 
     Args:
-        *args: Arguments for cmds.ls
-        **kwargs: Keyword arguments for cmds.ls
+        node_type: Maya node type string (as returned by cmds.nodeType).
+        cls:       Class to instantiate for that type.
+
+    Example::
+
+        from dw_maya.dw_lsNode import register_node_class
+        from my_module import MyCustomNode
+
+        register_node_class('myCustomNodeType', MyCustomNode)
+        lsNode(type='myCustomNodeType')  # → [MyCustomNode, …]
+    """
+    _NODE_CLASSES[node_type] = cls
+    logger.debug(f"Registered {cls.__name__} for node type '{node_type}'")
+
+
+# ---------------------------------------------------------------------------
+# Public API
+# ---------------------------------------------------------------------------
+
+def lsNode(*args, **kwargs) -> List:
+    """List Maya nodes as typed Python objects.
+
+    Accepts exactly the same arguments as cmds.ls — all flags are forwarded
+    unchanged.  Each node is wrapped in the richest available class:
+
+    - Known deformers   → Cluster / BlendShape / SoftMod / Wire / SkinCluster
+    - Nucleus nodes     → nConstraint / nComponent
+    - Everything else   → MayaNode
+
+    Args:
+        *args:    Positional arguments forwarded to cmds.ls.
+        **kwargs: Keyword arguments forwarded to cmds.ls.
 
     Returns:
-        list:
-    """
-    output = []
-    try:
-        node_classes = getTypeClass()
-    except NodeClassLoadError as e:
-        logger.critical(f"Failed to initialize node classes: {e}")
-        return output
+        List of typed node objects, empty list if nothing matched.
 
-    # Retrieve nodes using Maya cmds.ls
+    Examples::
+
+        lsNode('cluster1')
+        # [<Cluster node='cluster1' mesh='pSphere1' map=None vtx=382>]
+
+        lsNode(type='blendShape')
+        # [<BlendShape ...>, <BlendShape ...>]
+
+        lsNode('pCube*', type='transform')
+        # [<MayaNode ...>, …]
+
+        lsNode('nComp*')
+        # [<nComponent ...>, …]
+    """
     nodes = cmds.ls(*args, **kwargs)
     if not nodes:
-        return output
+        return []
 
-    # For each node, determine its type and create the appropriate object
+    result = []
     for node in nodes:
         node_type = cmds.nodeType(node)
-        node_class = node_classes.get(node_type, node_classes['default'])
+        cls = _NODE_CLASSES.get(node_type, _DEFAULT_CLASS)
         try:
-            output.append(node_class(node))
+            result.append(cls(node))
         except Exception as e:
-            print(f"Error instantiating {node_class} for node '{node}': {e}")
-            output.append(node_classes['default'](node))  # Fallback to default
+            logger.warning(
+                f"Could not instantiate {cls.__name__} for '{node}' "
+                f"(type '{node_type}'): {e} — falling back to MayaNode"
+            )
+            try:
+                result.append(_DEFAULT_CLASS(node))
+            except Exception as fallback_err:
+                logger.error(f"Fallback also failed for '{node}': {fallback_err}")
 
-    return output
+    return result
