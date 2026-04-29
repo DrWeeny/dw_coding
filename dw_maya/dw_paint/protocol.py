@@ -277,6 +277,25 @@ class WeightSource(ABC):
         attr = self._resolve_attr(self._require_map())
         cmds.setAttr(attr, weights, type='doubleArray')
 
+    def has_weight(self, default_empty_value=None) -> bool:
+        weight_list = list(set(self.get_weights()))
+        if len(weight_list) in (0, 1):
+            if default_empty_value is not None:
+                if weight_list[0] == default_empty_value:
+                    return False
+        return True
+
+    def has_weight_list(self) -> list:
+        output = []
+        tmp = self._current_map
+        for m in self.available_maps():
+            self.use_map(m)
+            has_weight = self.has_weight()
+            output.append(has_weight)
+        if tmp:
+            self.use_map(tmp)
+        return output
+
     # ------------------------------------------------------------------
     # Convenience
     # ------------------------------------------------------------------

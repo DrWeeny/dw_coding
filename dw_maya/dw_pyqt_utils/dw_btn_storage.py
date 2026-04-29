@@ -28,6 +28,8 @@ def _resolve_source_for_node(node: str, attr: str):
     the node cannot be wrapped.
     """
     from dw_maya.dw_paint.weight_source import resolve_weight_sources
+    from dw_maya.dw_deformers import is_deformer
+
 
     # We need the mesh connected to this node to call resolve_weight_sources
     node_type = cmds.nodeType(node)
@@ -35,8 +37,11 @@ def _resolve_source_for_node(node: str, attr: str):
     # Deformer path — query the geometry driven by this deformer
     if node_type in ("nCloth", "nRigid"):
         mode = "nucleus"  # type: str
-    else:
+    elif is_deformer(node):
         mode = "deformer"  # type: str
+    else:
+        mode = "vtxColor"  # type: str
+
 
     meshes = []
     if mode == "deformer":
@@ -44,12 +49,14 @@ def _resolve_source_for_node(node: str, attr: str):
         for sh in shapes:
             parents = cmds.listRelatives(sh, parent=True, fullPath=True)
             meshes.append(parents[0] if parents else sh)
-    else:
+    elif mode == "nucleus":
         # nucleus — try to find the mesh via inputMesh
         from dw_maya.dw_nucleus_utils.dw_core import get_mesh_from_nucx_node
         mesh = get_mesh_from_nucx_node(node)
         if mesh:
             meshes = [mesh]
+    else:
+        meshes = [node] if isinstance(node, str) else node
 
     for mesh in meshes:
         sources = resolve_weight_sources(mesh, mode=mode)
@@ -392,19 +399,26 @@ class VtxStorageButton(DragDropMixin, QtWidgets.QPushButton):
             sel_store: Whether to capture the current vertex selection.
             weight_store: Whether to capture the current weights.
         """
+        node = None
+
         if weight_source is not None:
             self.weight_source = weight_source
-        if not weight_node:
-            # Try artisan context first (active paint session)
-            node, _attr, _type = get_current_artisan_map()
-            if node:
-                weight_node = f"{node}.{_attr}"
-            else:
-                # Fallback to the node set by the parent UI (e.g. bq_slimfast)
-                weight_node = self.current_weight_node
-        logger.debug(f"store_current_data: weight_node={weight_node}, "
-                     f"weight_source={self.weight_source}, "
-                     f"sel_store={sel_store}, weight_store={weight_store}")
+
+        if weight_store:
+            if not weight_node:
+                # Try artisan context first (active paint session)
+                try:
+                    node, _attr, _type = get_current_artisan_map()
+                except:
+                    logger.error("no WeightSource and nothing in artisan tool")
+                if node:
+                    weight_node = f"{node}.{_attr}"
+                else:
+                    # Fallback to the node set by the parent UI (e.g. bq_slimfast)
+                    weight_node = self.current_weight_node
+            logger.debug(f"store_current_data: weight_node={weight_node}, "
+                         f"weight_source={self.weight_source}, "
+                         f"sel_store={sel_store}, weight_store={weight_store}")
         try:
             if sel_store:
                 logger.debug("store_current_data: capturing selection...")
@@ -765,10 +779,12 @@ class VtxStorageButton(DragDropMixin, QtWidgets.QPushButton):
     @property
     def current_weight_node(self):
         if not self._current_weight_node:
-            _node, _attr, _type = get_current_artisan_map()
-            if _node and _attr:
-                return f"{_node}.{_attr}"
-            return None
+            try:
+                _node, _attr, _type = get_current_artisan_map()
+                if _node and _attr:
+                    return f"{_node}.{_attr}"
+            except Exception as e:
+                return None
         return self._current_weight_node
 
     @current_weight_node.setter

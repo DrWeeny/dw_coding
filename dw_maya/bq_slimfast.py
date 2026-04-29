@@ -1478,7 +1478,7 @@ class SlimfastWidget(QtWidgets.QWidget):
         self._mesh_label.setFont(font)
         mesh_row.addWidget(self._mesh_label, stretch=1)
 
-        refresh_btn = QtWidgets.QPushButton('↺')
+        refresh_btn = QtWidgets.QPushButton('mesh picker ↺')
         refresh_btn.setFixedSize(24, 24)
         refresh_btn.setToolTip('Update list from selection')
         refresh_btn.clicked.connect(self._on_refresh)
@@ -1870,7 +1870,7 @@ class SlimfastWidget(QtWidgets.QWidget):
         # Weights group — Set 0/1 share the same op mode as the slider
         self._set0_btn.clicked.connect(partial(self._on_set_weight, 0.0))
         self._set1_btn.clicked.connect(partial(self._on_set_weight, 1.0))
-        self.set_invert_btn.clicked.connect(self._on_remap_invert)
+        self.set_invert_btn.clicked.connect(self._on_weight_invert)
 
         self._weight_slider.button_clicked.connect(self._on_set_weight)
         self._weight_slider.sliderReleased.connect(
@@ -1984,14 +1984,13 @@ class SlimfastWidget(QtWidgets.QWidget):
         )
 
     @Slot()
-    def _on_remap_invert(self) -> None:
+    def _on_weight_invert(self) -> None:
         if self._ctrl.active_source:
             weight_range = self._ctrl.get_weight_range()
             self._ctrl.remap_weights(old_min=weight_range[0],
                                      old_max=weight_range[1],
                                      new_min=weight_range[1],
                                      new_max=weight_range[0])
-
     @Slot()
     def _on_remap_fit(self) -> None:
         """Fill Old min/max from the actual weight range of the active source."""

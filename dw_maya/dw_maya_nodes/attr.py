@@ -24,6 +24,9 @@ class MAttr(object):
         >>> tx.connect('pCube2.translateX')  # Create connection
     """
     _COMPOUND_PATTERN = re.compile('\[(\d+)?:(\d+)?\]')
+    _NUMERIC_TYPES = {"double", "long", "short", "bool", "int", "float", "byte", "doubleLinear", "doubleAngle"}
+    _LIST_TYPES = {"double3", "float3", "long3", "short3"}
+    _CONNECTION_TYPES = {"message"}
 
     def __init__(self, node: str, attr:str ='result'):
         self.__dict__['node'] = node  #: str: current priority node evaluated
@@ -150,6 +153,23 @@ class MAttr(object):
     def __ne__(self, other):
         """Check if two attributes or an attribute and a value are not equal. (unnecessary in Python 3)"""
         return not self.__eq__(other)
+
+    def __bool__(self):
+        """pour faire des if sur des valeurs, et que ca retourne True pour un attribut de type message pour en verifier
+        l'existence"""
+        t = self._type
+
+        # Numeric scalar → truthiness directe (0 = False, sinon True)
+        if t in self.NUMERIC_TYPES:
+            return bool(self.getAttr())
+
+        # Compound/list → any value non-zero
+        if t in self.LIST_TYPES:
+            value = self.getAttr()  # [(x, y, z)]
+            return any(v != 0 for v in value[0])
+
+        # message ou autre → existe = True
+        return True
 
     def setAttr(self, *args, **kwargs):
         """

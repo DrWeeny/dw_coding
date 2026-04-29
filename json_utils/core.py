@@ -53,9 +53,25 @@ Note:
 
 import json
 import os, os.path
-import os
 import time
-import open
+import tempfile
+
+from dw_logger import get_logger
+logger = get_logger()
+
+def get_tmp_dir_path(subfolder: str = "dw_open_tools") -> str:
+    """
+    Retourne un chemin de répertoire temporaire pour stocker des fichiers JSON.
+
+    Args:
+        subfolder (str): Nom du sous-dossier à créer dans le répertoire temporaire.
+
+    Returns:
+        str: Chemin complet du répertoire temporaire.
+    """
+    tmp_dir = os.path.join(tempfile.gettempdir(), subfolder)
+    os.makedirs(tmp_dir, exist_ok=True)
+    return tmp_dir
 
 def update_json_modification_timestamp(json_path:str):
     try:
