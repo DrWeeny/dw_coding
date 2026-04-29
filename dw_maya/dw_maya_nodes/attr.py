@@ -143,6 +143,30 @@ class MAttr(object):
         else:
             logger.warning(f'Failed to connect {self.fullattr} to {other}')
 
+    def __rshift__(self, other):
+        """Connect attributes using the greater than operator.
+
+        Enables the syntax: node.attr1 >> node.attr2
+        """
+        if isinstance(other, MAttr):
+            cmds.connectAttr(self.fullattr, other.fullattr, force=True)
+            logger.info(f'Connected {self.fullattr} to {other.fullattr}')
+            return True
+        else:
+            logger.warning(f'Failed to connect {self.fullattr} to {other}')
+
+    def __lshift__(self, other):
+        """Connect attributes using the greater than operator.
+
+        Enables the syntax: node.attr1 << node.attr2
+        """
+        if isinstance(other, MAttr):
+            cmds.connectAttr(other.fullattr,self.fullattr,  force=True)
+            logger.info(f'Connected {other.fullattr} to {self.fullattr}')
+            return True
+        else:
+            logger.warning(f'Failed to connect {self.fullattr} to {other}')
+
     def __eq__(self, other):
         """Check if two attributes or an attribute and a value are equal."""
         if isinstance(other, MAttr):
