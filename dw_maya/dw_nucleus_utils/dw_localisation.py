@@ -118,23 +118,23 @@ def create_loca_cluster(_in=None,
     mult_enable = dwnn.MayaNode(prefix + 'loca_enable_mult', 'multiplyDivide')
 
     # Connect decompose matrix output to the clusters
-    decomp.outputTranslate > mult_enable.input1
-    mult_enable.output > cls_out.translate
+    decomp.outputTranslate >> mult_enable.input1
+    mult_enable.output >> cls_out.translate
 
     # Create additional multiplyDivide nodes for locator and cluster localization
     mult_enable_loc = dwnn.MayaNode(prefix + 'loca_loc_enable_mult', 'multiplyDivide')
     mult_loc_in = dwnn.MayaNode(prefix + 'loc_in_mult', 'multiplyDivide')
     mult_loc_in.input2.set(*[-1] * 3)
 
-    mult_enable.output > mult_enable_loc.input1
-    mult_enable_loc.output > mult_loc_in.input1
-    mult_loc_in.output > loc_in.t
+    mult_enable.output >> mult_enable_loc.input1
+    mult_enable_loc.output >> mult_loc_in.input1
+    mult_loc_in.output >> loc_in.t
 
     mult_loc_cls = dwnn.MayaNode(prefix + 'cls_in_mult', 'multiplyDivide')
     mult_loc_cls.input2.set(*[-1] * 3)
 
-    mult_enable.output > mult_loc_cls.input1
-    mult_loc_cls.output > cls_in.t
+    mult_enable.output >> mult_loc_cls.input1
+    mult_loc_cls.output >> cls_in.t
 
     # Create attributes for the control node
     nodes = [cls_in.tr, cls_out.tr, loc_in.tr]
@@ -152,8 +152,8 @@ def create_loca_cluster(_in=None,
 
     # Connect attributes to enable localization and camera controls
     for axis in 'XYZ':
-        ctrl_node.localisation > mult_enable.get('input2' + axis)
-        ctrl_node.camera > mult_enable_loc.get('input2' + axis)
+        ctrl_node.localisation >> mult_enable.get('input2' + axis)
+        ctrl_node.camera >> mult_enable_loc.get('input2' + axis)
 
     # If camera node is provided, connect its translation to the locator
     if cam:
@@ -165,7 +165,7 @@ def create_loca_cluster(_in=None,
     # If a matrix node is provided, connect its worldMatrix to the decompose matrix
     if matrix_node:
         nn = dwnn.MayaNode(matrix_node)
-        nn.worldMatrix > decomp.inputMatrix
+        nn.worldMatrix >> decomp.inputMatrix
         return [cls_in.tr, cls_out.tr]
     else:
         return decomp.inputMatrix.fullattr

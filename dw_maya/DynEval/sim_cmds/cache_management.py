@@ -55,7 +55,7 @@ def delete_caches(ncloth: list, delete_file=None):
             cmds.warning(f"Please provide a valid nCloth node, found: '{n}'")
             continue
 
-        cache_nodes = nx.playFromCache.lsconnections(type='cacheFile')
+        cache_nodes = nx.playFromCache.listConnections(type='cacheFile')
         if cache_nodes:
             to_del.extend(set(cache_nodes))
 

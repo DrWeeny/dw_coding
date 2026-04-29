@@ -123,25 +123,24 @@ class MAttr(object):
         return str(self.getAttr())
 
     def __gt__(self, other):
-        """Connect attributes using the greater than operator.
-
-        Enables the syntax: node.attr1 > node.attr2
-
-        Args:
-            other (MAttr): Target attribute to connect to
-
-        Returns:
-            bool: True if connection succeeded
-
-        Example:
-            >>> sphere.tx > cube.tx  # Connects translateX
-        """
         if isinstance(other, MAttr):
-            cmds.connectAttr(self.fullattr, other.fullattr, force=True)
-            logger.info(f'Connected {self.fullattr} to {other.fullattr}')
-            return True
-        else:
-            logger.warning(f'Failed to connect {self.fullattr} to {other}')
+            return self.getAttr() > other.getAttr()
+        return self.getAttr() > other
+
+    def __lt__(self, other):
+        if isinstance(other, MAttr):
+            return self.getAttr() < other.getAttr()
+        return self.getAttr() < other
+
+    def __ge__(self, other):
+        if isinstance(other, MAttr):
+            return self.getAttr() >= other.getAttr()
+        return self.getAttr() >= other
+
+    def __le__(self, other):
+        if isinstance(other, MAttr):
+            return self.getAttr() <= other.getAttr()
+        return self.getAttr() <= other
 
     def __rshift__(self, other):
         """Connect attributes using the greater than operator.

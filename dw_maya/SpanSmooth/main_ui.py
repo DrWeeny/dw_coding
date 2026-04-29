@@ -312,7 +312,7 @@ def smooth_rebuild_animwires(crvs=None, span_smooth=3, do_stack=True):
 
         # Link span smoothing attribute to the conform node
         conform_node = dwnn.MayaNode(rb_reduce[1])
-        span_smooth_attr > conform_node.spans
+        span_smooth_attr >> conform_node.spans
 
 def get_crv_span_smoothed():
     """Retrieve all curves with original span count attributes."""

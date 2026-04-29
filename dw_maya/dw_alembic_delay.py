@@ -54,8 +54,8 @@ def connectDelay(path: str, delay: int = 2):
     minus.input2 = pre_time
 
     # Connect the time attributes
-    time.outTime > minus.input1
-    minus.output > abc_node.time
+    time.outTime >> minus.input1
+    minus.output >> abc_node.time
 
     return abc_minus
 
@@ -155,14 +155,14 @@ def geoCacheDelay():
     offset_adl_02 = dwnn.MayaNode(f"{lag_02.tr}_adl", 'addDoubleLinear')
 
     # Connect offsets to the cache files
-    off1 > offset_adl_01.input1
-    off2 > offset_adl_02.input1
+    off1 >> offset_adl_01.input1
+    off2 >> offset_adl_02.input1
 
     offset_adl_01.input2 = source_start
     offset_adl_02.input2 = source_start
 
-    offset_adl_01.output > lag_01_cache.sourceStart
-    offset_adl_02.output > lag_02_cache.sourceStart
+    offset_adl_01.output >> lag_01_cache.sourceStart
+    offset_adl_02.output >> lag_02_cache.sourceStart
 
     # Parent lag nodes to delay_main and hide them
     lag_01.parentTo(delay_main)
