@@ -6,6 +6,8 @@ import dw_maya.dw_presets_io as dwpreset
 import dw_maya
 from dw_logger import get_logger
 
+from dw_maya.dw_node_registry import register_type
+
 logger = get_logger()
 
 class nConstraint(dwnn.MayaNode):
@@ -443,3 +445,7 @@ class nComponent(dwnn.MayaNode):
 
         elif compo_type == 6:
             return self.geometry
+
+# register for lsNode
+register_type('dynamicConstraint', nConstraint)
+register_type('nComponent', nComponent)

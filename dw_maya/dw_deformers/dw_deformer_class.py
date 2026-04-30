@@ -53,6 +53,8 @@ import dw_maya.dw_presets_io.dw_preset as preset_utils
 from dw_maya.dw_paint.protocol import WeightSource, WeightList
 from dw_logger import get_logger
 
+from dw_maya.dw_node_registry import register_type
+
 logger = get_logger()
 
 
@@ -816,3 +818,8 @@ def make_deformer(node: str,
         )
 
     return cls(node, preset, blend_value)
+
+# register for lsNode
+register_type('deformer', Deformer)
+register_type('cluster', Cluster)
+register_type('blendShape', BlendShape)
