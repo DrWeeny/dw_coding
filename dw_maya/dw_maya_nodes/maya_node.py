@@ -144,6 +144,11 @@ class MayaNode(ObjPointer):
                 elif isinstance(value, str):
                     cmds.setAttr(f'{self.node}.{attr_name}', value, type='string')
 
+    @classmethod
+    def specialize(cls, node: str):
+        from dw_maya.dw_node_registry import resolve
+        return resolve(node)
+
     @property
     def __node(self) -> str:
         """
