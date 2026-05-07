@@ -42,7 +42,7 @@ except ImportError:
 from typing import Dict, List, Optional, Tuple, Union
 
 from maya import cmds, mel
-
+import functools
 import dw_maya.dw_maya_nodes as dwnn
 import dw_maya.dw_paint
 import dw_maya.dw_paint.core
@@ -56,6 +56,21 @@ from dw_logger import get_logger
 from dw_maya.dw_node_registry import register_type
 
 logger = get_logger()
+
+# ---------------------------------------------------------------------------
+# Vertex-count cache
+# ---------------------------------------------------------------------------
+
+@functools.lru_cache(maxsize=256)
+def _cached_poly_vtx_count(shape: str) -> int:
+    """Return the polygon vertex count for *shape*, memoised by name.
+
+    Call ``_cached_poly_vtx_count.cache_clear()`` after any topology change
+    (subdivide, delete components, etc.) to force a fresh query.
+    Returns 0 for non-polygon shapes so callers can fall back to NURBS logic.
+    """
+    result = cmds.polyEvaluate(shape, vertex=True)
+    return result if isinstance(result, int) else 0
 
 
 # ---------------------------------------------------------------------------
@@ -159,16 +174,27 @@ class Deformer(dwnn.MayaNode, WeightSource):
 
     @property
     def vtx_count(self) -> int:
-        """Live vertex / CV count for the active geometry."""
+        """Vertex / CV count for the active geometry.
+
+        Polygon meshes are memoised via ``_cached_poly_vtx_count`` so repeated
+        calls (e.g. from ``_resolve_attr`` + the length guard in ``set_weights``)
+        cost a single dict lookup after the first query.
+        NURBS curves bypass the cache and are always queried live.
+
+        Call ``_cached_poly_vtx_count.cache_clear()`` if mesh topology changes.
+        """
         try:
             shapes = cmds.deformer(self.node_name, query=True, geometry=True) or []
             if not shapes or self.geo_index >= len(shapes):
                 return 0
             shape = shapes[self.geo_index]
-            result = cmds.polyEvaluate(shape, vertex=True)
-            if isinstance(result, int):
-                return result
-            # NURBS curve fallback
+
+            # Fast path: cached polyEvaluate (returns 0 for non-poly shapes)
+            count = _cached_poly_vtx_count(shape)
+            if count > 0:
+                return count
+
+            # NURBS curve fallback — not worth caching, rarely called
             spans = cmds.getAttr(f'{shape}.spans')
             degree = cmds.getAttr(f'{shape}.degree')
             form = cmds.getAttr(f'{shape}.form')

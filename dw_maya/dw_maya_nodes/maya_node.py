@@ -21,11 +21,10 @@ import re
 from . import ObjPointer, MAttr
 from dw_maya.dw_constants.node_re_mappings import SHAPE_PATTERN
 import dw_maya.dw_maya_utils as dwu
-import dw_maya.dw_presets_io as dwpreset
+import dw_maya.dw_presets_io
 from dw_logger import get_logger
 
 logger = get_logger()
-
 
 
 class MayaNode(ObjPointer):
@@ -64,11 +63,10 @@ class MayaNode(ObjPointer):
         # this dict method is used to avoid calling __getattr __
         _input = self.name()
         if _input:
-            self.__dict__['node'] = _input #: str: current priority node evaluated
+            self.__dict__['node'] = _input  #: str: current priority node evaluated
         else:
             self.__dict__['node'] = name
         self.__dict__['item'] = 1  #: int: can be either 0 or 1 and should be exented with Mesh or Cluster
-
 
         # Handle preset if provided
         if preset:
@@ -108,7 +106,7 @@ class MayaNode(ObjPointer):
         Note:
             You cant have the value without .getAttr()
         """
-        if attr in self.listAttr(attr):
+        if attr in self.listAttr(attr=attr):
             return MAttr(self.node, attr)
         elif attr in self.__dict__:
             return self.__dict__[attr]
@@ -134,7 +132,7 @@ class MayaNode(ObjPointer):
             return
 
         # Handle Maya attributes
-        if attr_name in self.listAttr(attr_name):
+        if attr_name in self.listAttr(attr=attr_name):
             try:
                 if not isinstance(value, str):
                     MAttr(self.node, attr_name).setAttr(value)
@@ -189,18 +187,28 @@ class MayaNode(ObjPointer):
             return self.__node
         else:
             _sh = cmds.listRelatives(self.__node, type='shape', ni=True)
+            _test_long = cmds.ls(_sh)
+            if len(_test_long) > 1:
+                _sh = cmds.listRelatives(self.__node, type='shape', ni=True, fullPath=True)
+
             return _sh[0] if _sh else None
 
     @property
     def tr(self) -> str:
         """Returns the transform node, or shape if transform doesn't exist."""
         if cmds.nodeType(self.__node) == 'transform':
-            return self.__node
+            if "|" in self.__node:
+                _tr = cmds.ls(self.__node, type='transform', long=True)
+                return _tr[0] if _tr else None
+            else:
+                return self.__node
         else:
             _tr = cmds.listRelatives(self.__node, p=True)
             if _tr:
                 _sh = cmds.listRelatives(_tr, type='shape', ni=True)
                 if _sh:
+                    if "|" in _tr[0]:
+                        _tr = cmds.ls(_tr, type='transform', long=True)
                     return _tr[0]
         return self.sh
 
@@ -236,30 +244,41 @@ class MayaNode(ObjPointer):
             logger.error(f"Failed to add attribute {long_name}: {e}")
             raise
 
-    def listAttr(self, node_index=None, attr=None):
+    def listAttr(self, *args, node_index=None, attr=None, **kwargs):
         """List all attributes of the node or check if a specific attribute exists.
 
+        Mirrors Maya command style: listAttr("tx") and listAttr(attr="tx") are equivalent.
+
         Args:
-            attr (str, optional): name of an attribute to check
+            *args: Optional positional attribute name (e.g., listAttr("tx")).
+            node_index (int, optional): 0=transform, 1=shape — forces a specific node.
+            attr (str, optional): Attribute name to check existence for.
+            **kwargs: Additional Maya flags for cmds.listAttr (e.g., shortNames=True).
 
         Returns:
-            list: list of attributes, or list containing the attribute if it exists
+            list: All attributes, or [attr] if the attribute was found (with auto index-switching).
         """
+        # If a positional arg was given and attr wasn't set explicitly, treat it as attr
+        if args and attr is None:
+            attr = args[0]
+
         current = self.node
         tr = self.tr
         sh = self.sh
 
-        attr_list_tr = []
-        if tr:
-            attr_list_tr += cmds.listAttr(tr) or []
-            attr_list_tr += cmds.listAttr(tr, shortNames=True) or []
-            attr_list_tr = list(set(attr_list_tr))  # Remove duplicates
+        # Base retrieval honoring kwargs cleanly, ensuring we grab both short/long
+        def _get_attrs(n):
+            if not n: return []
+            res = cmds.listAttr(n, **kwargs) or []
 
-        attr_list_sh = []
-        if sh:
-            attr_list_sh += cmds.listAttr(sh) or []
-            attr_list_sh += cmds.listAttr(sh, shortNames=True) or []
-            attr_list_sh = list(set(attr_list_sh))  # Remove duplicates
+            # Maya requires explicit flagging to grab short names.
+            # If the user didn't explicitly forbid or define flags differently, append short names too.
+            if 'shortNames' not in kwargs and not kwargs:
+                res.extend(cmds.listAttr(n, shortNames=True) or [])
+            return res
+
+        attr_list_tr = set(_get_attrs(tr))
+        attr_list_sh = set(_get_attrs(sh))
 
         # If checking for a specific attribute
         if attr is not None:
@@ -271,7 +290,8 @@ class MayaNode(ObjPointer):
             if current == tr:
                 if exists_in_tr:
                     if exists_in_sh and sh != tr:
-                        logger.warning(f"Attribute `{attr}` exists in both shape and transform, using: {current}.{attr}")
+                        logger.warning(
+                            f"Attribute `{attr}` exists in both shape and transform, using: {current}.{attr}")
                     return [attr]
                 elif exists_in_sh:
                     self.__dict__['item'] = 1  # Switch to shape
@@ -280,7 +300,8 @@ class MayaNode(ObjPointer):
             else:  # current == sh
                 if exists_in_sh:
                     if exists_in_tr and sh != tr:
-                        logger.warning(f"Attribute `{attr}` exists in both shape and transform, using: {current}.{attr}")
+                        logger.warning(
+                            f"Attribute `{attr}` exists in both shape and transform, using: {current}.{attr}")
                     return [attr]
                 elif exists_in_tr:
                     self.__dict__['item'] = 0  # Switch to transform
@@ -290,12 +311,11 @@ class MayaNode(ObjPointer):
         # No specific attribute requested, return all for current node
         if node_index is not None:
             if node_index == 0:
-                return attr_list_tr
+                return list(attr_list_tr)
             else:
-                return attr_list_sh
+                return list(attr_list_sh)
         else:
-            all_attr = attr_list_tr + attr_list_sh
-            all_attr = list(set(all_attr))
+            all_attr = list(attr_list_tr | attr_list_sh)
             return all_attr
 
     def getAttr(self, attr) -> "MAttr":
@@ -307,7 +327,7 @@ class MayaNode(ObjPointer):
         Returns:
             MAttr wrapper if attribute exists
         """
-        if attr in self.listAttr(attr):
+        if attr in self.listAttr(attr=attr):
             return MAttr(self.node, attr)
 
     def getNamespace(self) -> str:
@@ -342,9 +362,9 @@ class MayaNode(ObjPointer):
         return short_name.split(':')[-1]
 
     def attrPreset(self, node: Optional[int] = None,
-                   filter_match:list=None,
-                   filter_exclude:list=None,
-                   in_channelbox:bool=False) -> dict:
+                   filter_match: list = None,
+                   filter_exclude: list = None,
+                   in_channelbox: bool = False) -> dict:
         """Create attribute preset dictionary from node.
 
         Args:
@@ -353,32 +373,33 @@ class MayaNode(ObjPointer):
         Returns:
             Dictionary of attribute values and settings
         """
+        import dw_maya.dw_presets_io.dw_preset
         try:
             if node is not None:
                 _node_preset = self.tr if node == 0 else self.sh
-                preset = dwpreset.dw_preset.createAttrPreset(_node_preset,
-                                                              filter_match=filter_match,
-                                                              filter_exclude=filter_exclude,
-                                                              in_channelbox=in_channelbox)
+                preset = dw_maya.dw_presets_io.dw_preset.createAttrPreset(_node_preset,
+                                                                                        filter_match=filter_match,
+                                                                                        filter_exclude=filter_exclude,
+                                                                                        in_channelbox=in_channelbox)
                 return preset
 
             # Handle both transform and shape
             if self.tr == self.sh:
-                preset = dwpreset.dw_preset.createAttrPreset(self.node,
-                                                            filter_match=filter_match,
-                                                            filter_exclude=filter_exclude,
-                                                              in_channelbox=in_channelbox)
+                preset = dw_maya.dw_presets_io.dw_preset.createAttrPreset(self.node,
+                                                                                        filter_match=filter_match,
+                                                                                        filter_exclude=filter_exclude,
+                                                                                        in_channelbox=in_channelbox)
                 return preset
 
             # Combine transform and shape presets
-            tr_preset = dwpreset.dw_preset.createAttrPreset(self.tr,
-                                                            filter_match=filter_match,
-                                                            filter_exclude=filter_exclude,
-                                                             in_channelbox=in_channelbox)
-            sh_preset = dwpreset.dw_preset.createAttrPreset(self.sh,
-                                                            filter_match=filter_match,
-                                                            filter_exclude=filter_exclude,
-                                                             in_channelbox=in_channelbox)
+            tr_preset = dw_maya.dw_presets_io.dw_preset.createAttrPreset(self.tr,
+                                                                                       filter_match=filter_match,
+                                                                                       filter_exclude=filter_exclude,
+                                                                                       in_channelbox=in_channelbox)
+            sh_preset = dw_maya.dw_presets_io.dw_preset.createAttrPreset(self.sh,
+                                                                                       filter_match=filter_match,
+                                                                                       filter_exclude=filter_exclude,
+                                                                                       in_channelbox=in_channelbox)
             combined_preset = dwu.merge_two_dicts(tr_preset, sh_preset)
 
             return combined_preset
@@ -469,7 +490,7 @@ class MayaNode(ObjPointer):
                 else:
                     cmds.rename(self.tr, name, ignoreShape=True)
                     self.__dict__['node'] = name
-                    cmds.rename(self.sh, name+'Shape')
+                    cmds.rename(self.sh, name + 'Shape')
             self.__dict__['node'] = name
             return self
         except Exception as e:
@@ -500,7 +521,7 @@ class MayaNode(ObjPointer):
 
         # we try to determine if we create a node from scratch or if we load it
         # in case of loading, we need to remap the dictionnary keys with the correct namespace
-        if targ_ns == ':'  or targ_ns == '':
+        if targ_ns == ':' or targ_ns == '':
             # in this case we have created the node with a basestring type so we need to add the namespace
             _type = f"{self.__dict__['node']}_nodeType"
             if _type not in preset:
@@ -536,6 +557,7 @@ class MayaNode(ObjPointer):
         Returns:
             Full path to saved file
         """
+        import dw_maya.dw_presets_io.dw_preset
         try:
             if path.startswith('/'):
                 if not path.endswith('/'):
@@ -545,7 +567,7 @@ class MayaNode(ObjPointer):
                 fullpath = path + file
 
                 logger.info(f'Saving node preset to {fullpath}')
-                return dwpreset.save_json(fullpath, self.attrPreset(), defer=True)
+                return dw_maya.dw_presets_io.save_json(fullpath, self.attrPreset(), defer=True)
         except Exception as e:
             logger.error(f"Failed to save node preset: {e}")
             raise

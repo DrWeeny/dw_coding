@@ -26,15 +26,109 @@ MayaComponent = str
 ComponentID = int
 ComponentRange = str
 
-def selectBorder():
-    """ Select components next to selected ones. """
+_result_border_cache = set()
+_last_selected_border = set()
 
-    sel = cmds.filterExpand(selectionMask=[31, 32, 34])
+def select_border(selection:list=None, mode="outer", select=True)->list:
+    """ Select components next to selected ones. """
+    border = []
+    if not selection:
+        sel = cmds.filterExpand(selectionMask=[31, 32, 34])
+    else:
+        if isinstance(selection, str):
+            selection = [selection]
+        sel = selection
+
     if not sel:
         cmds.warning("Wrong selection. (Must be a components selection.)")
+        return []
+
+    if mode == "outer":
+        grow_sel = grow_component_selection(sel)
+        sel_flat = cmds.ls(sel, flatten=True)
+        border = list(set(grow_sel) - set(sel_flat))
+
+    if mode == "inner":
+        inv = invert_selection(sel, select=False, range_opti=False)
+        grow_sel = grow_component_selection(inv, select=False)
+        border = list(set(grow_sel) & set(sel))
+
+    if select:
+        cmds.select(border)
+    return border
+
+def select_border_recursive(selection: list = None, mode="outer") -> list:
+    """Select the next border ring, advancing one step further on each successive call.
+
+    The function caches its last result. When called again, it checks whether the
+    current selection is fully contained within that cache:
+
+    * **Yes** → the user is continuing outward; the cached frontier is used as the
+      new base and the next border ring is computed from it.
+    * **No**  → the user has changed their selection; the cache is discarded and a
+      fresh border is computed from the current selection.
+
+    Args:
+        selection (list | None): Explicit component list. When *None* the active
+            Maya selection is used.
+        mode (str): ``"outer"`` (default) or ``"inner"`` – passed straight through
+            to :func:`select_border`.
+
+    Returns:
+        list: The newly selected border components.
+    """
+    global _result_border_cache
+    global _last_selected_border
+
+    if not selection:
+        sel = cmds.ls(cmds.filterExpand(selectionMask=[31, 32, 34]) or [], flatten=True)
     else:
-        cmds.GrowPolygonSelectionRegion()
-        cmds.select(sel, deselect=True)
+        if isinstance(selection, str):
+            selection = [selection]
+        sel = cmds.ls(selection, flatten=True)
+
+    if not sel:
+        cmds.warning("Wrong selection. (Must be a components selection.)")
+        return []
+
+    # check if there was a new selection
+    if _result_border_cache:
+        if set(sel) == _last_selected_border:
+            pass
+        else:
+            _result_border_cache = set()
+            print("new selection")
+
+    _inner_border = []
+    if not _result_border_cache:
+        # init the mask with the selection
+        if mode == "outer":
+            _result_border_cache = set(sel)
+        else:
+            # inner is a special case because the border result would be within the cache
+            # so we need to prevently remove the result
+            _inner_border = select_border(sel, mode="inner", select=False)
+            _result_border_cache = set(sel) - set(_inner_border)
+
+    if _inner_border:
+        border = _inner_border
+    elif mode == "inner":
+        border = select_border(sel, mode="outer")
+    else:
+        border = select_border(sel, mode=mode)
+
+    # Flatten border so it is always in the same format as the cache
+    border = cmds.ls(border, flatten=True) if border else []
+    set_border = set(border)
+
+    border = list(set_border-_result_border_cache)
+    _result_border_cache.update(set_border)
+    _last_selected_border = set(border)
+
+    if border:
+        cmds.select(border, replace=True)
+    return border
+
 
 def component_in_list(node_list):
     for name in node_list:
@@ -222,21 +316,31 @@ def invert_selection(select=True, range_opti=True):
     Returns:
         list: Inverted component list
     """
-    from .dw_lsTr import lsTr
+    from dw_maya.dw_maya_utils import lsTr
 
     sel = cmds.ls(sl=True, flatten=True)
-    objs = lsTr(sl=True, o=True)
-    if not sel and objs:
-        new_list = [f"{o}.vtx[:]" for o in objs]
-        if select:
-            cmds.select(new_list)
-        return new_list
+
+    if not sel:
+        # No component selection — fall back to full vtx selection on selected objects
+        objs = lsTr(sl=True, o=True)
+        if objs:
+            new_list = [f"{o}.vtx[:]" for o in objs]
+            if select:
+                cmds.selectMode(component=True)
+                cmds.selectType(vertex=True)
+                cmds.select(new_list)
+            return new_list
+        return []
+
     compo_type = COMPONENT_PATTERN.match(sel[0]).group(2)
+    # Derive object names directly from sel to guarantee name consistency
+    objs = list(dict.fromkeys(s.split('.')[0] for s in sel))
+    sel_set = set(sel)
     new_list = []
     for o in objs:
         sel_filter = f"{o}.{compo_type}[:]"
         _all = cmds.ls(sel_filter, flatten=True)
-        inverse = list(set(_all) - set(sel))
+        inverse = list(set(_all) - sel_set)
 
         if range_opti:
             _range = create_maya_ranges(extract_id(inverse))
@@ -245,6 +349,15 @@ def invert_selection(select=True, range_opti=True):
         else:
             new_list += inverse
     if select:
+        compo_kwargs = {}
+        if compo_type == "vtx":
+            compo_kwargs = {"vertex" : True}
+        elif compo_type == "e":
+            compo_kwargs = {"edge" : True}
+        elif compo_type == "f":
+            compo_kwargs = {"facet" : True}
+        cmds.selectMode(component=True)
+        cmds.selectType(**compo_kwargs)
         cmds.select(new_list, r=True)
     return new_list
 
@@ -287,6 +400,8 @@ def _grow_cv_selection(sel: List[str]) -> List[str]:
         result.append(f"{base}[{start}:{end}]")
     return result
 
+def __flatten(maya_sel, **kwargs):
+    return cmds.ls(maya_sel, flatten=True, **kwargs)
 
 def grow_component_selection(sel: list = None, select: bool = True) -> list:
     """Grow component selection by one topological step.
@@ -317,30 +432,29 @@ def grow_component_selection(sel: list = None, select: bool = True) -> list:
     orig_type = m.group(1)  # 'vtx', 'f', 'e', 'cv', …
 
     # NURBS curve: index expansion
+    as_grow = []
     if orig_type == 'cv':
-        result = _grow_cv_selection(sel)
+        as_grow = _grow_cv_selection(sel)
 
     else:
         # Mesh: vtx → edge → vtx → original type
-        as_vtx = maya.cmds.ls(
-            maya.cmds.polyListComponentConversion(sel, toVertex=True),
-            flatten=True,
-        )
-        as_edge = maya.cmds.polyListComponentConversion(as_vtx, toEdge=True)
-        grown_vtx = maya.cmds.ls(
-            maya.cmds.polyListComponentConversion(as_edge, toVertex=True),
-            flatten=True,
-        )
+        if orig_type != 'vtx':
+            as_init = __flatten(maya.cmds.polyListComponentConversion(sel, toVertex=True))
+        else:
+            as_init = __flatten(maya.cmds.polyListComponentConversion(sel, toEdge=True))
+        if orig_type == 'e':
+            as_grow = __flatten(maya.cmds.polyListComponentConversion(as_init, toEdge=True))
+        elif orig_type == 'f':
+            as_grow = __flatten(maya.cmds.polyListComponentConversion(as_init, toFace=True))
+        elif orig_type == 'vtx':
+            as_grow = __flatten(maya.cmds.polyListComponentConversion(as_init, toVertex=True))
 
-        conv_flags = _TO_COMP_FLAGS.get(orig_type, {'toVertex': True})
-        result = maya.cmds.ls(
-            maya.cmds.polyListComponentConversion(grown_vtx, **conv_flags),
-            flatten=True,
-        )
+    if sel == as_grow:
+        return sel
 
-    if select and result:
-        maya.cmds.select(result, replace=True)
-    return result
+    if select and as_grow:
+        maya.cmds.select(as_grow, replace=True)
+    return as_grow
 
 
 def grow_component_selection_max(sel: list = None, select: bool = True) -> list:

@@ -48,6 +48,9 @@ class MeshData:
         self._vertex_positions: Optional[np.ndarray] = None
         self._vertex_count: Optional[int] = None
         self._neighbors: Optional[Dict[int, List[int]]] = None
+        # Lazy API cache — reset by refresh()
+        self._dag_path_obj: Optional[om.MDagPath] = None
+        self._fn_mesh_obj: Optional[om.MFnMesh] = None
         self._initialize()
 
     def _initialize(self) -> None:
@@ -55,6 +58,31 @@ class MeshData:
         mesh_data = mesh_cache.get_mesh_data(self.mesh_name)
         if mesh_data:
             self._vertex_positions, self._neighbors, self._vertex_count = mesh_data
+
+    # ------------------------------------------------------------------
+    # Cached OpenMaya API objects
+    # ------------------------------------------------------------------
+
+    def _init_api(self) -> None:
+        """Lazily build and cache the MDagPath + MFnMesh for this mesh."""
+        if self._fn_mesh_obj is None:
+            sel = om.MSelectionList()
+            sel.add(self.mesh_name)
+            self._dag_path_obj = sel.getDagPath(0)
+            self._fn_mesh_obj = om.MFnMesh(self._dag_path_obj)
+
+    @property
+    def _dag(self) -> om.MDagPath:
+        """Cached MDagPath for this mesh."""
+        self._init_api()
+        return self._dag_path_obj
+
+    @property
+    def _fn_mesh(self) -> om.MFnMesh:
+        """Cached MFnMesh for this mesh."""
+        self._init_api()
+        return self._fn_mesh_obj
+
 
     @property
     def vertex_count(self) -> int:
@@ -115,11 +143,7 @@ class MeshData:
     def get_vertex_normal(self, vertex_id: int) -> Optional[np.ndarray]:
         """Get normal vector for specific vertex"""
         try:
-            sel = om.MSelectionList()
-            sel.add(self.mesh_name)
-            mesh_dag = sel.getDagPath(0)
-            mesh_fn = om.MFnMesh(mesh_dag)
-            normal = mesh_fn.getVertexNormal(vertex_id, True)
+            normal = self._fn_mesh.getVertexNormal(vertex_id, True)
             return np.array([normal.x, normal.y, normal.z])
         except Exception as e:
             logger.error(f"Error getting vertex normal: {e}")
@@ -128,11 +152,7 @@ class MeshData:
     def get_vertex_normals(self) -> Optional[np.ndarray]:
         """Get all vertex normals"""
         try:
-            sel = om.MSelectionList()
-            sel.add(self.mesh_name)
-            mesh_dag = sel.getDagPath(0)
-            mesh_fn = om.MFnMesh(mesh_dag)
-            normals = mesh_fn.getVertexNormals(True)
+            normals = self._fn_mesh.getVertexNormals(True)
             return np.array([[n.x, n.y, n.z] for n in normals])
         except Exception as e:
             logger.error(f"Error getting vertex normals: {e}")
@@ -149,13 +169,9 @@ class MeshData:
     def get_vertex_colors(self) -> Optional[np.ndarray]:
         """Get vertex colors if they exist"""
         try:
-            sel = om.MSelectionList()
-            sel.add(self.mesh_name)
-            mesh_dag = sel.getDagPath(0)
-            mesh_fn = om.MFnMesh(mesh_dag)
-
-            if mesh_fn.numColorSets > 0:
-                colors = mesh_fn.getVertexColors()
+            fn = self._fn_mesh
+            if fn.numColorSets > 0:
+                colors = fn.getVertexColors()
                 if colors:
                     return np.array([[c.r, c.g, c.b] for c in colors])
         except Exception as e:
@@ -164,6 +180,9 @@ class MeshData:
 
     def refresh(self) -> None:
         """Refresh mesh data from cache"""
+        # Invalidate API cache so next access rebuilds from scratch
+        self._dag_path_obj = None
+        self._fn_mesh_obj = None
         mesh_cache.clear_cache()
         self._initialize()
 
@@ -181,24 +200,13 @@ class MeshData:
             List of edge indices that are on the mesh border
         """
         try:
-            # Get mesh through API
-            sel = om.MSelectionList()
-            sel.add(self.mesh_name)
-            mesh_dag = sel.getDagPath(0)
-
-            # Create edge iterator
-            edge_iter = om.MItMeshEdge(mesh_dag)
+            edge_iter = om.MItMeshEdge(self._dag)
             border_edges = []
-
-            # Iterate through all edges
             while not edge_iter.isDone():
-                # Check if edge is on border (connected to only one face)
                 if edge_iter.onBoundary():
                     border_edges.append(edge_iter.index())
                 edge_iter.next()
-
             return border_edges
-
         except Exception as e:
             logger.error(f"Error getting border edges: {e}")
             return []
@@ -213,20 +221,9 @@ class MeshData:
             List containing the two vertex indices that form the edge
         """
         try:
-            sel = om.MSelectionList()
-            sel.add(self.mesh_name)
-            mesh_dag = sel.getDagPath(0)
-
-            # Create edge iterator and set it to the specified edge
-            edge_iter = om.MItMeshEdge(mesh_dag)
+            edge_iter = om.MItMeshEdge(self._dag)
             edge_iter.setIndex(edge_index)
-
-            # Get vertices of edge
-            vertex0 = edge_iter.vertexId(0)
-            vertex1 = edge_iter.vertexId(1)
-
-            return [vertex0, vertex1]
-
+            return [edge_iter.vertexId(0), edge_iter.vertexId(1)]
         except Exception as e:
             logger.error(f"Error getting edge vertices: {e}")
             return []
@@ -358,14 +355,22 @@ def find_mirror_pairs(
 def get_closest_vertex(
         point: Tuple[float, float, float],
         positions: List[Tuple[float, float, float]]) -> int:
-    """Find the closest vertex to a given point."""
-    min_dist = float('inf')
-    closest_idx = -1
+    """Find the closest vertex to a given point.
 
-    for i, pos in enumerate(positions):
-        dist = math.sqrt(sum((a - b) ** 2 for a, b in zip(point, pos)))
-        if dist < min_dist:
-            min_dist = dist
-            closest_idx = i
-
-    return closest_idx
+    Uses numpy for vectorized distance computation.
+    Falls back to math.sqrt loop if numpy is unavailable (very old Maya).
+    """
+    try:
+        pos_array = np.array(positions)
+        pt = np.array(point)
+        return int(np.argmin(np.linalg.norm(pos_array - pt, axis=1)))
+    except Exception:
+        # math fallback
+        min_dist = float('inf')
+        closest_idx = -1
+        for i, pos in enumerate(positions):
+            dist = math.sqrt(sum((a - b) ** 2 for a, b in zip(point, pos)))
+            if dist < min_dist:
+                min_dist = dist
+                closest_idx = i
+        return closest_idx

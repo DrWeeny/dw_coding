@@ -37,6 +37,8 @@ from dw_maya.dw_paint.utils.conversion import (
 from dw_maya.dw_paint.utils.maya_tool import (get_current_artisan_map,
                                               open_tools_window)
 
+from dw_maya.dw_paint.utils.transfer import transfer_weights
+
 __all__ = [
     # Validation
     'validate_operation_type',
@@ -67,5 +69,7 @@ __all__ = [
 
     # MAYA TOOLS
     'get_current_artisan_map',
-    'open_tools_window'
-]
+    'open_tools_window',
+
+    # Transfer
+    'transfer_weights',]

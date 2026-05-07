@@ -47,6 +47,8 @@ def _ensure_ctx(context_name: Optional[str] = None) -> Optional[str]:
     """
     if not context_name:
         context_name = cmds.currentCtx()
+    if context_name == "selectSuperContext":
+        return None
     return context_name or None
 
 
@@ -225,3 +227,27 @@ def set_artisan_value(value: float, context_name: Optional[str] = None) -> None:
             minvalue=new_min, maxvalue=new_max)
     except Exception:
         pass
+
+def inject_ramp_into_artattr():
+    """
+    inject rainbow color on other deformer
+    """
+    target_frame = 'artAttrOperationFrame'
+
+    if not cmds.frameLayout(target_frame, exists=True):
+        print(f"Frame {target_frame} not found")
+        return
+
+    # Check ramp not already injected
+    if cmds.checkBoxGrp('artisanRampUseRamp', exists=True):
+        print("Ramp already injected — rewiring")
+        mel.eval('artisanRampCallback("artAttrCtx")')
+        return
+
+    # Inject inside the operation frame
+    cmds.setParent(target_frame)
+    mel.eval('source "artisanRampCallback.mel"')
+    mel.eval(f'artisanCreateRamp("{target_frame}", 0)')
+    mel.eval('artisanRampCallback("artAttrCtx")')
+
+    print("Ramp injected successfully")

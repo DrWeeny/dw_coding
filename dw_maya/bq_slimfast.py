@@ -737,7 +737,8 @@ class SlimfastController:
     def transfer_weights(self,
                          src_weights: List[float],
                          src_mesh: str,
-                         tgt_ws: 'WeightSource') -> None:
+                         tgt_ws: 'WeightSource',
+                         src_vtx_transform:list = None) -> None:
         """Transfer weights from a source mesh to the target WeightSource.
 
         Uses nearest-neighbour interpolation in world space, so source and
@@ -767,7 +768,10 @@ class SlimfastController:
                 pts = fn.getPoints(om2.MSpace.kWorld)
                 return np.array([(p.x, p.y, p.z) for p in pts], dtype=np.float64)
 
-            src_pos = _get_world_positions(src_mesh)
+            if not src_vtx_transform:
+                src_pos = _get_world_positions(src_mesh)
+            else:
+                src_pos = np.array(src_vtx_transform, dtype=np.float64)
             tgt_pos = _get_world_positions(tgt_ws.mesh_name)
 
             src_arr = np.array(src_weights, dtype=np.float64)
@@ -1955,14 +1959,62 @@ class SlimfastWidget(QtWidgets.QWidget):
                 'then come back and click Transfer.'
             )
             return
-        src_ws = self._transfer_src_btn.weight_source
-        if src_ws is None:
+
+        src_mesh_name = None
+        try:
+            src_ws = self._transfer_src_btn.weight_source
+            src_mesh_name = src_ws.mesh_name
+            src_mesh_exists = True
+        except:
+            src_mesh_name = self._ctrl.active_source.mesh_name
+            src_mesh_exists = False
+        if src_mesh_name is None:
             QtWidgets.QMessageBox.warning(
                 self, 'Transfer',
                 'Source slot has no associated deformer.\n'
                 'Use "← Active" to capture the source first.'
             )
             return
+
+        src_vtx_transform = self._transfer_src_btn.storage.get("vtx_transform")
+        src_mesh_exists = cmds.objExists(src_mesh_name) if src_mesh_name else False
+
+        # Check if the live mesh topology still matches what was stored at capture time.
+        live_vtx_count = 0
+        if src_mesh_exists:
+            try:
+                live_vtx_count = cmds.polyEvaluate(src_mesh_name, vertex=True)
+            except Exception:
+                live_vtx_count = 0
+        mesh_topology_changed = src_mesh_exists and (live_vtx_count != len(src_weights))
+
+        stored_positions_valid = bool(src_vtx_transform) and len(src_vtx_transform) == len(src_weights)
+
+        if src_mesh_exists and not mesh_topology_changed:
+            # Mesh is intact — live positions are the most accurate, use them directly.
+            logger.debug(
+                f"transfer: '{src_mesh_name}' exists with matching vtx count ({live_vtx_count}), "
+                f"using live positions"
+            )
+            src_vtx_transform = None
+        elif stored_positions_valid:
+            # Mesh deleted OR topology changed — rely on positions captured at store time.
+            reason = "deleted" if not src_mesh_exists else f"topology changed ({live_vtx_count} vs {len(src_weights)} vtx)"
+            logger.warning(
+                f"transfer: source mesh '{src_mesh_name}' {reason} — "
+                f"using {len(src_vtx_transform)} stored vertex positions for KDTree"
+            )
+            # src_vtx_transform already holds the correct data, nothing to do
+        else:
+            # No valid fallback — log and let the controller attempt with live mesh.
+            missing_reason = "not found in scene" if not src_mesh_exists else f"topology changed ({live_vtx_count} vs {len(src_weights)} vtx)"
+            logger.error(
+                f"transfer: source mesh '{src_mesh_name}' {missing_reason} and stored positions "
+                f"are missing or mismatched (stored={len(src_vtx_transform) if src_vtx_transform else 0}, "
+                f"weights={len(src_weights)}) — transfer may be incorrect"
+            )
+            src_vtx_transform = None
+
         tgt_ws = self._ctrl.active_source
         if tgt_ws is None:
             QtWidgets.QMessageBox.warning(
@@ -1971,7 +2023,10 @@ class SlimfastWidget(QtWidgets.QWidget):
                 'Select the target mesh, refresh, and pick a deformer.'
             )
             return
-        self._ctrl.transfer_weights(src_weights, src_ws.mesh_name, tgt_ws)
+        self._ctrl.transfer_weights(src_weights,
+                                    src_mesh_name,
+                                    tgt_ws,
+                                    src_vtx_transform)
 
     @Slot()
     def _on_remap_apply(self) -> None:

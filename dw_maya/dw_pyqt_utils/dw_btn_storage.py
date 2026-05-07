@@ -97,13 +97,14 @@ class VtxStorageButton(DragDropMixin, QtWidgets.QPushButton):
         self.btn_type = None
         self._current_weight_node = None
         # Optional WeightSource — bypasses cmds.getAttr for complex attr paths
-        self.weight_source = None
+        self._weight_source = None
         self.storage: Dict[str, Any] = {
             'weights': [],
             'selection': {},
             'weight_node': None,
             'weight_type': None,
             'component_type': None,
+            'vtx_transform': [],
         }
         self._hovered_zone = self.ZONE_NONE
         self.setMouseTracking(True)
@@ -123,6 +124,10 @@ class VtxStorageButton(DragDropMixin, QtWidgets.QPushButton):
         """Return the stored selection dict (empty if none stored)."""
         return self.storage.get('selection') or {}
 
+    def _setup_ui(self):
+        """Setup the button's UI."""
+        self.setStyleSheet(self._make_stylesheet(False, False))
+
     @property
     def weight_source(self):
         if self._weight_source:
@@ -131,6 +136,7 @@ class VtxStorageButton(DragDropMixin, QtWidgets.QPushButton):
             if not self._weight_source and self.storage.get('weight_node'):
                 return self.get_weight_source()
         return None
+
     @weight_source.setter
     def weight_source(self, value):
         self._weight_source = value
@@ -142,10 +148,6 @@ class VtxStorageButton(DragDropMixin, QtWidgets.QPushButton):
             source = _resolve_source_for_node(node, attr)
             return source
         return None
-
-    def _setup_ui(self):
-        """Setup the button's UI."""
-        self.setStyleSheet(self._make_stylesheet(False, False))
 
     # ------------------------------------------------------------------
     # Zone helpers
@@ -453,6 +455,29 @@ class VtxStorageButton(DragDropMixin, QtWidgets.QPushButton):
             self.storage["selection"][o] = extract_id([s for s in sel if s.startswith(o)])
         self.storage["component_type"] = _compo_type
 
+    @staticmethod
+    def _fetch_vtx_positions(mesh: str) -> list:
+        """Return a list of [x, y, z] world-space positions for every vertex on *mesh*.
+
+        Uses the OpenMaya API for speed; falls back to ``cmds.xform`` on error.
+        """
+        try:
+            from maya.api import OpenMaya as om
+            sel = om.MSelectionList()
+            sel.add(mesh)
+            dag = sel.getDagPath(0)
+            fn = om.MFnMesh(dag)
+            pts = fn.getPoints(om.MSpace.kWorld)
+            return [[p.x, p.y, p.z] for p in pts]
+        except Exception as e:
+            logger.warning(f"_fetch_vtx_positions: OM API failed ({e}), falling back to cmds.xform")
+            try:
+                flat = cmds.xform(f"{mesh}.vtx[*]", q=True, ws=True, t=True) or []
+                return [[flat[i], flat[i + 1], flat[i + 2]] for i in range(0, len(flat), 3)]
+            except Exception as e2:
+                logger.error(f"_fetch_vtx_positions: cmds.xform also failed ({e2})")
+                return []
+
     def _get_weights_for_storage(self, weight_node):
         node, attr = weight_node.rsplit('.', 1)
         _type = cmds.nodeType(node)
@@ -477,6 +502,30 @@ class VtxStorageButton(DragDropMixin, QtWidgets.QPushButton):
         self.storage["weight_node"] = weight_node
         self.storage["weight_type"] = _type
         self.storage["weights"] = weights if isinstance(weights, list) else list(weights or [])
+
+        # --- capture vertex world positions for KDTree transfer ---------------
+        mesh = None
+        if self.weight_source is not None and hasattr(self.weight_source, 'mesh'):
+            mesh = self.weight_source.mesh
+        if not mesh:
+            # Try to get the mesh from deformer geometry
+            try:
+                shapes = cmds.deformer(node, q=True, geometry=True) or []
+                if shapes:
+                    parents = cmds.listRelatives(shapes[0], parent=True, fullPath=True)
+                    mesh = parents[0] if parents else shapes[0]
+            except Exception:
+                pass
+        if not mesh:
+            # Last resort: assume the node itself is (or owns) the mesh
+            mesh = node
+        try:
+            positions = self._fetch_vtx_positions(mesh)
+            self.storage["vtx_transform"] = positions
+            logger.debug(f"_get_weights_for_storage: stored {len(positions)} vtx positions from {mesh}")
+        except Exception as e:
+            logger.warning(f"_get_weights_for_storage: could not store vtx positions: {e}")
+            self.storage["vtx_transform"] = []
 
     # ------------------------------------------------------------------
     # Combine
@@ -701,6 +750,7 @@ class VtxStorageButton(DragDropMixin, QtWidgets.QPushButton):
                 source.use_map(attr)
             logger.debug(f"_set_weights: using weight_source.set_weights ({len(stored_weights)} values)")
             source.set_weights(stored_weights)
+            source.postpaint()
             return
 
         # Fallback — try to auto-resolve
@@ -708,6 +758,9 @@ class VtxStorageButton(DragDropMixin, QtWidgets.QPushButton):
         if source is not None:
             logger.debug(f"_set_weights: auto-resolved {source}, setting weights")
             source.set_weights(stored_weights)
+            source.postpaint()
+            if hasattr(source, "restore_paint_art_attr"):
+                source.restore_paint_art_attr()
             return
 
         # Legacy path
@@ -728,6 +781,20 @@ class VtxStorageButton(DragDropMixin, QtWidgets.QPushButton):
     # Clear / properties
     # ------------------------------------------------------------------
 
+    def clear_storage(self):
+        """Clear stored data."""
+        logger.debug("clear_storage: clearing all data")
+        self.storage = {
+            'weights': [],
+            'selection': {},
+            'weight_node': "",
+            "weight_type": "",
+            'component_type': None,
+            'vtx_transform': [],
+        }
+        self.weight_source = None
+        self._update_button_state(False)
+
     # ------------------------------------------------------------------
     # Serialization helpers (for session persistence via DataHub)
     # ------------------------------------------------------------------
@@ -741,6 +808,7 @@ class VtxStorageButton(DragDropMixin, QtWidgets.QPushButton):
                 'weight_node': self.storage.get('weight_node') or '',
                 'weight_type': self.storage.get('weight_type') or '',
                 'component_type': self.storage.get('component_type'),
+                'vtx_transform': [list(p) for p in (self.storage.get('vtx_transform') or [])],
             },
             'current_weight_node': self._current_weight_node,
             'label': self.text(),
@@ -755,6 +823,7 @@ class VtxStorageButton(DragDropMixin, QtWidgets.QPushButton):
             'weight_node': stored.get('weight_node', ''),
             'weight_type': stored.get('weight_type', ''),
             'component_type': stored.get('component_type'),
+            'vtx_transform': stored.get('vtx_transform', []),
         }
         self._current_weight_node = data.get('current_weight_node')
         label = data.get('label', '')
@@ -762,19 +831,6 @@ class VtxStorageButton(DragDropMixin, QtWidgets.QPushButton):
             self.setText(label)
         has_data = bool(self.storage['weights'] or self.storage['selection'])
         self._update_button_state(has_data)
-
-    def clear_storage(self):
-        """Clear stored data."""
-        logger.debug("clear_storage: clearing all data")
-        self.storage = {
-            'weights': [],
-            'selection': {},
-            'weight_node': "",
-            "weight_type": "",
-            'component_type': None,
-        }
-        self.weight_source = None
-        self._update_button_state(False)
 
     @property
     def current_weight_node(self):
