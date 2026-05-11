@@ -182,35 +182,97 @@ class MayaNode(ObjPointer):
 
     @property
     def sh(self) -> str:
-        """str: return the main node (everything but not transform)"""
-        if cmds.nodeType(self.__node) != 'transform':
-            return self.__node
-        else:
-            _sh = cmds.listRelatives(self.__node, type='shape', ni=True)
-            _test_long = cmds.ls(_sh)
-            if len(_test_long) > 1:
-                _sh = cmds.listRelatives(self.__node, type='shape', ni=True, fullPath=True)
+        """Return the shape node, or the node itself if it is not a transform.
 
-            return _sh[0] if _sh else None
+        Always uses ``fullPath=True`` on :func:`cmds.listRelatives` so the
+        returned name is unambiguous when duplicate short names exist in the
+        scene.
+
+        Returns:
+            str: Shape full/partial path, or fallback to transform name as shape might equal to transform
+        """
+        node = self.__node
+        if cmds.nodeType(node) != 'transform':
+            # Already a shape – partialPathName is usually sufficient, but
+            # resolve to long if the name is ambiguous (contains duplicates).
+            if "|" not in node and len(cmds.ls(node)) > 1:
+                long = cmds.ls(node, long=True)
+                return long[0] if long else node
+            return node
+        _sh = cmds.listRelatives(node, type='shape', ni=True, fullPath=True)
+        return _sh[0] if _sh else self.tr
 
     @property
     def tr(self) -> str:
-        """Returns the transform node, or shape if transform doesn't exist."""
-        if cmds.nodeType(self.__node) == 'transform':
-            if "|" in self.__node:
-                _tr = cmds.ls(self.__node, type='transform', long=True)
+        """Return the transform node, or shape if no transform exists.
+
+        Fixes the previous implementation where ``cmds.listRelatives(p=True)``
+        was called *without* ``fullPath=True``, making the ``"|" in _tr[0]``
+        guard always ``False`` (listRelatives returns short names by default).
+
+        Returns:
+            str: Transform full/partial path, or ``self.sh`` as fallback.
+        """
+        node = self.__node
+        if cmds.nodeType(node) == 'transform':
+            if "|" in node:
+                # Already a long/partial long path – ensure it resolves uniquely.
+                _tr = cmds.ls(node, type='transform', long=True)
                 return _tr[0] if _tr else None
-            else:
-                return self.__node
-        else:
-            _tr = cmds.listRelatives(self.__node, p=True)
-            if _tr:
-                _sh = cmds.listRelatives(_tr, type='shape', ni=True)
-                if _sh:
-                    if "|" in _tr[0]:
-                        _tr = cmds.ls(_tr, type='transform', long=True)
-                    return _tr[0]
+            return node
+        # node is a shape → walk up with fullPath=True so the result is usable
+        _parents = cmds.listRelatives(node, p=True, fullPath=True)
+        if _parents:
+            # Sanity-check: parent must actually own a shape (avoids returning
+            # an intermediate group that happens to be named identically).
+            _sh = cmds.listRelatives(_parents[0], type='shape', ni=True)
+            if _sh:
+                return _parents[0]
         return self.sh
+
+    def getFullPath(self, node_index: int = None) -> str:
+        """Return the unambiguous full DAG path (always starting with ``|``).
+
+        Unlike :attr:`tr` / :attr:`sh` which may return a partial path when
+        the node name is already unique, this method *always* resolves to the
+        full path via ``cmds.ls(..., long=True)``.
+
+        This is equivalent to calling ``ancestor[0].name(long=True)`` on
+        :class:`ObjPointer`, but respects the current ``node_index`` switch
+        (transform vs. shape) and works even after the internal node pointer
+        has been swapped via :meth:`set_node`.
+
+        Args:
+            node_index (int, optional):
+                ``None``  – use the currently active node (default).
+                ``0``     – force the transform.
+                ``1``     – force the shape.
+
+        Returns:
+            str: Full DAG path, or ``None`` if the target does not exist.
+
+        Example:
+            >>> node = MayaNode('pCube1')
+            >>> node.getFullPath()    # '|pCube1|pCubeShape1'  (shape is default)
+            >>> node.getFullPath(0)   # '|pCube1'
+            >>> node.getFullPath(1)   # '|pCube1|pCubeShape1'
+
+            # Nested hierarchy with duplicate names:
+            >>> node = MayaNode('grpA|grpB|pSphere1')
+            >>> node.getFullPath(0)   # '|grpA|grpB|pSphere1'
+            >>> node.getFullPath(1)   # '|grpA|grpB|pSphere1|pSphereShape1'
+        """
+        if node_index == 0:
+            target = self.tr
+        elif node_index == 1:
+            target = self.sh
+        else:
+            target = self.node
+
+        if not target:
+            return None
+        result = cmds.ls(target, long=True)
+        return result[0] if result else None
 
     def addAttr(self,
                 long_name: str,

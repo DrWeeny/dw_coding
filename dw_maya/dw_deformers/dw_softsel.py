@@ -122,3 +122,56 @@ def query_soft_selection() -> tuple:
         it.next()
 
     return components, weights
+
+def list_soft_selection_mask() -> dict:
+    """Return a per-transform full vertex mask from the current soft selection.
+
+    For every transform that has selected vertices, builds a flat list of
+    floats with length == vertex count.  Unselected vertices are 0.0,
+    selected vertices carry their soft-selection weight.
+
+    Returns:
+        dict: {transform_name: [float, ...]}  one entry per affected mesh.
+
+    Example::
+
+        masks = list_soft_selection_mask()
+        # masks['pSphere1'] → [0.0, 0.0, 0.7, 1.0, 0.0, ...]
+    """
+    soft_set = maya.OpenMaya.MRichSelection()
+    maya.OpenMaya.MGlobal.getRichSelection(soft_set)
+
+    sel = maya.OpenMaya.MSelectionList()
+    soft_set.getSelection(sel)
+
+    dag_path  = maya.OpenMaya.MDagPath()
+    component = maya.OpenMaya.MObject()
+
+    result: dict = {}
+
+    it = maya.OpenMaya.MItSelectionList(sel, maya.OpenMaya.MFn.kMeshVertComponent)
+    while not it.isDone():
+        it.getDagPath(dag_path, component)
+        dag_path.pop()                          # shape → transform
+        transform = dag_path.fullPathName()
+
+        # Build an all-zero mask sized to the full vertex count
+        vtx_count = maya.cmds.polyEvaluate(transform, vertex=True)
+        if transform not in result:
+            result[transform] = [0.0] * vtx_count
+
+        fn_component = maya.OpenMaya.MFnSingleIndexedComponent(component)
+
+        def _weight(idx: int) -> float:
+            if fn_component.hasWeights():
+                return fn_component.weight(idx).influence()
+            return 1.0
+
+        # Inject soft weights at the correct indices
+        for idx in range(fn_component.elementCount()):
+            vtx_idx = fn_component.element(idx)
+            result[transform][vtx_idx] = _weight(idx)
+
+        it.next()
+
+    return result

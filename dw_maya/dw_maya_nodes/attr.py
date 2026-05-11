@@ -1,9 +1,9 @@
 from maya import cmds
 from typing import Optional, List
-from dw_maya.dw_decorators import acceptString
+from TechArtsSandbox.abi.maya.decorators_utils import acceptString
 import re
 
-from dw_logger import get_logger
+from TechArtsSandbox.abi.abi_logger import get_logger
 
 logger = get_logger()
 
@@ -24,9 +24,9 @@ class MAttr(object):
         >>> tx.connect('pCube2.translateX')  # Create connection
     """
     _COMPOUND_PATTERN = re.compile('\[(\d+)?:(\d+)?\]')
-    _NUMERIC_TYPES = {"double", "long", "short", "bool", "int", "float", "byte", "doubleLinear", "doubleAngle"}
-    _LIST_TYPES = {"double3", "float3", "long3", "short3"}
-    _CONNECTION_TYPES = {"message"}
+    NUMERIC_TYPES = {"double", "long", "short", "bool", "int", "float", "byte", "doubleLinear", "doubleAngle"}
+    LIST_TYPES = {"double3", "float3", "long3", "short3"}
+    CONNECTION_TYPES = {"message"}
 
     def __init__(self, node: str, attr:str ='result'):
         self.__dict__['node'] = node  #: str: current priority node evaluated
@@ -123,24 +123,140 @@ class MAttr(object):
         return str(self.getAttr())
 
     def __gt__(self, other):
+        """
+        check if the value if superior to another value
+        """
         if isinstance(other, MAttr):
             return self.getAttr() > other.getAttr()
         return self.getAttr() > other
 
     def __lt__(self, other):
+        """
+        check if the value if inferior to another value
+        """
         if isinstance(other, MAttr):
             return self.getAttr() < other.getAttr()
         return self.getAttr() < other
 
     def __ge__(self, other):
+        """
+        check if the value if superior or equal to another value
+        """
         if isinstance(other, MAttr):
             return self.getAttr() >= other.getAttr()
         return self.getAttr() >= other
 
     def __le__(self, other):
+        """
+        check if the value if inferior or equal to another value
+        """
         if isinstance(other, MAttr):
             return self.getAttr() <= other.getAttr()
         return self.getAttr() <= other
+
+    # ------------------------------------------------------------------
+    # In-place arithmetic helpers
+    # ------------------------------------------------------------------
+
+    def _raw_value(self, other):
+        """Return the plain Python value of *other* (unwrap MAttr if needed)."""
+        return other.getAttr() if isinstance(other, MAttr) else other
+
+    def _inplace_op(self, op, other):
+        """Apply *op(a, b)* element-wise for vectors, scalar otherwise.
+
+        Handles the fact that ``cmds.getAttr`` returns ``[(x, y, z)]`` for
+        compound attributes (LIST_TYPES), while ``cmds.setAttr`` expects the
+        components unpacked as positional arguments.
+
+        Args:
+            op (callable): Binary operator, e.g. ``operator.add``.
+            other: A plain scalar/sequence or another :class:`MAttr`.
+
+        Returns:
+            MAttr: *self*, so the in-place assignment keeps the wrapper alive.
+        """
+        current = self.getAttr()
+        other_val = self._raw_value(other)
+
+        if self._type in self.LIST_TYPES:
+            # getAttr returns [(x, y, z)] — unwrap the outer list
+            cv = current[0] if (
+                isinstance(current, (list, tuple))
+                and isinstance(current[0], (list, tuple))
+            ) else current
+
+            if isinstance(other_val, (list, tuple)):
+                ov = other_val[0] if isinstance(other_val[0], (list, tuple)) else other_val
+            else:
+                ov = [other_val] * len(cv)   # broadcast scalar → vector
+
+            new_vec = tuple(op(a, b) for a, b in zip(cv, ov))
+            self.setAttr(*new_vec)           # setAttr needs unpacked components
+        else:
+            self.setAttr(op(current, other_val))
+
+        return self  # ← critical: keep the MAttr alive after `a -= b`
+
+    # ------------------------------------------------------------------
+    # In-place arithmetic operators
+    # ------------------------------------------------------------------
+
+    def __iadd__(self, other):
+        """``node.tx += value`` — adds *value* to the attribute in-place."""
+        import operator
+        return self._inplace_op(operator.add, other)
+
+    def __isub__(self, other):
+        """``node.tx -= value`` — subtracts *value* from the attribute in-place."""
+        import operator
+        return self._inplace_op(operator.sub, other)
+
+    def __imul__(self, other):
+        """``node.tx *= value`` — multiplies the attribute in-place.
+
+        For vector attributes (double3 etc.) the scalar is broadcast to all
+        components, or a matching sequence is applied element-wise.
+        """
+        import operator
+        return self._inplace_op(operator.mul, other)
+
+    def __itruediv__(self, other):
+        """``node.tx /= value`` — true-divides the attribute in-place.
+
+        Raises:
+            ZeroDivisionError: If *other* (or any component of *other*) is 0.
+        """
+        import operator
+        return self._inplace_op(operator.truediv, other)
+
+    def __ifloordiv__(self, other):
+        """``node.tx //= value`` — floor-divides the attribute in-place.
+
+        Raises:
+            ZeroDivisionError: If *other* (or any component of *other*) is 0.
+        """
+        import operator
+        return self._inplace_op(operator.floordiv, other)
+
+    def __imod__(self, other):
+        """``node.tx %= value`` — applies modulo to the attribute in-place.
+
+        Note:
+            Modulo on vector attributes is applied component-wise.
+        """
+        import operator
+        return self._inplace_op(operator.mod, other)
+
+    def __ipow__(self, other):
+        """``node.tx **= value`` — raises the attribute to a power in-place.
+
+        Note:
+            For vector attributes the exponent is applied component-wise.
+            Fractional exponents on negative values will raise a ``ValueError``.
+        """
+        import operator
+        return self._inplace_op(operator.pow, other)
 
     def __rshift__(self, other):
         """Connect attributes using the greater than operator.
@@ -178,8 +294,6 @@ class MAttr(object):
         return not self.__eq__(other)
 
     def __bool__(self):
-        """pour faire des if sur des valeurs, et que ca retourne True pour un attribut de type message pour en verifier
-        l'existence"""
         t = self._type
 
         # Numeric scalar → truthiness directe (0 = False, sinon True)
@@ -208,6 +322,8 @@ class MAttr(object):
                 cmds.setAttr(f'{self._node}.{self.attr}', args[0], **kwargs)
             elif isinstance(args[0], str) and len(args) == 1:
                 cmds.setAttr(f'{self._node}.{self.attr}', args[0], type='string', **kwargs)
+            else:
+                cmds.setAttr(f'{self._node}.{self.attr}', *args, **kwargs)
 
     def getAttr(self, **kwargs):
         """
