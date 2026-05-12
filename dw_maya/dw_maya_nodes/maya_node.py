@@ -134,6 +134,21 @@ class MayaNode(ObjPointer):
         # Handle Maya attributes
         if attr_name in self.listAttr(attr=attr_name):
             try:
+                # Unwrap MAttr — happens with augmented assignment (node.tx += v):
+                #   Python desugars  a.b += x  as  a.b = a.b.__iadd__(x)
+                #   __iadd__ already applied the op in-place and returns self (the MAttr).
+                #   Passing an MAttr object raw to cmds.setAttr raises TypeError.
+                if isinstance(value, MAttr):
+                    # Same node+attr → in-place op already wrote the value; skip.
+                    if value._node == self.node and value.attr == attr_name:
+                        return
+                    # Different source → copy the value across.
+                    value = value.getAttr()
+                    # Normalize compound format: [(x,y,z)] → (x,y,z)
+                    if (isinstance(value, list) and len(value) == 1
+                            and isinstance(value[0], tuple)):
+                        value = value[0]
+
                 if not isinstance(value, str):
                     MAttr(self.node, attr_name).setAttr(value)
             except AttributeError:
@@ -141,6 +156,7 @@ class MayaNode(ObjPointer):
                     cmds.setAttr(f'{self.node}.{attr_name}', value)
                 elif isinstance(value, str):
                     cmds.setAttr(f'{self.node}.{attr_name}', value, type='string')
+
 
     @classmethod
     def specialize(cls, node: str):

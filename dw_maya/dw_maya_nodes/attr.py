@@ -329,10 +329,18 @@ class MAttr(object):
         """
         this is the cmds.getAttr
         Returns:
-            Any: cmds.getAttr()
+            Any: cmds.getAttr() — compound attributes (double3 etc.) are
+            returned as a plain tuple ``(x, y, z)`` rather than Maya's raw
+            ``[(x, y, z)]`` list-of-tuple, so arithmetic and assignment work
+            naturally without extra unwrapping.
         """
         if self.attr in self.listAttr(self.attr) or self._COMPOUND_PATTERN.search(self.attr):
-            return cmds.getAttr(f'{self._node}.{self.attr}', **kwargs)
+            result = cmds.getAttr(f'{self._node}.{self.attr}', **kwargs)
+            # Normalize Maya compound format: [(x, y, z)] → (x, y, z)
+            if (isinstance(result, list) and len(result) == 1
+                    and isinstance(result[0], tuple)):
+                return result[0]
+            return result
 
     @acceptString('destination')
     def connectAttr(self, destination: List[str], force=True):
