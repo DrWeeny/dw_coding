@@ -28,6 +28,22 @@ class MAttr(object):
     LIST_TYPES = {"double3", "float3", "long3", "short3"}
     CONNECTION_TYPES = {"message"}
 
+    # Compound vector/colour attributes — setAttr needs values *unpacked*
+    # e.g. cmds.setAttr('joint.translate', x, y, z)
+    COMPOUND_TYPES = {
+        "double2", "double3", "double4",
+        "float2",  "float3",  "float4",
+        "long2",   "long3",   "long4",
+        "short2",  "short3",  "short4",
+    }
+
+    # Array attributes — setAttr needs  (attr, list, type='doubleArray')
+    ARRAY_TYPES = {
+        "doubleArray", "floatArray", "Int32Array",
+        "vectorArray", "pointArray", "stringArray",
+        "matrix",  # 16-element flat list, type flag required
+    }
+
     def __init__(self, node: str, attr:str ='result'):
         self.__dict__['node'] = node  #: str: current priority node evaluated
         self.__dict__['attribute'] = attr  #: str: current priority node evaluated
@@ -309,21 +325,66 @@ class MAttr(object):
         return True
 
     def setAttr(self, *args, **kwargs):
-        """
-        This is the cmds.setAttr but with string type supported with no flags requirement
+        """Set the attribute value with automatic type-aware dispatch.
+
+        Handles three cases transparently so callers never need to worry
+        about Maya's quirky ``setAttr`` signatures:
+
+        * **Compound** (``double3``, ``float3``, …)  — values are *unpacked*:
+          ``cmds.setAttr('node.translate', x, y, z)``
+        * **Array** (``doubleArray``, ``Int32Array``, …) — list passed with
+          ``type=`` flag: ``cmds.setAttr('node.weights', [...], type='doubleArray')``
+        * **Scalar / string / other** — passed as-is.
+
         Args:
-            *args (Any): maya arguments for the commands
-            **kwargs (Any): all the flag you would try to parse
+            *args:    Value(s) to set.  A single sequence is dispatched by type.
+            **kwargs: Extra flags forwarded to ``cmds.setAttr`` (e.g. ``type=``).
         """
+        full_attr = f'{self._node}.{self.attr}'
+
+        # No-value call (e.g. trigger evaluation)
         if not args:
-            cmds.setAttr(f'{self._node}.{self.attr}', *args, **kwargs)
-        else:
-            if not isinstance(args[0], str) and len(args) == 1:
-                cmds.setAttr(f'{self._node}.{self.attr}', args[0], **kwargs)
-            elif isinstance(args[0], str) and len(args) == 1:
-                cmds.setAttr(f'{self._node}.{self.attr}', args[0], type='string', **kwargs)
-            else:
-                cmds.setAttr(f'{self._node}.{self.attr}', *args, **kwargs)
+            cmds.setAttr(full_attr, **kwargs)
+            return
+
+        # Multiple positional args → already unpacked by caller
+        if len(args) > 1:
+            cmds.setAttr(full_attr, *args, **kwargs)
+            return
+
+        value = args[0]
+
+        # --- string ---------------------------------------------------------
+        if isinstance(value, str):
+            cmds.setAttr(full_attr, value, type='string', **kwargs)
+            return
+
+        # --- sequence (list or tuple) ---------------------------------------
+        if isinstance(value, (list, tuple)) and 'type' not in kwargs:
+            attr_type = self._type
+
+            if attr_type in self.COMPOUND_TYPES:
+                # Flatten one level: getAttr returns [(x,y,z)]; setAttr needs x,y,z
+                flat = (value[0] if (len(value) == 1
+                                     and isinstance(value[0], (list, tuple)))
+                        else value)
+                cmds.setAttr(full_attr, *flat, **kwargs)
+                return
+
+            if attr_type in self.ARRAY_TYPES:
+                # Array attrs need explicit type= flag
+                cmds.setAttr(full_attr, value, type=attr_type, **kwargs)
+                return
+
+            # Unknown sequence type — try unpack first, fall back to list
+            try:
+                cmds.setAttr(full_attr, *value, **kwargs)
+            except Exception:
+                cmds.setAttr(full_attr, value, **kwargs)
+            return
+
+        # --- scalar (int, float, bool …) ------------------------------------
+        cmds.setAttr(full_attr, value, **kwargs)
 
     def getAttr(self, **kwargs):
         """

@@ -149,13 +149,15 @@ class MayaNode(ObjPointer):
                             and isinstance(value[0], tuple)):
                         value = value[0]
 
-                if not isinstance(value, str):
+                if isinstance(value, str):
+                    cmds.setAttr(f'{self.node}.{attr_name}', value, type='string')
+                else:
                     MAttr(self.node, attr_name).setAttr(value)
             except AttributeError:
-                if not isinstance(value, str):
-                    cmds.setAttr(f'{self.node}.{attr_name}', value)
-                elif isinstance(value, str):
+                if isinstance(value, str):
                     cmds.setAttr(f'{self.node}.{attr_name}', value, type='string')
+                else:
+                    cmds.setAttr(f'{self.node}.{attr_name}', value)
 
 
     @classmethod
