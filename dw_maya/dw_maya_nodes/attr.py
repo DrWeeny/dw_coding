@@ -1,9 +1,9 @@
 from maya import cmds
 from typing import Optional, List
-from TechArtsSandbox.abi.maya.decorators_utils import acceptString
+from dw_maya.dw_decorators_utils import acceptString
 import re
 
-from TechArtsSandbox.abi.abi_logger import get_logger
+from dw_logger import get_logger
 
 logger = get_logger()
 
