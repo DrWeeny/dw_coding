@@ -627,6 +627,53 @@ class MayaNode(ObjPointer):
             new_name = self.rename(name)
             return self
 
+    def iter_attrs(self,
+                   attrs: list[str],
+                   skip_missing: bool = True,
+                   skip_duplicates: bool = True,):
+        """Safely iterate over a list of attribute names, yielding MAttr objects.
+
+        Handles case normalization, duplicates, and missing attributes
+        so artists can pass raw lists without worrying about typos or
+        duplicates causing silent failures.
+
+        Args:
+            attrs:           List of attribute names (short or long, any case).
+            skip_missing:    If True, silently skip attrs that don't exist.
+                             If False, raises AttributeError on first missing attr.
+            skip_duplicates: If True, each attr is only yielded once.
+
+
+        Yields:
+            MAttr: One per valid, unique attribute in `attrs`.
+
+        Example:
+            >>> node = MayaNode('pCube1')
+            >>> for mattr in node.iter_attrs(['tx', 'ty', 'tz']):
+            ...     mattr.setAttr(0)
+        """
+        seen = set()
+        all_attrs = self.listAttr()  # one call, cached for the loop
+
+        for raw in attrs:
+            # --- normalize case ---
+            resolved = raw
+            # --- duplicate guard ---
+            if skip_duplicates:
+                if resolved in seen:
+                    continue
+                seen.add(resolved)
+
+            # --- existence check ---
+            if resolved not in all_attrs:
+                if skip_missing:
+                    logger.warning(f"iter_attrs: '{raw}' not found on '{self.node}', skipping.")
+                    continue
+                else:
+                    raise AttributeError(f"'{raw}' doesn't exist on node '{self.node}'")
+
+            yield MAttr(self.node, resolved)
+
     def saveNode(self, path: str, file: str):
         """Save node preset to JSON file.
 
