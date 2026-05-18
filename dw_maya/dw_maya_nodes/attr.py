@@ -1,6 +1,6 @@
 from maya import cmds
 from typing import Optional, List
-from dw_maya.dw_decorators_utils import acceptString
+from dw_maya.dw_decorators import acceptString
 import re
 
 from dw_logger import get_logger
