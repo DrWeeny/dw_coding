@@ -11,3 +11,18 @@ from dw_maya.dw_maya_utils.dw_maya_prefs import MayaVersionInfo
 from dw_maya.dw_maya_utils.dw_uv import closest_uv_on_mesh, nearest_uv_on_mesh, get_uv_from_vtx
 from dw_maya.dw_maya_utils.dw_mesh_utils import extract_faces, separate_mesh
 from dw_maya.dw_maya_utils.dw_vtx import change_curve_pivot, get_common_roots
+from dw_maya.dw_maya_utils.dw_maya_hierarchy import (
+    get_dirty_reasons,
+    build_dirty_cache,
+    get_subtree,
+    dirty_in_subtree,
+    unlocked_attrs,
+    is_constrained,
+    get_fixable_dirty,
+    freeze_node,
+    reset_node_pivot,
+    fix_node,
+    fix_constrained_node,
+    fix_hierarchy,
+)
+

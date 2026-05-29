@@ -71,8 +71,7 @@ _ARTISAN_ATTRS: Dict[str, str] = {
 
 def resolve_weight_sources(
         mesh: str,
-        mode: Literal['all', 'deformer', 'nucleus', 'vtxColor'] = 'all'
-) -> List[WeightSource]:
+        mode: Literal['all', 'deformer', 'nucleus', 'vtxColor'] = 'all') -> List[WeightSource]:
     """Return all WeightMap objects available on a mesh.
 
     Queries both standard deformers (via history) and nucleus per-vertex
@@ -310,7 +309,7 @@ def apply_operation(source: WeightSource,
 # Internal helpers — called by Deformer.paint() and NClothMap.paint()
 # ---------------------------------------------------------------------------
 
-def _paint_deformer(source: WeightSource) -> None:
+def _paint_deformer(source: WeightSource, artisan_context_name:str="artAttrContext") -> None:
     """Open artisan for a standard deformer WeightMap.
 
     Uses ``artSetToolAndSelectAttr`` — the same MEL path Maya's own UI takes.
@@ -339,18 +338,20 @@ def _paint_deformer(source: WeightSource) -> None:
     vtx = cmds.filterExpand(selectionMask=31, expand=False) or []
     if vtx:
         cmds.select(vtx, replace=True)
-        cmds.select(mesh_short, add=True)
     else:
         cmds.select(mesh_short, replace=True)
 
-    if not cmds.artAttrCtx('artAttrCtx', exists=True):
-        cmds.artAttrCtx('artAttrCtx')
+    if not cmds.artAttrCtx(artisan_context_name, exists=True):
+        cmds.artAttrCtx(artisan_context_name)
 
     # artSetToolAndSelectAttr expects the MEL *command* name ('artAttrCtx'),
     # NOT the context instance name ('artAttrContext').
     # The instance name is used for cmds queries/edits; the command name is
     # used in MEL callbacks (artAttrCallback.mel internally calls it as a proc).
+    mel.eval('toolPropertyWindow;')
+    mel.eval(f'setToolTo "{artisan_context_name}";')
     mel.eval(f'artSetToolAndSelectAttr "artAttrCtx" "{artisan_attr}"')
+
 
 def _paint_nucleus_map(source: WeightSource,
                        nucleus_node: Optional[str] = None) -> None:
@@ -429,7 +430,8 @@ def _op_flood(weights: WeightList,
     Separated from :func:`apply_operation` so it can be unit-tested
     without a Maya session.
     """
-    return dw_maya.dw_paint.core.modify_weights(
+    from dw_maya.dw_paint.core import modify_weights
+    return modify_weights(
         weights, value, op, mask,
         min_value=clamp_min, max_value=clamp_max
     )

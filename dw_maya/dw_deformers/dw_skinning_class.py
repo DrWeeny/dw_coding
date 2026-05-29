@@ -262,31 +262,80 @@ class SkinCluster(Deformer):
         else:
             logger.warning(f"Joint '{joint}' does not exist")
 
-    def paint_influence(self, influence: str) -> None:
-        """Open Maya's Paint Skin Weights tool locked to *influence*.
+    # ------------------------------------------------------------------
+    # Paint — skin weights artisan
+    # ------------------------------------------------------------------
 
-        Selects the mesh, switches to the artisan skin paint context and
-        sets the active influence so the user sees that bone's weights
-        immediately — ready for the UI bone-list click callback.
+    def get_artisan_name(self) -> str:
+        """Return the Maya artisan context name for Paint Skin Weights."""
+        return "artAttrSkinPaintCtx"
 
-        Args:
-            influence: Short or partial joint name as returned by
-                       :attr:`influences` (e.g. ``'BB_M_0_Spine2'``).
+    def _paint(self) -> None:
+        """Open Paint Skin Weights focused on the currently active map (influence).
+
+        Flow
+        ----
+        1. Select the mesh.
+        2. Enter ``artAttrSkinPaintCtx`` via ``ArtPaintSkinWeightsTool``.
+        3. If ``_current_map`` is a bone name (not ``'weightList'``), call
+           ``artSkinSelectInfluence`` to lock the viewport colouring onto that
+           specific influence — the same action as clicking a bone in the
+           Influence list in the Tool Settings panel.
+
+        The ``use_map()`` → ``_paint()`` call chain is the intended API::
+
+            sc = SkinCluster('skinCluster1')
+            sc.use_map('BB_M_0_Spine').paint()  # opens paint locked on Spine
         """
-        all_influences = self.influences
-        if influence not in all_influences:
-            logger.warning(
-                f"paint_influence: '{influence}' is not an influence of "
-                f"'{self.node_name}'. Available: {all_influences}"
-            )
+        active_map = self._current_map  # set by use_map()
+
+        mesh = self.mesh_name
+        mesh_short = mesh.split('|')[-1]
+
+        # 1. Select the mesh (preserving any vertex pre-selection)
+        vtx = cmds.filterExpand(selectionMask=31, expand=False) or []
+        if vtx:
+            cmds.select(vtx, replace=True)
+            cmds.select(mesh_short, add=True)
+        else:
+            cmds.select(mesh_short, replace=True)
+
+        # 2. Enter Paint Skin Weights tool
+        mel.eval('ArtPaintSkinWeightsTool')
+
+        if not active_map or active_map == 'weightList':
+            # No specific influence — just open the tool on the mesh
             return
 
-        mesh_short = self.mesh_name.split('|')[-1]
-        cmds.select(mesh_short, replace=True)
+        # 3. Select the influence in the Tool Settings panel and update the
+        #    viewport weight-colour display.
+        #
+        #    The correct MEL sequence (observed via Echo All Commands) is:
+        #      artSkinInflListChanging "<bone_with_ns>" 1;
+        #      artSkinInflListChanged  artAttrSkinPaintCtx;
+        #
+        #    The bone name must keep its namespace — the artisan stores
+        #    influences under their full name (e.g. "_NS_:BB_M_0_Spine").
+        #    We only strip the DAG path prefix ("|") if present.
+        bone_full = active_map.split('|')[-1]
 
-        # Switch to / initialise the skin paint context
-        mel.eval('artAttrSkinJointPaintCtx artAttrSkinPaintCtx')
-        mel.eval(f'artSkinSelectInfluence artAttrSkinPaintCtx "{influence}"')
+        try:
+            mel.eval(f'artSkinInflListChanging "{bone_full}" 1')
+            mel.eval('artSkinInflListChanged artAttrSkinPaintCtx')
+        except Exception as e:
+            logger.warning(
+                f"SkinCluster._paint: could not select influence "
+                f"'{bone_full}' — {e}"
+            )
+
+    def paint_influence(self, bone: str) -> None:
+        """Convenience wrapper: ``use_map(bone)`` then ``_paint()``.
+
+        Args:
+            bone: Influence joint name (short, long, or with namespace).
+        """
+        self.use_map(bone)
+        self._paint()
 
 # registry the node to lsNode
 _node_registry.register_type('skinCluster', SkinCluster)

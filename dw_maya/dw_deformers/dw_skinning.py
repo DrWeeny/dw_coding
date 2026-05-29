@@ -267,24 +267,69 @@ def apply_weight_delta(skin_node: str,
         inf_arr.set(_resolve_inf(name), i)
 
     # ------------------------------------------------------------------ #
-    # 4. Build MDoubleArray — flat layout:
-    #    [vtx0_inf0, vtx0_inf1, …, vtx0_infM,  vtx1_inf0, …, vtxN_infM]
+    # 4. Read the CURRENT full weight array so we have a safe baseline.
+    #    We must do this BEFORE building the write array — vertices outside
+    #    the soft selection must keep their original weights.
+    #    bone_arrays from get_vertex_influence_weights only contains non-zero
+    #    values for vertices INSIDE the soft mask; outside vertices are 0.0.
+    #    If we wrote those zeros we would destroy the donor bone's weights
+    #    everywhere outside the selection.
+    # ------------------------------------------------------------------ #
+    n_total_infs = infs_paths.length()
+
+    # full component set for getWeights
+    fn_comp_all = om1.MFnSingleIndexedComponent()
+    comp_all = fn_comp_all.create(om1.MFn.kMeshVertComponent)
+    fn_comp_all.setCompleteData(vtx_count)
+
+    # API 1.0 getWeights requires 4 args: (dag, comp, MDoubleArray, MScriptUtil_uint_ptr)
+    current_wt = om1.MDoubleArray()
+    _util = om1.MScriptUtil()
+    _util.createFromInt(0)
+    _num_infs_ptr = _util.asUintPtr()
+    skin_fn.getWeights(dag_path, comp_all, current_wt, _num_infs_ptr)
+    # current_wt layout: [vtx0_inf0, vtx0_inf1, …, vtxN_infM-1]  (ALL influences)
+
+    # Build inf-name → total-array column index (needed for patching current_wt)
+    total_inf_col: Dict[str, int] = {
+        infs_paths[i].partialPathName(): i
+        for i in range(n_total_infs)
+    }
+
+    # ------------------------------------------------------------------ #
+    # 5. Build MDoubleArray for the MODIFIED influences only.
+    #    For vertices INSIDE the soft selection (jiggle_arr[vi] > 0):
+    #       - jiggle column  = jiggle_arr[vi]          (new weight)
+    #       - donor columns  = bones_arr[bone][vi]      (reduced weight)
+    #    For vertices OUTSIDE the soft selection:
+    #       - copy current value from getWeights so nothing changes.
     # ------------------------------------------------------------------ #
     wt_arr = om1.MDoubleArray()
     wt_arr.setLength(vtx_count * n_mod)
 
     for vi in range(vtx_count):
-        base = vi * n_mod
+        base_mod = vi * n_mod
+        base_total = vi *    n_total_infs
+        affected = jiggle_arr[vi] > 0.0
+
         for ii, name in enumerate(mod_names):
-            if name == jiggle_joint:
-                w = jiggle_arr[vi]
+            if affected:
+                if name == jiggle_joint:
+                    w = jiggle_arr[vi]
+                else:
+                    arr = bones_arr.get(name, [])
+                    w = arr[vi] if vi < len(arr) else 0.0
             else:
-                arr = bones_arr.get(name, [])
-                w = arr[vi] if vi < len(arr) else 0.0
-            wt_arr.set(w, base + ii)
+                # Outside soft selection — preserve the existing weight
+                col = total_inf_col.get(
+                    name if name != jiggle_joint else name.split('|')[-1],
+                    _resolve_inf(name)
+                )
+                w = current_wt[base_total + col] if col is not None else 0.0
+            wt_arr.set(w, base_mod + ii)
 
     # ------------------------------------------------------------------ #
-    # 5. Single C++ call — no per-vertex Python loop, no skinPercent
+    # 6. Single C++ call — no per-vertex Python loop, no skinPercent
     # ------------------------------------------------------------------ #
     skin_fn.setWeights(dag_path, components, inf_arr, wt_arr, False)
 
@@ -298,34 +343,57 @@ def apply_weight_delta(skin_node: str,
 # ---------------------------------------------------------------------------
 def get_participation(bone_arrays: Dict[str, List[float]],
                       soft_mask: List[float],
-                      heat_participation: float = 0) -> Dict[str, float]:
+                      heat_participation: float = 0,
+                      method: str = 'average') -> Dict[str, float]:
     """Return each bone's soft-weighted participation percentage.
 
-    Multiplies the bone weight at each vertex by the soft mask value then
-    sums — one ``sum()`` call per bone, no inner loop visible in Python.
-
     Args:
-        bone_arrays: Output of ``get_vertex_influence_weights``.
-        soft_mask:   Full-length soft selection mask (parallel to vertex order).
-        heat_participation: if the soft selection is wide, you might want to evaluate the participation on a certain threshold value
-                    within the soft selection weights
+        bone_arrays:        Output of ``get_vertex_influence_weights``.
+        soft_mask:          Full-length soft selection mask (parallel to vertex order).
+        heat_participation: Ignore vertices whose soft_mask value is at or below this
+                            threshold.  Useful to focus on the "hot zone" of a wide
+                            soft selection (e.g. 0.8 = only the inner 20 %).
+                            Must be in [0, 1]; invalid values are clamped to 0.
+        method:             How participation is scored per bone:
+
+                            ``'average'`` *(default)* — density-normalised mean::
+
+                                score[b] = Σ(w[v] × s[v]) / Σ(s[v])
+
+                            The denominator is the total soft-selection "mass"
+                            in the filtered zone, so the result is independent
+                            of how many vertices each bone covers.  A bone that
+                            owns the *centre* of the selection scores high even
+                            if a neighbouring bone covers a wider area.
+
+                            ``'sum'`` — raw weighted sum (legacy behaviour)::
+
+                                score[b] = Σ(w[v] × s[v])
+
+                            Biased toward bones that cover a large number of
+                            vertices; may report the wrong dominant bone when
+                            the selection straddles a skinning boundary.
 
     Returns:
         ``{bone_name: percentage}`` sorted descending, values sum ~100.
     """
-    totals: Dict[str, float] = {}
-    if isinstance(heat_participation, (float, int)):
-        # value should be between 0 and 1
-        if not heat_participation >= 0 and not heat_participation <= 1.0:
-            heat_participation = 0
-    else:
-        heat_participation = 0
+    # ── validate heat_participation ──────────────────────────────────────
+    if not isinstance(heat_participation, (float, int)) or not (0 <= heat_participation <= 1.0):
+        heat_participation = 0.0
 
+    # ── collect vertices that pass the heat filter ───────────────────────
+    # Pre-compute soft_mass once (shared denominator for 'average' mode)
+    soft_mass = sum(s for s in soft_mask if s > heat_participation) or 1.0
+
+    totals: Dict[str, float] = {}
     for bone, arr in bone_arrays.items():
-        # element-wise multiply then sum — vectorised in CPython built-ins
-        total = sum(w * s for w, s in zip(arr, soft_mask) if s > heat_participation)
-        if total > 0.0:
-            totals[bone] = total
+        weighted = sum(w * s for w, s in zip(arr, soft_mask) if s > heat_participation)
+        if weighted <= 0.0:
+            continue
+        if method == 'average':
+            totals[bone] = weighted / soft_mass   # area-independent score in [0, 1]
+        else:  # 'sum'
+            totals[bone] = weighted
 
     grand = sum(totals.values()) or 1.0
     return dict(sorted(
@@ -342,6 +410,34 @@ def get_participation(bone_arrays: Dict[str, List[float]],
 def get_dominant_bone(accumulated: Dict[str, float], top_n: int = 1) -> List[str]:
     """Return the top_n bones by accumulated weight (highest first)."""
     return list(accumulated.keys())[:top_n]  # dict already sorted descending
+
+
+def debug_peak_weights(bone_arrays: Dict[str, List[float]],
+                       soft_mask: List[float],
+                       top_n_vtx: int = 5) -> None:
+    """Print bone weights at the *top_n_vtx* vertices with highest soft_mask.
+
+    Use this to verify that the participation result reflects what actually
+    lives at the centre of the soft selection.
+
+    Example::
+
+        debug_peak_weights(bone_arrays, soft_mask, top_n_vtx=3)
+        # peak vtx 42  (soft=1.000): BB_M_0_Spine=0.900  BB_M_0_Hip=0.100
+        # peak vtx 37  (soft=0.980): BB_M_0_Spine=0.870  BB_M_0_Hip=0.130
+    """
+    # Sort vertex indices by soft_mask descending, take top N
+    ranked = sorted(
+        ((i, s) for i, s in enumerate(soft_mask) if s > 0.0),
+        key=lambda x: x[1], reverse=True
+    )[:top_n_vtx]
+
+    for vtx_idx, soft_w in ranked:
+        bone_vals = {b: arr[vtx_idx] for b, arr in bone_arrays.items()
+                     if vtx_idx < len(arr) and arr[vtx_idx] > 1e-4}
+        bone_str = '  '.join(f'{b}={v:.3f}' for b, v in
+                             sorted(bone_vals.items(), key=lambda x: x[1], reverse=True))
+        print(f"  peak vtx {vtx_idx:>5}  (soft={soft_w:.3f}):  {bone_str}")
 
 
 def get_accumulated_influences(skin_node: str, components: List[str]) -> Dict[str, float]:

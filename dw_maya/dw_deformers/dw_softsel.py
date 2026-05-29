@@ -20,11 +20,97 @@ TODO:
 
 Author: dw_tools
 """
+from typing import Union
 
-import maya.cmds
+from maya import cmds
 import maya.OpenMaya
 import maya.OpenMayaAnim
 
+from enum import IntEnum
+
+from dw_maya.dw_maya_utils import component_in_list
+
+# --- Soft Select Modes ---
+class FalloffMode(IntEnum):
+    Volume = 0
+    Surface = 1
+    Global = 2
+    Object = 3
+
+def __selection_to_vertex(selection: Union[str, list]) -> list:
+    """
+    helper because doing this all the time
+    """
+    to_vertex = cmds.polyListComponentConversion(selection, toVertex=True)
+    return cmds.ls(to_vertex, long=True, flatten=True)
+
+def get_soft_selection_mode()->FalloffMode:
+    value = cmds.softSelect(q=True, softSelectFalloff=True)
+    return FalloffMode(value)
+
+def get_soft_selection_state()->dict:
+    """
+    store the current soft selection state in tool settings
+    """
+    output = {}
+    sse_was_enabled = cmds.softSelect(q=True, softSelectEnabled=True)
+    output["sse_was_enabled"] = sse_was_enabled
+
+    softSelectFalloff          = cmds.softSelect(q=True, softSelectFalloff=True)
+    output["softSelectFalloff"] = softSelectFalloff
+    # Save falloff curve if needed
+    softSelectColorCurve          = cmds.softSelect(q=True, softSelectColorCurve=True)
+    output["softSelectColorCurve"] = softSelectColorCurve
+
+    softSelectDistance = cmds.softSelect(q=True, softSelectDistance=True)
+    output["softSelectDistance"] = softSelectDistance
+
+    softSelectCurve = cmds.softSelect(q=True, softSelectCurve=True)
+    output["softSelectCurve"] = softSelectCurve
+
+    return output
+
+def set_soft_selection_state(selection:list,
+                             softSelectDistance:float=None,
+                             softSelectFalloff:FalloffMode=None,
+                             **kwargs):
+    """
+    if soft selection is not enabled and values are set throught ui, we will need to activate the soft selection
+    for the query
+
+    kwargs :
+        any soft select attribute we would like to edit/set
+        mainly for falloff curve if supported in ui
+    """
+    # conform selection component to vertex
+    if component_in_list(selection) not in ["vtx"]:
+        selection =  __selection_to_vertex(selection)
+
+    cmds.select(selection, replace=True)
+
+    # enable soft select
+    enabled = kwargs.get("softSelectEnabled", True)
+    cmds.softSelect(edit=True, softSelectEnabled=enabled)
+    kwargs.pop("softSelectEnabled", None)
+
+    # set main values
+    if softSelectDistance is not None:
+        cmds.softSelect(edit=True, softSelectFalloff=softSelectFalloff)
+    if softSelectFalloff is not None:
+        cmds.softSelect(edit=True, softSelectDistance=softSelectDistance)
+    for key, value in kwargs.items():
+        sub_kwargs = {key: value}
+        cmds.softSelect(edit=True, **sub_kwargs)
+
+
+def restore_soft_selection_state(output:dict):
+    """
+    Args:
+        output: dictionnary with cmds.softSelect kwargs to edit with their values
+    """
+    for key in output:
+        kwargs = {key:output[key]}
+        cmds.softSelect(edit=True, **kwargs)
 
 def set_cluster_weights_from_soft_selection(
     clusterDeformer: str = "",
@@ -44,15 +130,15 @@ def set_cluster_weights_from_soft_selection(
         geoFaces = []
 
     # convert selection to verts
-    vert = maya.cmds.polyListComponentConversion(geoFaces, toVertex=True)
-    maya.cmds.select(vert, r=True)
+    vert = cmds.polyListComponentConversion(geoFaces, toVertex=True)
+    cmds.select(vert, r=True)
 
     # get soft-select weights if falloffRadius is specified, else default to 1.0
     if falloffRadius:
-        maya.cmds.softSelect(e=True, softSelectEnabled=True, ssd=falloffRadius)
+        cmds.softSelect(e=True, softSelectEnabled=True, ssd=falloffRadius)
         components, weights = query_soft_selection()
     else:
-        components = maya.cmds.ls(vert, flatten=True)
+        components = cmds.ls(vert, flatten=True)
         weights = [1.0] * len(components)
 
     # get cluster MObject
@@ -156,7 +242,7 @@ def list_soft_selection_mask() -> dict:
         transform = dag_path.fullPathName()
 
         # Build an all-zero mask sized to the full vertex count
-        vtx_count = maya.cmds.polyEvaluate(transform, vertex=True)
+        vtx_count = cmds.polyEvaluate(transform, vertex=True)
         if transform not in result:
             result[transform] = [0.0] * vtx_count
 

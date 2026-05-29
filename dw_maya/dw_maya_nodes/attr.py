@@ -1,5 +1,5 @@
 from maya import cmds
-from typing import Optional, List
+from typing import Any, Dict, Optional, List
 from dw_maya.dw_decorators import acceptString
 import re
 
@@ -43,6 +43,11 @@ class MAttr(object):
         "vectorArray", "pointArray", "stringArray",
         "matrix",  # 16-element flat list, type flag required
     }
+
+    # Attribute types are immutable in Maya (you cannot change a double to a
+    # string after creation).  Caching is therefore safe for the full session.
+    # Cleared on file new/open via MayaNode._clear_all_caches().
+    _type_cache: Dict[str, Any] = {}
 
     def __init__(self, node: str, attr:str ='result'):
         self.__dict__['node'] = node  #: str: current priority node evaluated
@@ -466,15 +471,50 @@ class MAttr(object):
         return f'{self.node}.{self.attr}'
 
     @property
-    def _type(self):
+    def _type(self) -> Any:
         """
+        Return the attribute's type string, using a class-level cache.
+
+        Attribute types are immutable in Maya, so the cached value is always
+        valid for the life of the session.  The cache is cleared globally by
+        MayaNode._clear_all_caches() on file-new / file-open events.
+
         Returns:
-            str: type of the current attribute
+            str: Maya attribute type (e.g. 'double', 'double3', 'message').
         """
-        o = cmds.getAttr(f'{self._node}.{self.attr}', type=True)
-        if isinstance(o, (list, tuple)):
-            return list(set(o))
-        return o
+        cache_key = f"{self._node}.{self.attr}"
+        cached = MAttr._type_cache.get(cache_key)
+        if cached is not None:
+            return cached
+        result = cmds.getAttr(cache_key, type=True)
+        if isinstance(result, (list, tuple)):
+            result = list(set(result))
+        MAttr._type_cache[cache_key] = result
+        return result
+
+    @classmethod
+    def invalidate_type_cache(cls, node: Optional[str] = None) -> None:
+        """
+        Clear the attribute type cache for a specific node or entirely.
+
+        Normally not needed (types are immutable), but useful after
+        cmds.deleteAttr or scene import operations.
+
+        Args:
+            node: Node name/path whose entries to remove.
+                  When None, the entire cache is cleared.
+
+        Example:
+            >>> MAttr.invalidate_type_cache("pCube1")
+            >>> MAttr.invalidate_type_cache()  # clear all
+        """
+        if node is None:
+            cls._type_cache.clear()
+        else:
+            prefix = f"{node}."
+            stale = [k for k in cls._type_cache if k.startswith(prefix)]
+            for k in stale:
+                del cls._type_cache[k]
 
     def listConnections(self, **kwargs):
         """List all connections to/from this attribute."""
