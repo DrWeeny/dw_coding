@@ -40,12 +40,12 @@ except ImportError:
 from .wgt_signals import SlimfastSignals
 from .cmds import SlimfastController
 from .wgt_section import CollapsibleSection
+from . import wgt_deformer_panel
 from dw_utils import data_hub
 import dw_maya.dw_paint
 import dw_maya.dw_pyqt_utils.dw_btn_storage
 from dw_maya.dw_pyqt_utils.wgt_slider import RangeSliderWithSpinbox, RangeSlider, SliderWithButton
 from dw_maya.dw_paint.protocol import WeightSource
-from dw_maya.dw_paint.vertex_color_alpha import create_alpha_map, VertexColorAlpha
 
 from dw_maya.dw_nucleus_utils import NClothMap
 import dw_maya.dw_maya_utils
@@ -210,15 +210,9 @@ class SlimfastWidget(QtWidgets.QWidget):
 
         # --- Visible modes submenu ---
         modes_menu = view_menu.addMenu('Visible modes')
-        _mode_labels = {
-            'all':       'All',
-            'deformer':  'Deformer',
-            'nucleus':   'nCloth',
-            'vtxColor':  'vtxAlpha',
-        }
         self._mode_visibility_actions = {}
         for mode_key, btn in self._mode_btns.items():
-            action = QtWidgets.QAction(_mode_labels.get(mode_key, mode_key), self)
+            action = QtWidgets.QAction(btn.text(), self)
             action.setCheckable(True)
             visible = settings.value(f'mode_visible_{mode_key}', True, type=bool)
             btn.setVisible(bool(visible))
@@ -549,22 +543,21 @@ class SlimfastWidget(QtWidgets.QWidget):
         lay = QtWidgets.QVBoxLayout(grp)
         lay.setSpacing(4)
 
-        # --- Mode toggle + Refresh ---
-        # Wrap radio buttons if there are too many using custom FlowLayout
+        # --- Mode radio buttons — built from the panel registry ---
         from dw_maya.dw_pyqt_utils.flow_layout import FlowLayout
         mode_wgt = QtWidgets.QWidget()
         mode_lay = FlowLayout(mode_wgt, margin=0, spacing=4)
         self._mode_group = QtWidgets.QButtonGroup(self)
-        self._mode_btns = {}  # mode_key -> QRadioButton, for Pref menu visibility
-        for label, mode in [('All', 'all'), ('Deformer', 'deformer'),
-                             ('nCloth', 'nucleus'), ('vtxAlpha', 'vtxColor')]:
-            btn = QtWidgets.QRadioButton(label)
-            btn.setProperty('mode', mode)
-            if mode == 'all':
+        self._mode_btns = {}  # mode_key -> QRadioButton (used by Pref menu)
+        registry = wgt_deformer_panel.get_mode_registry()
+        for mode_key, entry in registry.items():
+            btn = QtWidgets.QRadioButton(entry['label'])
+            btn.setProperty('mode', mode_key)
+            if mode_key == 'all':
                 btn.setChecked(True)
             self._mode_group.addButton(btn)
             mode_lay.addWidget(btn)
-            self._mode_btns[mode] = btn
+            self._mode_btns[mode_key] = btn
         lay.addWidget(mode_wgt)
 
         # --- Mesh label + refresh button ---
@@ -583,28 +576,22 @@ class SlimfastWidget(QtWidgets.QWidget):
         mesh_row.addWidget(refresh_btn)
         lay.addLayout(mesh_row)
 
-        # --- Single flat combo: one row per (source × map) pair ---
-        # Each item stores (source_index, map_name) in QtCore.Qt.UserRole.
-        # Non-default maps (blendshape targets, nucleus maps) are shown as
-        # "nodeName › mapName"; single-map deformers just show "nodeName".
+        # --- Flat source combo: one row per (source × map) pair ---
         self._source_combo = QtWidgets.QComboBox()
         self._source_combo.setMinimumWidth(220)
         self._source_combo.setToolTip('Select deformer / map to paint')
         lay.addWidget(self._source_combo)
 
-        # --- BlendShape target combo (show only for blendShape nodes) ---
-        self._bs_target_combo = QtWidgets.QComboBox()
-        self._bs_target_combo.setMinimumWidth(220)
-        self._bs_target_combo.setToolTip('BlendShape target map')
-        self._bs_target_combo.hide()
-        lay.addWidget(self._bs_target_combo)
-
-        # --- Map type badge (nucleus only) ---
-        self._map_type_label = QtWidgets.QLabel()
-        self._map_type_label.setAlignment(QtCore.Qt.AlignCenter)
-        self._map_type_label.setStyleSheet('font-size: 11px;')
-        self._map_type_label.hide()
-        lay.addWidget(self._map_type_label)
+        # --- Registry-driven sub-panel area ---
+        # Each panel class is instantiated lazily and cached.  The container
+        # always has exactly zero or one visible child at a time.
+        self._panel_container = QtWidgets.QWidget()
+        self._panel_layout = QtWidgets.QVBoxLayout(self._panel_container)
+        self._panel_layout.setContentsMargins(0, 0, 0, 0)
+        self._panel_layout.setSpacing(0)
+        lay.addWidget(self._panel_container)
+        self._panel_cache: dict = {}         # Type[DeformerPanelBase] -> instance
+        self._current_panel: Optional[wgt_deformer_panel.DeformerPanelBase] = None
 
         # --- Copy / Paste ---
         cp_row = QtWidgets.QHBoxLayout()
@@ -614,9 +601,10 @@ class SlimfastWidget(QtWidgets.QWidget):
         cp_row.addWidget(self._paste_btn)
         lay.addLayout(cp_row)
 
-
-        # --- Envelope spinbox ---
-        env_row = QtWidgets.QHBoxLayout()
+        # --- Envelope spinbox — wrapped in a widget for easy show/hide ---
+        self._envelope_row_widget = QtWidgets.QWidget()
+        env_row = QtWidgets.QHBoxLayout(self._envelope_row_widget)
+        env_row.setContentsMargins(0, 0, 0, 0)
         env_row.addWidget(QtWidgets.QLabel('envelope'))
         self._envelope_slider = QtWidgets.QDoubleSpinBox()
         self._envelope_slider.setRange(0.0, 1.0)
@@ -625,7 +613,7 @@ class SlimfastWidget(QtWidgets.QWidget):
         self._envelope_slider.setFixedWidth(70)
         env_row.addWidget(self._envelope_slider)
         env_row.addStretch()
-        lay.addLayout(env_row)
+        lay.addWidget(self._envelope_row_widget)
 
         # --- Paint button ---
         self._paint_btn = QtWidgets.QPushButton('▶  Paint')
@@ -668,21 +656,6 @@ class SlimfastWidget(QtWidgets.QWidget):
         self._display_range_widget.hide()
         lay.addWidget(self._display_range_widget)
 
-        # --- Alpha preview toggle (visible only for VertexColorAlpha sources) ---
-        self._alpha_preview_btn = QtWidgets.QPushButton('👁  Alpha B&W preview')
-        self._alpha_preview_btn.setCheckable(True)
-        self._alpha_preview_btn.setFixedHeight(24)
-        self._alpha_preview_btn.setStyleSheet(
-            'QPushButton { background-color: #443355; color: #ccaaee; }'
-            'QPushButton:hover { background-color: #554466; }'
-            'QPushButton:checked { background-color: #775599; color: white; }'
-        )
-        self._alpha_preview_btn.setToolTip(
-            'Toggle greyscale preview of the alpha channel in the viewport'
-        )
-        self._alpha_preview_btn.toggled.connect(self._on_alpha_preview_toggled)
-        self._alpha_preview_btn.hide()
-        lay.addWidget(self._alpha_preview_btn)
 
         return grp
 
@@ -949,9 +922,8 @@ class SlimfastWidget(QtWidgets.QWidget):
         # Mode toggle
         self._mode_group.buttonClicked.connect(self._on_mode_changed)
 
-        # Flat source combo + blendShape target combo
+        # Flat source combo
         self._source_combo.currentIndexChanged.connect(self._on_source_combo_changed)
-        self._bs_target_combo.currentIndexChanged.connect(self._on_bs_target_changed)
 
         # Deformer group
         self._copy_btn.clicked.connect(self._ctrl.copy_weights)
@@ -1267,6 +1239,7 @@ class SlimfastWidget(QtWidgets.QWidget):
         default_val = 0.0 if item.startswith('0') else 1.0
 
         try:
+            from dw_maya.dw_paint.vertex_color_alpha import create_alpha_map
             create_alpha_map(mesh, color_set=name.strip(), default_value=default_val)
             logger.info(f"Alpha map '{name}' created on '{mesh}'.")
         except Exception as e:
@@ -1297,17 +1270,6 @@ class SlimfastWidget(QtWidgets.QWidget):
                 all_btn.setChecked(True)
                 self._ctrl.set_mode('all')
 
-    @Slot(bool)
-    def _on_alpha_preview_toggled(self, checked: bool) -> None:
-        """Toggle B&W alpha preview on the active VertexColorAlpha source."""
-        from dw_maya.dw_paint.vertex_color_alpha import VertexColorAlpha
-        source = self._ctrl.active_source
-        if not isinstance(source, VertexColorAlpha):
-            return
-        if checked:
-            source.enable_preview()
-        else:
-            source.disable_preview()
 
     # ------------------------------------------------------------------
     # Source-type helpers
@@ -1320,7 +1282,8 @@ class SlimfastWidget(QtWidgets.QWidget):
             ``'vtxColor'``, ``'nucleus'`` or ``'deformer'``.
         """
         src = self._ctrl.active_source
-        if isinstance(src, VertexColorAlpha):
+        from dw_maya.dw_paint.vertex_color_alpha import VertexColorAlpha as _VCA
+        if isinstance(src, _VCA):
             return 'vtxColor'
         if isinstance(src, NClothMap):
             return 'nucleus'
@@ -1433,12 +1396,6 @@ class SlimfastWidget(QtWidgets.QWidget):
         self._tol_slider.setValue(int(float_val * 100))
         self._tol_slider.blockSignals(False)
 
-    @Slot(int)
-    def _on_bs_target_changed(self, index: int) -> None:
-        """Activate the blendShape map selected in the secondary combo."""
-        map_name = self._bs_target_combo.itemData(index)
-        if map_name:
-            self._ctrl.select_map(map_name)
 
     @Slot()
     def _on_invert_selection(self) -> None:
@@ -1446,7 +1403,60 @@ class SlimfastWidget(QtWidgets.QWidget):
 
     @Slot(QtWidgets.QAbstractButton)
     def _on_mode_changed(self, btn: QtWidgets.QAbstractButton) -> None:
-        self._ctrl.set_mode(btn.property('mode'))
+        mode_key = btn.property('mode')
+        ctrl_mode = wgt_deformer_panel.get_ctrl_mode(mode_key)
+        self._ctrl.set_mode(ctrl_mode)
+
+    def _switch_to_panel(
+        self,
+        panel_class: type) -> None:
+        """Show the sub-panel for *panel_class*, hiding the previous one.
+
+        Panels are cached so their internal state (e.g. combo selection) is
+        preserved across source-combo changes.  The panel's ``map_selected``
+        signal is connected to the controller on first instantiation.
+
+        Args:
+            panel_class: A ``DeformerPanelBase`` subclass from the registry.
+        """
+        if (self._current_panel is not None
+                and type(self._current_panel) is panel_class):
+            return
+
+        # Hide the previous panel without destroying it.
+        if self._current_panel is not None:
+            self._current_panel.hide()
+            self._panel_layout.removeWidget(self._current_panel)
+
+        # Get or lazily create the requested panel.
+        panel = self._panel_cache.get(panel_class)
+        if panel is None:
+            panel = panel_class(parent=self._panel_container)
+            panel.map_selected.connect(self._ctrl.select_map)
+            self._panel_cache[panel_class] = panel
+
+        self._panel_layout.addWidget(panel)
+        panel.show()
+        self._current_panel = panel
+
+        # Envelope row visibility is driven by the panel type.
+        self._update_envelope_row()
+
+    def _update_envelope_row(self) -> None:
+        """Show/hide the envelope row based on the active panel and source."""
+        has_env = (self._current_panel.has_envelope()
+                   if self._current_panel else True)
+        source = self._ctrl.active_source
+        if source is None or not has_env:
+            self._envelope_row_widget.hide()
+            return
+        env_attr = f'{source.node_name}.envelope'
+        try:
+            from maya import cmds as _cmds
+            attr_exists = _cmds.objExists(env_attr)
+        except Exception:
+            attr_exists = False
+        self._envelope_row_widget.setVisible(attr_exists)
 
     # Colour palette per backend type
     _SOURCE_COLORS = {
@@ -1467,8 +1477,7 @@ class SlimfastWidget(QtWidgets.QWidget):
 
         Layout rules:
         - Single-map deformers (cluster, softMod, wire, …) → one row.
-        - BlendShape → one row; available target maps go into _bs_target_combo
-          which is shown/hidden by _on_source_combo_changed.
+        - BlendShape → one row; panel switches to BlendShapePanel automatically.
         - NClothMap → one row per map (nucleus maps are numerous).
         - A disabled separator row separates deformer and nucleus groups.
 
@@ -1484,7 +1493,6 @@ class SlimfastWidget(QtWidgets.QWidget):
             self._source_combo.blockSignals(True)
             self._source_combo.setModel(self._source_model)
             self._source_combo.blockSignals(False)
-            self._bs_target_combo.hide()
             return
 
         nucleus_types = {'nCloth', 'nRigid'}
@@ -1514,7 +1522,7 @@ class SlimfastWidget(QtWidgets.QWidget):
                 separator_inserted = True
 
             if node_type == 'blendShape':
-                # One row — target maps are handled by _bs_target_combo
+                # One row — target maps are forwarded to BlendShapePanel via on_combo_changed.
                 item = QtGui.QStandardItem(node_name)
                 item.setData((source_idx, maps[0] if maps else 'weightList'), QtCore.Qt.UserRole)
                 item.setData((node_type, maps), QtCore.Qt.UserRole + 1)
@@ -1552,80 +1560,10 @@ class SlimfastWidget(QtWidgets.QWidget):
             self._source_combo.setCurrentIndex(first_selectable_row)
         self._source_combo.blockSignals(False)
 
-        # Activate first entry — also handles BS combo show/hide
+        # Activate first entry — also triggers panel switching
         if first_selectable_row is not None:
             self._on_source_combo_changed(first_selectable_row)
 
-    @Slot(object)
-    def _on_active_changed(self, source: Optional[WeightSource]) -> None:
-        has_source = source is not None
-        for w in (self._paint_btn, self._copy_btn, self._paste_btn,
-                  self._set0_btn, self._set1_btn, self._weight_slider):
-            w.setEnabled(has_source)
-
-        # Keep storage buttons in sync with the currently active source/map
-        # Only update current_weight_node (the "restore target").
-        # Do NOT overwrite weight_source — it belongs to stored data.
-        active_map = self._ctrl.active_map
-        for btn in self._storage_buttons:
-            if source and active_map:
-                btn.current_weight_node = f'{source.node_name}.{active_map}'
-            else:
-                btn.current_weight_node = None
-
-        # Update transfer section target label
-        if source and active_map:
-            self._transfer_tgt_label.setText(f'{source.node_name} › {active_map}')
-        else:
-            self._transfer_tgt_label.setText('— (active source) —')
-
-        # --- Map type badge (nucleus only) ---
-        if isinstance(source, NClothMap):
-            _MAP_TYPE_INFO = {
-                0: ('● None  (map disabled)', '#888888'),
-                1: ('● PerVertex', '#4ecdc4'),
-                2: ('● Texture', '#ddcc44'),
-            }
-            try:
-                active_map = self._ctrl.active_map
-                mt = source.map_type(active_map) if active_map else 0
-                text, color = _MAP_TYPE_INFO.get(mt, (f'● type={mt}', '#aaaaaa'))
-                self._map_type_label.setText(text)
-                self._map_type_label.setStyleSheet(f'color: {color}; font-size: 11px;')
-                self._map_type_label.show()
-            except Exception:
-                self._map_type_label.hide()
-        else:
-            self._map_type_label.hide()
-
-        # --- Envelope spinbox ---
-        if has_source and not isinstance(source, NClothMap):
-            env_attr = f'{source.node_name}.envelope'
-            if cmds.objExists(env_attr):
-                try:
-                    val = cmds.getAttr(env_attr)
-                    self._envelope_slider.blockSignals(True)
-                    self._envelope_slider.setValue(val)
-                    self._envelope_slider.blockSignals(False)
-                    self._envelope_slider.setEnabled(True)
-                except Exception:
-                    self._envelope_slider.setEnabled(False)
-            else:
-                self._envelope_slider.setEnabled(False)
-        else:
-            self._envelope_slider.setEnabled(False)
-
-        # --- Alpha preview button (VertexColorAlpha only) ---
-        if isinstance(source, VertexColorAlpha):
-            self._alpha_preview_btn.show()
-        else:
-            # Disable preview if switching away from a vtxColor source
-            if self._alpha_preview_btn.isChecked():
-                self._alpha_preview_btn.setChecked(False)
-            self._alpha_preview_btn.hide()
-
-        # --- Display range banner ---
-        self._refresh_display_range()
 
     def _refresh_display_range(self) -> None:
         """Read weight range from the active source and update the display range widget.
@@ -1680,7 +1618,8 @@ class SlimfastWidget(QtWidgets.QWidget):
     def _on_source_combo_changed(self, combo_index: int) -> None:
         """Decode (source_idx, map_name) from the selected row and activate both.
 
-        Also shows/hides and populates _bs_target_combo for blendShape nodes.
+        Also switches the active sub-panel to the one registered for the
+        selected node type and forwards ``on_combo_changed`` to the new panel.
         """
         if combo_index < 0:
             return
@@ -1694,27 +1633,20 @@ class SlimfastWidget(QtWidgets.QWidget):
         if data is None:
             return
         source_idx, map_name = data
-        # select_source already calls select_map(maps[0]) internally,
-        # so only call select_map if we need a different map than the default.
         self._ctrl.select_source(source_idx)
         active_maps = self._ctrl.active_source.available_maps() if self._ctrl.active_source else []
         if active_maps and map_name != active_maps[0]:
             self._ctrl.select_map(map_name)
 
-        # Show/populate blendShape target combo when needed
+        # Resolve node type and switch to the matching panel.
         extra = item.data(QtCore.Qt.UserRole + 1)
         node_type = extra[0] if extra else ''
         maps = extra[1] if extra else []
-        if node_type == 'blendShape' and maps:
-            self._bs_target_combo.blockSignals(True)
-            self._bs_target_combo.clear()
-            for m in maps:
-                label = 'base weights' if m == 'weightList' else m
-                self._bs_target_combo.addItem(label, m)
-            self._bs_target_combo.blockSignals(False)
-            self._bs_target_combo.show()
-        else:
-            self._bs_target_combo.hide()
+
+        panel_class = wgt_deformer_panel.get_panel_class(node_type)
+        self._switch_to_panel(panel_class)
+        if self._current_panel is not None:
+            self._current_panel.on_combo_changed(node_type, maps)
 
     @Slot(object)
     def _on_active_changed(self, source: Optional[WeightSource]) -> None:
@@ -1723,7 +1655,7 @@ class SlimfastWidget(QtWidgets.QWidget):
                   self._set0_btn, self._set1_btn, self._weight_slider):
             w.setEnabled(has_source)
 
-        # Keep storage buttons in sync with the currently active source/map
+        # Keep storage buttons in sync with the currently active source/map.
         # Only update current_weight_node (the "restore target").
         # Do NOT overwrite weight_source — it belongs to stored data.
         active_map = self._ctrl.active_map
@@ -1733,33 +1665,20 @@ class SlimfastWidget(QtWidgets.QWidget):
             else:
                 btn.current_weight_node = None
 
-        # Update transfer section target label
+        # Update transfer section target label.
         if source and active_map:
             self._transfer_tgt_label.setText(f'{source.node_name} › {active_map}')
         else:
             self._transfer_tgt_label.setText('— (active source) —')
 
-        # --- Map type badge (nucleus only) ---
-        if isinstance(source, NClothMap):
-            _MAP_TYPE_INFO = {
-                0: ('● None  (map disabled)', '#888888'),
-                1: ('● PerVertex', '#4ecdc4'),
-                2: ('● Texture', '#ddcc44'),
-            }
-            try:
-                active_map = self._ctrl.active_map
-                mt = source.map_type(active_map) if active_map else 0
-                text, color = _MAP_TYPE_INFO.get(mt, (f'● type={mt}', '#aaaaaa'))
-                self._map_type_label.setText(text)
-                self._map_type_label.setStyleSheet(f'color: {color}; font-size: 11px;')
-                self._map_type_label.show()
-            except Exception:
-                self._map_type_label.hide()
-        else:
-            self._map_type_label.hide()
+        # --- Delegate type-specific UI to the active panel ---
+        if self._current_panel is not None:
+            self._current_panel.on_source_changed(source, active_map or '', self._ctrl)
 
-        # --- Envelope spinbox ---
-        if has_source and not isinstance(source, NClothMap):
+        # --- Envelope row — visibility driven by panel + attribute presence ---
+        has_env = (self._current_panel.has_envelope()
+                   if self._current_panel else True)
+        if has_source and has_env:
             env_attr = f'{source.node_name}.envelope'
             if cmds.objExists(env_attr):
                 try:
@@ -1768,41 +1687,32 @@ class SlimfastWidget(QtWidgets.QWidget):
                     self._envelope_slider.setValue(val)
                     self._envelope_slider.blockSignals(False)
                     self._envelope_slider.setEnabled(True)
+                    self._envelope_row_widget.show()
                 except Exception:
                     self._envelope_slider.setEnabled(False)
+                    self._envelope_row_widget.hide()
             else:
-                self._envelope_slider.setEnabled(False)
+                self._envelope_row_widget.hide()
         else:
-            self._envelope_slider.setEnabled(False)
-
-        # --- Alpha preview button (VertexColorAlpha only) ---
-        from dw_maya.dw_paint.vertex_color_alpha import VertexColorAlpha
-        if isinstance(source, VertexColorAlpha):
-            self._alpha_preview_btn.show()
-        else:
-            # Disable preview if switching away from a vtxColor source
-            if self._alpha_preview_btn.isChecked():
-                self._alpha_preview_btn.setChecked(False)
-            self._alpha_preview_btn.hide()
+            self._envelope_row_widget.hide()
 
         # --- Smooth mode: save previous type pref, restore for new type ---
         settings = QtCore.QSettings('DrWeeny', 'SlimfastWidget')
-        # Persist smooth mode for the type we are leaving
         settings.setValue(f'smooth_mode_{self._src_type_key}',
                           self._smooth_mode.currentIndex())
 
-        # Determine new type key and load its saved preference
         new_key = self._current_source_type_key()
         self._src_type_key = new_key
-        # Default: vtxColor → numpy (index 1); others → artisan (index 0)
         default_mode = 1 if new_key == 'vtxColor' else 0
         saved_mode = settings.value(f'smooth_mode_{new_key}', default_mode, type=int)
         self._smooth_mode.blockSignals(True)
         self._smooth_mode.setCurrentIndex(saved_mode)
         self._smooth_mode.blockSignals(False)
 
-        # Warning visibility
         self._smooth_warn_label.setVisible(new_key == 'vtxColor')
+
+        # --- Display range banner ---
+        self._refresh_display_range()
 
     @Slot(float)
     def _on_envelope_changed(self, value: float) -> None:
