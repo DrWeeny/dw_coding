@@ -463,7 +463,7 @@ register_deformer_panel(
     label='vtxAlpha',
     panel_class=VtxAlphaPanel,
     ctrl_mode='vtxColor',
-    node_types=['VertexColorAlpha'],
+    node_types=['vtxColor'],
     order=40,
 )
 

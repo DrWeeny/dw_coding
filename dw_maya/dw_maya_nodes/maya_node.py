@@ -628,7 +628,7 @@ class MayaNode(ObjPointer):
             return self
 
     def iter_attrs(self,
-                   attrs: list[str],
+                   attrs: List[str],
                    skip_missing: bool = True,
                    skip_duplicates: bool = True,):
         """Safely iterate over a list of attribute names, yielding MAttr objects.

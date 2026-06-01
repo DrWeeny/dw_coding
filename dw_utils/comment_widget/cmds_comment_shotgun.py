@@ -1,7 +1,12 @@
 import json
 import os
 import os.path
-from PySide6 import QtGui
+from typing import List
+try:
+    from PySide6 import QtGui
+except ImportError:
+    # Fallback for older Maya versions shipping PySide2
+    from PySide2 import QtGui
 import getpass
 import re
 from datetime import datetime
@@ -45,7 +50,7 @@ class CommentWidgetConfig:
     # Network proxy used by ``cache_image_from_url``.
     # Set to ``None`` (default) for direct connections, or provide a dict
     # like ``{"http": "http://host:port", "https": "http://host:port"}``.
-    PROXY: dict | None = None
+    PROXY: dict = None
 
     # Where local JSON databases and user thumbnails are stored.
     METADATA_PATH: str = os.environ.get(
@@ -483,7 +488,7 @@ def mark_conversation_as_read(user_name, scope_key, read_time:datetime=None):
 
     db.save(data)
 
-def extract_mentions(text: str) -> list[str]:
+def extract_mentions(text: str) -> List[str]:
     """
     Extracts @mentions from the text.
     """
@@ -506,7 +511,7 @@ def highlight_mentions(text_html, roles=None, names=None)->str:
     return text_html
 
 
-def extract_mentions_from_html(text_html:str)->list[str]:
+def extract_mentions_from_html(text_html:str)->List[str]:
     # This regex captures content like @Name or @Name Surname inside HTML tags
     mentions = re.findall(r'">@([a-zA-ZÀ-ÿ\'\-]+(?: [a-zA-ZÀ-ÿ\'\-]+)?)<', text_html, re.DOTALL)
     return mentions

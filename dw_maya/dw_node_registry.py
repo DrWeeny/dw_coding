@@ -1,8 +1,8 @@
-from typing import Type, Callable
+from typing import Type, Callable, Dict, List, Tuple
 from maya import cmds
 
-_NODE_CLASSES: dict[str, Type] = {}
-_CONDITION_CLASSES: list[tuple[Callable, Type]] = []
+_NODE_CLASSES: Dict[str, Type] = {}
+_CONDITION_CLASSES: List[Tuple[Callable, Type]] = []
 
 
 def register_type(node_type: str, cls: Type) -> None:
