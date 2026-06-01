@@ -94,14 +94,12 @@ _PANEL_BY_NODE_TYPE: Dict[str, Type['DeformerPanelBase']] = {}
 # Public registry API
 # ---------------------------------------------------------------------------
 
-def register_deformer_panel(
-    mode_key: str,
-    label: str,
-    panel_class: Type['DeformerPanelBase'],
-    ctrl_mode: str = '',
-    node_types: Optional[List[str]] = None,
-    order: int = 100,
-) -> None:
+def register_deformer_panel(mode_key: str,
+                            label: str,
+                            panel_class: Type['DeformerPanelBase'],
+                            ctrl_mode: str = '',
+                            node_types: Optional[List[str]] = None,
+                            order: int = 100,) -> None:
     """Register a deformer mode radio button and its companion sub-panel.
 
     Args:
@@ -196,12 +194,10 @@ class DeformerPanelBase(QtWidgets.QWidget):
 
     map_selected = Signal(str)
 
-    def on_source_changed(
-        self,
-        source: Optional['WeightSource'],
-        active_map: str,
-        ctrl: 'SlimfastController',
-    ) -> None:
+    def on_source_changed(self,
+                          source: Optional['WeightSource'],
+                          active_map: str,
+                          ctrl: 'SlimfastController',) -> None:
         """React to the active ``WeightSource`` changing.
 
         Called by ``SlimfastWidget._on_active_changed`` after the controller
@@ -377,12 +373,10 @@ class VtxAlphaPanel(DeformerPanelBase):
 
         self._source = None
 
-    def on_source_changed(
-        self,
-        source: Optional['WeightSource'],
-        active_map: str,
-        ctrl: 'SlimfastController',
-    ) -> None:
+    def on_source_changed(self,
+                          source: Optional['WeightSource'],
+                          active_map: str,
+                          ctrl: 'SlimfastController',) -> None:
         """Track the active ``VertexColorAlpha`` and reset the button when
         switching away.
 
