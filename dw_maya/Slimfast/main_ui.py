@@ -21,10 +21,10 @@ Author:  DrWeeny
 
 from __future__ import annotations
 
-from typing import List, Optional, Tuple
+from typing import Optional
 from functools import partial
 
-from maya import cmds, mel
+from maya import cmds
 import maya.OpenMayaUI as omui
 
 try:
@@ -44,7 +44,7 @@ from . import wgt_deformer_panel
 from dw_utils import data_hub
 import dw_maya.dw_paint
 import dw_maya.dw_pyqt_utils.dw_btn_storage
-from dw_maya.dw_pyqt_utils.wgt_slider import RangeSliderWithSpinbox, RangeSlider, SliderWithButton
+from dw_maya.dw_pyqt_utils.wgt_slider import RangeSliderWithSpinbox, SliderWithButton
 from dw_maya.dw_paint.protocol import WeightSource
 
 from dw_maya.dw_nucleus_utils import NClothMap
@@ -583,12 +583,7 @@ class SlimfastWidget(QtWidgets.QWidget):
         lay.addWidget(self._source_combo)
 
         # --- Registry-driven sub-panel area ---
-        # Each panel class is instantiated lazily and cached.  The container
-        # always has exactly zero or one visible child at a time.
-        self._panel_container = QtWidgets.QWidget()
-        self._panel_layout = QtWidgets.QVBoxLayout(self._panel_container)
-        self._panel_layout.setContentsMargins(0, 0, 0, 0)
-        self._panel_layout.setSpacing(0)
+        self._panel_container = QtWidgets.QStackedWidget()
         lay.addWidget(self._panel_container)
         self._panel_cache: dict = {}         # Type[DeformerPanelBase] -> instance
         self._current_panel: Optional[wgt_deformer_panel.DeformerPanelBase] = None
@@ -1410,11 +1405,8 @@ class SlimfastWidget(QtWidgets.QWidget):
     def _switch_to_panel(
         self,
         panel_class: type) -> None:
-        """Show the sub-panel for *panel_class*, hiding the previous one.
-
-        Panels are cached so their internal state (e.g. combo selection) is
-        preserved across source-combo changes.  The panel's ``map_selected``
-        signal is connected to the controller on first instantiation.
+        """Show the sub-panel for *panel_class*. Uses a QStackedWidget
+        to manage the panels natively and preserve internal state.
 
         Args:
             panel_class: A ``DeformerPanelBase`` subclass from the registry.
@@ -1423,20 +1415,15 @@ class SlimfastWidget(QtWidgets.QWidget):
                 and type(self._current_panel) is panel_class):
             return
 
-        # Hide the previous panel without destroying it.
-        if self._current_panel is not None:
-            self._current_panel.hide()
-            self._panel_layout.removeWidget(self._current_panel)
-
         # Get or lazily create the requested panel.
         panel = self._panel_cache.get(panel_class)
         if panel is None:
             panel = panel_class(parent=self._panel_container)
             panel.map_selected.connect(self._ctrl.select_map)
+            self._panel_container.addWidget(panel)
             self._panel_cache[panel_class] = panel
 
-        self._panel_layout.addWidget(panel)
-        panel.show()
+        self._panel_container.setCurrentWidget(panel)
         self._current_panel = panel
 
         # Envelope row visibility is driven by the panel type.

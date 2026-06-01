@@ -194,7 +194,7 @@ class DeformerPanelBase(QtWidgets.QWidget):
                       parent widget.
     """
 
-    map_selected: Signal = Signal(str)
+    map_selected = Signal(str)
 
     def on_source_changed(
         self,
