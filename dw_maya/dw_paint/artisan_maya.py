@@ -228,11 +228,22 @@ def set_artisan_value(value: float, context_name: Optional[str] = None) -> None:
     except Exception:
         pass
 
-def inject_ramp_into_artattr():
+def get_art_use_ramp_color()->bool:
+    # Check ramp not already injected
+    if cmds.checkBoxGrp('artisanRampUseRamp', exists=True):
+        return cmds.checkBoxGrp('artisanRampUseRamp', query=True, value1=True)
+    return False
+
+def inject_ramp_into_artattr(use_ramp=1):
     """
-    inject rainbow color on other deformer
+    inject the mel ramp widget
     """
     target_frame = 'artAttrOperationFrame'
+    artisan_command = "artAttrCtx" or "artUserPaintCtx" #not the second one is here just for convenience
+
+    current_ctx = cmds.currentCtx()
+    if current_ctx == "selectSuperContext":
+        return
 
     if not cmds.frameLayout(target_frame, exists=True):
         print(f"Frame {target_frame} not found")
@@ -240,14 +251,15 @@ def inject_ramp_into_artattr():
 
     # Check ramp not already injected
     if cmds.checkBoxGrp('artisanRampUseRamp', exists=True):
-        print("Ramp already injected — rewiring")
-        mel.eval('artisanRampCallback("artAttrCtx")')
+        mel.eval(f'artisanRampCallback("{artisan_command}")')
+        cmds.checkBoxGrp('artisanRampUseRamp', edit=True, value1=use_ramp)
         return
 
     # Inject inside the operation frame
     cmds.setParent(target_frame)
     mel.eval('source "artisanRampCallback.mel"')
-    mel.eval(f'artisanCreateRamp("{target_frame}", 0)')
-    mel.eval('artisanRampCallback("artAttrCtx")')
+    mel.eval(f'artisanCreateRamp("{target_frame}", 1)')
+    mel.eval(f'artisanRampCallback("{artisan_command}")')
+    cmds.checkBoxGrp('artisanRampUseRamp', edit=True, value1=use_ramp)
 
-    print("Ramp injected successfully")
+    print("Ramp injected successfully to artisan tool")

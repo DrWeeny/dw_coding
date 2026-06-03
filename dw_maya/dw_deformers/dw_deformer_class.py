@@ -264,7 +264,7 @@ class Deformer(dwnn.MayaNode, WeightSource):
     # Paint
     # ------------------------------------------------------------------
 
-    def paint(self) -> None:
+    def _paint(self) -> None:
         """Open Maya's artisan paint tool for the active map."""
         from dw_maya.dw_paint.weight_source import _paint_deformer
         _paint_deformer(self, self.get_artisan_name())

@@ -46,6 +46,41 @@ class SkinCluster(Deformer):
         """``'weightList'`` + one entry per influence joint."""
         return ['weightList'] + self.influences
 
+    def use_map(self, map_name: str) -> 'SkinCluster':
+        """Activate a map and switch the artisan influence if the tool is open.
+
+        Extends the base ``use_map`` so that selecting an influence from the
+        ``SkinPanel`` joint list immediately updates the Paint Skin Weights
+        viewport colouring — identical to clicking a bone in Maya's own
+        Influence list in the Tool Settings panel.
+
+        The MEL calls are only issued when ``artAttrSkinPaintCtx`` is the
+        current context; otherwise this is a pure ``_current_map`` assignment
+        with no Maya side-effects.
+
+        Args:
+            map_name: Influence joint name (full DAG path or short name) or
+                      ``'weightList'`` for the packed per-vertex array.
+
+        Returns:
+            ``self`` for chaining.
+        """
+        # equivalent of doing `map_name in available_maps()`
+        super().use_map(map_name)
+        if map_name and map_name != 'weightList':
+            try:
+                _artisan_ctx = self.get_artisan_name()
+                if cmds.currentCtx() == _artisan_ctx:
+                    bone_short = map_name.split('|')[-1]
+                    mel.eval(f'artSkinInflListChanging "{bone_short}" 1')
+                    mel.eval(f'artSkinInflListChanged {_artisan_ctx}')
+            except Exception as e:
+                logger.debug(
+                    f"SkinCluster.use_map: could not switch influence "
+                    f"'{map_name}' — {e}"
+                )
+        return self
+
     def _resolve_attr(self, map_name: str) -> str:
         n = self.vtx_count
         weight_range = f'0:{n - 1}' if n > 0 else '0'
@@ -265,41 +300,6 @@ class SkinCluster(Deformer):
     # ------------------------------------------------------------------
     # Paint — skin weights artisan
     # ------------------------------------------------------------------
-
-    def use_map(self, map_name: str) -> 'SkinCluster':
-        """Activate a map and switch the artisan influence if the tool is open.
-
-        Extends the base ``use_map`` so that selecting an influence from the
-        ``SkinPanel`` joint list immediately updates the Paint Skin Weights
-        viewport colouring — identical to clicking a bone in Maya's own
-        Influence list in the Tool Settings panel.
-
-        The MEL calls are only issued when ``artAttrSkinPaintCtx`` is the
-        current context; otherwise this is a pure ``_current_map`` assignment
-        with no Maya side-effects.
-
-        Args:
-            map_name: Influence joint name (full DAG path or short name) or
-                      ``'weightList'`` for the packed per-vertex array.
-
-        Returns:
-            ``self`` for chaining.
-        """
-        # equivalent of doing `map_name in available_maps()`
-        super().use_map(map_name)
-        if map_name and map_name != 'weightList':
-            try:
-                _artisan_ctx = self.get_artisan_name()
-                if cmds.currentCtx() == _artisan_ctx:
-                    bone_short = map_name.split('|')[-1]
-                    mel.eval(f'artSkinInflListChanging "{bone_short}" 1')
-                    mel.eval(f'artSkinInflListChanged {_artisan_ctx}')
-            except Exception as e:
-                logger.debug(
-                    f"SkinCluster.use_map: could not switch influence "
-                    f"'{map_name}' — {e}"
-                )
-        return self
 
     def get_artisan_name(self) -> str:
         """Return the Maya artisan context name for Paint Skin Weights."""
