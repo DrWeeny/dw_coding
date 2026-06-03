@@ -232,6 +232,137 @@ def test_nonexistent_attr_returns_none():
 
 
 # ---------------------------------------------------------------------------
+# ── Joint / Group / Multi-shape Tests ───────────────────────────────────────
+# ---------------------------------------------------------------------------
+
+def test_tr_joint_direct():
+    """A standalone joint: mn.tr must return the joint itself, not None or a parent.
+
+    Joints have nodeType 'joint', not 'transform', but they ARE transforms.
+    The tr property must treat them as such.
+    """
+    jnt = None
+    try:
+        cmds.select(clear=True)
+        jnt = cmds.joint(name="dw_single_joint")
+        mn = MayaNode(jnt)
+        result = mn.tr
+        _assert(result is not None, "standalone joint: tr must not return None")
+        leaf = result.split('|')[-1].split(':')[-1]
+        _assert(leaf == jnt,
+                f"Expected '{jnt}', tr returned '{result}' (leaf='{leaf}')")
+    finally:
+        if jnt and cmds.objExists(jnt):
+            cmds.delete(jnt)
+
+
+def test_tr_joint_in_hierarchy():
+    """EX_ joint parented under GH_ joint: tr must return EX_, not GH_ or any ancestor."""
+    gh = None
+    try:
+        cmds.select(clear=True)
+        gh = cmds.joint(name="dw_GH_jnt")
+        cmds.select(clear=True)
+        ex = cmds.joint(name="dw_EX_jnt")
+        cmds.parent(ex, gh)
+
+        mn = MayaNode(ex)
+        result = mn.tr
+        _assert(result is not None, "child joint: tr must not return None")
+        leaf = result.split('|')[-1].split(':')[-1]
+        _assert(leaf == ex,
+                f"Expected '{ex}', tr returned '{result}' (leaf='{leaf}')")
+    finally:
+        if gh and cmds.objExists(gh):
+            cmds.delete(gh)  # also removes ex
+
+
+def test_tr_group_no_shape():
+    """Empty group (transform with no shape): tr must return the group itself."""
+    grp = None
+    try:
+        grp = cmds.group(empty=True, name="dw_empty_grp")
+        mn = MayaNode(grp)
+        result = mn.tr
+        _assert(result is not None, "empty group: tr must not return None")
+        leaf = result.split('|')[-1].split(':')[-1]
+        _assert(leaf == grp,
+                f"Expected '{grp}', tr returned '{result}' (leaf='{leaf}')")
+    finally:
+        if grp and cmds.objExists(grp):
+            cmds.delete(grp)
+
+
+def test_tr_curve_multi_shape():
+    """Transform owning two curve shapes: tr returns the transform, sh a valid shape."""
+    crv1 = crv2 = None
+    try:
+        crv1 = cmds.curve(d=1, p=[(0, 0, 0), (1, 0, 0)], name="dw_multi_crv1")
+        crv2 = cmds.curve(d=1, p=[(0, 0, 0), (0, 1, 0)], name="dw_multi_crv2")
+        sh2 = cmds.listRelatives(crv2, shapes=True)[0]
+        cmds.parent(sh2, crv1, add=True, shape=True)
+        cmds.delete(crv2)
+        crv2 = None
+
+        mn = MayaNode(crv1)
+        result_tr = mn.tr
+        result_sh = mn.sh
+
+        _assert(result_tr is not None, "multi-shape curve: tr must not be None")
+        leaf_tr = result_tr.split('|')[-1].split(':')[-1]
+        _assert(leaf_tr == crv1,
+                f"Expected transform '{crv1}', tr returned '{result_tr}'")
+
+        _assert(result_sh is not None, "multi-shape curve: sh must not be None")
+        all_shapes = cmds.listRelatives(crv1, shapes=True, ni=True) or []
+        sh_leaves = {s.split('|')[-1].split(':')[-1] for s in all_shapes}
+        result_sh_leaf = result_sh.split('|')[-1].split(':')[-1]
+        _assert(result_sh_leaf in sh_leaves,
+                f"sh '{result_sh}' not among shapes {all_shapes}")
+    finally:
+        for n in [crv1, crv2]:
+            if n and cmds.objExists(n):
+                cmds.delete(n)
+
+
+def test_tr_joint_under_shaped_parent_regression():
+    """Regression: joint.tr must NOT walk up to a shaped ancestor.
+
+    Before the fix, nodeType('joint') != 'transform' caused the tr property to
+    fall into the shape-walking path.  It would walk up the DAG until it found a
+    parent *with a shape* and return THAT parent — e.g. EXO_DYN — instead of the
+    joint.  This caused the assembly node to be added to the skin cluster as an
+    influence (the CHECK SKIN INFLUENCES error).
+
+    Simulated hierarchy:
+        dw_exo_loc  (locator = transform + shape)
+          └─ dw_reg_GH_jnt  (joint)
+               └─ dw_reg_EX_jnt  (joint)  ← mn.tr must return this
+    """
+    exo = None
+    try:
+        exo = cmds.spaceLocator(name="dw_exo_loc")[0]
+        cmds.select(clear=True)
+        gh = cmds.joint(name="dw_reg_GH_jnt")
+        cmds.parent(gh, exo)
+        cmds.select(clear=True)
+        ex = cmds.joint(name="dw_reg_EX_jnt")
+        cmds.parent(ex, gh)
+
+        mn = MayaNode(ex)
+        result = mn.tr
+        _assert(result is not None, "EX joint.tr must not return None")
+        leaf = result.split('|')[-1].split(':')[-1]
+        _assert(leaf == ex,
+                f"REGRESSION (EXO_DYN bug): joint.tr returned '{result}' "
+                f"(leaf='{leaf}') instead of '{ex}'. The shaped ancestor "
+                f"'{exo}' was incorrectly returned.")
+    finally:
+        if exo and cmds.objExists(exo):
+            cmds.delete(exo)  # also removes gh and ex
+
+
+# ---------------------------------------------------------------------------
 # ── MAttr Tests ─────────────────────────────────────────────────────────────
 # ---------------------------------------------------------------------------
 
@@ -307,7 +438,13 @@ _ALL_TESTS = [
     ("listAttr keyword (attr='tx')",       test_listattr_keyword),
     ("listAttr node_index=0 (transform)",  test_listattr_node_index_0),
     ("listAttr node_index=1 (shape)",      test_listattr_node_index_1),
-    ("nonexistent attr returns None",      test_nonexistent_attr_returns_none),
+    ("nonexistent attr returns None",                      test_nonexistent_attr_returns_none),
+    # --- joint / group / multi-shape ---
+    ("joint tr — standalone",                             test_tr_joint_direct),
+    ("joint tr — child under parent joint",               test_tr_joint_in_hierarchy),
+    ("group tr — empty transform (no shape)",             test_tr_group_no_shape),
+    ("curve tr/sh — multi-shape transform",               test_tr_curve_multi_shape),
+    ("joint tr — regression: shaped ancestor (EXO_DYN)", test_tr_joint_under_shaped_parent_regression),
     ("MAttr compound indexing",            test_mattr_compound_indexing),
     ("MAttr >> connection",                test_mattr_rshift_connection),
     ("MAttr == operator",                  test_mattr_eq_operator),
