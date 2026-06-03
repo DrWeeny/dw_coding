@@ -62,6 +62,7 @@ _ARTISAN_ATTRS: Dict[str, str] = {
     'wire':       'wire.{node}.weights',
     'tension':    'tension.{node}.weights',
     'proximity':  'proximity.{node}.weights',
+    'skinCluster': 'skinCluster.{node}.weights',
 }
 
 
@@ -309,6 +310,31 @@ def apply_operation(source: WeightSource,
 # Internal helpers — called by Deformer.paint() and NClothMap.paint()
 # ---------------------------------------------------------------------------
 
+def _paint_skin_cluster(source: WeightSource) -> None:
+    """Open Artisan for SkinCluster and select the active influence."""
+    mesh = source.mesh_name
+    mesh_short = mesh.split('|')[-1]
+
+    vtx = cmds.filterExpand(selectionMask=31, expand=False) or []
+    if vtx:
+        cmds.select(vtx, replace=True)
+        cmds.select(mesh_short, add=True)
+    else:
+        cmds.select(mesh_short, replace=True)
+
+    mel.eval('ArtPaintSkinWeightsTool')
+
+    active_map = source.current_map
+    if not active_map or active_map == 'weightList':
+        return
+
+    bone_full = active_map.split('|')[-1]
+    try:
+        mel.eval(f'artSkinInflListChanging "{bone_full}" 1')
+        mel.eval('artSkinInflListChanged artAttrSkinPaintCtx')
+    except Exception as e:
+        logger.warning(f"Could not select influence '{bone_full}' — {e}")
+
 def _paint_deformer(source: WeightSource, artisan_context_name:str="artAttrContext") -> None:
     """Open artisan for a standard deformer WeightMap.
 
@@ -322,6 +348,10 @@ def _paint_deformer(source: WeightSource, artisan_context_name:str="artAttrConte
         source: A deformer-backed WeightMap with :attr:`node_name` set.
     """
     node_type = cmds.nodeType(source.node_name)
+    if node_type == 'skinCluster':
+        _paint_skin_cluster(source)
+        return
+
     template = _ARTISAN_ATTRS.get(node_type)
     if template is None:
         logger.warning(
@@ -435,3 +465,4 @@ def _op_flood(weights: WeightList,
         weights, value, op, mask,
         min_value=clamp_min, max_value=clamp_max
     )
+

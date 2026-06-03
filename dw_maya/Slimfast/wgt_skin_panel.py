@@ -422,6 +422,11 @@ class SkinPanel(DeformerPanelBase):
         if source is None:
             self._clear()
             return
+
+        if self._node_name == source.node_name:
+            self._mark_active(active_map)
+            return
+
         self._node_name = source.node_name
         self._populate(self._node_name, active_influence=active_map or '')
 
@@ -584,20 +589,10 @@ class SkinPanel(DeformerPanelBase):
 
     @Slot(QtCore.QModelIndex)
     def _on_item_clicked(self, proxy_index: QtCore.QModelIndex) -> None:
-        """Activate influence for painting on joint row click.
-
-        Sequence:
-        1. Mark row as active (teal bold).
-        2. Emit ``map_selected`` → controller tracks active map.
-        3. Call ``source.use_map(joint_name)`` to set artisan influence.
-        4. Call ``source.paint()`` to open the artisan paint context.
-
-        Joint name passed to ``use_map`` is the short name with namespace
-        (strips only the leading ``|path|`` DAG prefix) — matching the
-        format expected by ``SkinCluster.use_map()``.
+        """Activate the clicked influence for painting.
 
         Lock-zone clicks are consumed by ``_InfluenceTreeView.mousePressEvent``
-        and never reach this slot.
+        before Qt's selection machinery runs and never reach this slot.
         """
         proxy = self._proxy
         src_index = proxy.mapToSource(proxy_index)
@@ -609,21 +604,19 @@ class SkinPanel(DeformerPanelBase):
         joint_name = full_path.rsplit('|', 1)[-1]   # 'namespace:JointName'
 
         self._mark_active(full_path)
-        self.map_selected.emit(joint_name)
 
         if self._source is not None:
-            if hasattr(self._source, 'use_map'):
-                try:
-                    self._source.use_map(joint_name)
-                except Exception as exc:
-                    logger.warning(f"SkinPanel: use_map('{joint_name}') failed: {exc}")
-            if hasattr(self._source, 'paint'):
-                try:
-                    self._source.paint()
-                except Exception as exc:
-                    logger.warning(f"SkinPanel: paint() failed: {exc}")
+            try:
+                self._source.use_map(joint_name)
+                self._source.paint()
+            except Exception as e:
+                import traceback
+                logger.warning(f"SkinPanel paint failed: {e}\n{traceback.format_exc()}")
 
-        logger.debug(f"SkinPanel: activated influence '{joint_name}'")
+        self.map_selected.emit(joint_name)
+        
+        logger.debug(f"SkinPanel: selected influence '{joint_name}'")
+
 
     @Slot(str, bool)
     def _on_lock_changed(self, full_path: str, locked: bool) -> None:
