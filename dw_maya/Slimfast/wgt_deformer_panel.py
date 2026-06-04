@@ -1,63 +1,56 @@
 """Extensible deformer sub-panel registry for Slimfast.
 
-Summary:
-    Provides a plugin registry so code can register new deformer modes
-    (radio-button label + source-combo filter + dedicated sub-panel widget)
-    into the Slimfast deformer group without modifying ``main_ui.py``.
+Architecture
+------------
+DeformerPanelBase
+    Zone-based ABC.  Subclasses override ``build_header``, ``build_body``,
+    ``build_footer`` to inject widgets into a pre-assembled vertical layout.
+    Capabilities (envelope, paint, artisan clamp) are declared as ClassVars
+    so subclasses state intent at the top of the class, not scattered across
+    three one-liner methods.
 
-    The common UI elements — mesh picker, source combo, copy/paste, envelope
-    and paint button — always live in ``main_ui.py``.  Each registered panel
-    only contributes its *extra* widgets that appear between the source combo
-    and the copy/paste row.
+@panel_for
+    Decorator that combines registration + capability overrides in one place.
+    Replaces the separate ``register_deformer_panel(...)`` call at the bottom
+    of each panel file.
 
-Features:
-    - ``register_deformer_panel()`` public API: adds a radio button + panel.
-    - ``get_mode_registry()``  returns the ordered registry for radio buttons.
-    - ``get_panel_class()``    resolves a panel class from a Maya node type.
-    - ``get_ctrl_mode()``      maps a mode_key to a controller mode string.
-    - Built-in panels: DefaultPanel, BlendShapePanel, NucleusPanel,
-      VtxAlphaPanel.
+DefaultPanel
+    Handles both generic deformers (cluster, softMod, wire, blendShape …).
+    For blendShape nodes, a secondary target combo appears automatically via
+    ``on_combo_changed``.  No separate BlendShapePanel class is needed.
 
-Classes:
-    DeformerPanelBase  — Abstract base widget.
-    DefaultPanel       — Empty placeholder (generic deformers).
-    BlendShapePanel    — Adds a target-map combobox.
-    NucleusPanel       — Adds a map-type badge label.
-    VtxAlphaPanel      — Adds a greyscale-preview toggle button.
+NucleusPanel / VtxAlphaPanel
+    Each overrides one zone factory and ``on_source_changed``.  Both are now
+    ~15 lines instead of ~50.
 
-Functions:
-    register_deformer_panel — Add an entry to the registry.
-    get_mode_registry       — Return the sorted mode registry.
-    get_panel_class         — Resolve a panel class by Maya node type.
-    get_ctrl_mode           — Resolve the controller mode string.
+Registry
+--------
+``register_deformer_panel`` and ``panel_for`` both write into two dicts:
 
-Example:
-    from dw_maya.Slimfast import wgt_deformer_panel
+    _MODE_REGISTRY        mode_key  → {label, panel_class, ctrl_mode, order}
+    _PANEL_BY_NODE_TYPE   node_type → panel_class
 
-    class MySkinPanel(wgt_deformer_panel.DeformerPanelBase):
-        def __init__(self, parent=None):
-            super().__init__(parent)
-            # build bone-list QListView here …
+``get_mode_registry``   → ordered dict for radio-button building in main_ui.py
+``get_panel_class``     → panel_class from a Maya node type string
+``get_ctrl_mode``       → ctrl mode string from a mode_key
+
+Example — external panel in 20 lines
+--------------------------------------
+    from dw_maya.Slimfast.wgt_deformer_panel import DeformerPanelBase, panel_for
+
+    @panel_for(
+        node_types = ['wire'],
+        label      = 'Wire',
+        ctrl_mode  = 'deformer',
+        order      = 18,
+    )
+    class WirePanel(DeformerPanelBase):
+        def build_header(self):
+            self._lbl = QtWidgets.QLabel('Wire deformer')
+            return self._lbl
 
         def on_source_changed(self, source, active_map, ctrl):
-            # refresh bone list from source.node_name
-            pass
-
-        def has_envelope(self):
-            return True
-
-    wgt_deformer_panel.register_deformer_panel(
-        mode_key='skinCluster',
-        label='SkinCluster',
-        panel_class=MySkinPanel,
-        ctrl_mode='deformer',          # maps to resolve_weight_sources mode
-        node_types=['skinCluster'],    # these node types activate this panel
-        order=15,                      # position among radio buttons
-    )
-
-TODO:
-    - SkinCluster bone-list panel built-in implementation.
-    - Persist per-panel settings in QSettings.
+            self._lbl.setText(source.node_name if source else '—')
 
 Author: DrWeeny
 """
@@ -65,14 +58,14 @@ Author: DrWeeny
 from __future__ import annotations
 
 import collections
-from typing import Dict, List, Optional, Type, TYPE_CHECKING
+from typing import ClassVar, Dict, List, Optional, Type, TYPE_CHECKING
 
 try:
     from PySide6 import QtCore, QtGui, QtWidgets
-    from PySide6.QtCore import Signal, Slot
+    from PySide6.QtCore import Signal, Slot, Qt
 except ImportError:
     from PySide2 import QtCore, QtGui, QtWidgets
-    from PySide2.QtCore import Signal, Slot
+    from PySide2.QtCore import Signal, Slot, Qt
 
 if TYPE_CHECKING:
     from dw_maya.dw_paint.protocol import WeightSource
@@ -83,313 +76,333 @@ if TYPE_CHECKING:
 # Internal registry stores
 # ---------------------------------------------------------------------------
 
-# Ordered by insertion; re-sorted by 'order' on every read.
 _MODE_REGISTRY: Dict[str, dict] = collections.OrderedDict()
-
-# Maps Maya node-type strings to a panel class.
 _PANEL_BY_NODE_TYPE: Dict[str, Type['DeformerPanelBase']] = {}
 
 
 # ---------------------------------------------------------------------------
-# Public registry API
+# Registration helpers
 # ---------------------------------------------------------------------------
 
-def register_deformer_panel(mode_key: str,
-                            label: str,
-                            panel_class: Type['DeformerPanelBase'],
-                            ctrl_mode: str = '',
-                            node_types: Optional[List[str]] = None,
-                            order: int = 100,) -> None:
+def register_deformer_panel(
+        mode_key:    str,
+        label:       str,
+        panel_class: Type['DeformerPanelBase'],
+        ctrl_mode:   str = '',
+        node_types:  Optional[List[str]] = None,
+        order:       int = 100,
+) -> None:
     """Register a deformer mode radio button and its companion sub-panel.
 
     Args:
-        mode_key:    Unique string key (e.g. ``'skinCluster'``).
-        label:       Radio-button text displayed in the deformer group header.
-        panel_class: A ``DeformerPanelBase`` subclass to instantiate.
+        mode_key:    Unique key (e.g. ``'skinCluster'``).
+        label:       Radio-button text shown in the deformer group header.
+        panel_class: A ``DeformerPanelBase`` subclass.
         ctrl_mode:   Mode string forwarded to ``SlimfastController.set_mode()``.
-                     Defaults to ``mode_key`` when left empty.  Must be one of
-                     the values accepted by ``resolve_weight_sources``
-                     (``'all'``, ``'deformer'``, ``'nucleus'``, ``'vtxColor'``)
-                     unless the controller has been extended.
-        node_types:  Maya node-type strings whose selection in the source combo
-                     triggers this panel.  Empty list → panel used as fallback.
-        order:       Determines the left-to-right radio-button order (lower = left).
-
-    Example::
-
-        register_deformer_panel(
-            'wire', 'Wire', WirePanel,
-            ctrl_mode='deformer',
-            node_types=['wire'],
-            order=18,
-        )
+                     Defaults to ``mode_key`` when empty.
+        node_types:  Maya node-type strings that trigger this panel.
+        order:       Left-to-right radio-button order (lower = left).
     """
     _MODE_REGISTRY[mode_key] = {
-        'label': label,
+        'label':       label,
         'panel_class': panel_class,
-        'ctrl_mode': ctrl_mode or mode_key,
-        'order': order,
+        'ctrl_mode':   ctrl_mode or mode_key,
+        'order':       order,
     }
     for nt in (node_types or []):
         _PANEL_BY_NODE_TYPE[nt] = panel_class
 
 
-def get_mode_registry() -> Dict[str, dict]:
-    """Return the mode registry sorted by the ``order`` field.
+def panel_for(
+        node_types: List[str],
+        label:      str,
+        ctrl_mode:  str = 'deformer',
+        order:      int = 100,
+        **capabilities,   # has_envelope, has_paint, has_artisan_clamp
+):
+    """Decorator: registration + capability overrides in one declaration.
 
-    Returns:
-        An ``OrderedDict`` mapping mode_key to its registry entry dict.
+    Capabilities listed as keyword args override the ``DeformerPanelBase``
+    ClassVar defaults.  Missing capabilities keep the base-class default.
+
+    Example::
+
+        @panel_for(
+            node_types        = ['skinCluster'],
+            label             = 'SkinCluster',
+            order             = 11,
+            has_artisan_clamp = False,   # overrides _has_artisan_clamp = True
+        )
+        class SkinPanel(DeformerPanelBase):
+            ...
     """
+    _CAPABILITY_KEYS = {'has_envelope', 'has_paint', 'has_artisan_clamp'}
+
+    def decorator(cls: Type['DeformerPanelBase']) -> Type['DeformerPanelBase']:
+        # Inject ClassVar overrides only for explicitly supplied capability kwargs.
+        for key in _CAPABILITY_KEYS:
+            if key in capabilities:
+                setattr(cls, f'_{key}', bool(capabilities[key]))
+
+        mode_key = node_types[0] if node_types else cls.__name__.lower()
+        register_deformer_panel(
+            mode_key    = mode_key,
+            label       = label,
+            panel_class = cls,
+            ctrl_mode   = ctrl_mode,
+            node_types  = node_types,
+            order       = order,
+        )
+        return cls
+
+    return decorator
+
+
+# ---------------------------------------------------------------------------
+# Registry accessors
+# ---------------------------------------------------------------------------
+
+def get_mode_registry() -> Dict[str, dict]:
+    """Return the mode registry sorted by ``order``."""
     return collections.OrderedDict(
         sorted(_MODE_REGISTRY.items(), key=lambda kv: kv[1]['order'])
     )
 
 
 def get_panel_class(node_type: str) -> Type['DeformerPanelBase']:
-    """Return the panel class registered for a given Maya node type.
-
-    Falls back to :class:`DefaultPanel` when no entry matches.
-
-    Args:
-        node_type: Maya type string (e.g. ``'blendShape'``).
-
-    Returns:
-        A ``DeformerPanelBase`` subclass.
-    """
+    """Resolve a panel class from a Maya node type.  Falls back to DefaultPanel."""
     return _PANEL_BY_NODE_TYPE.get(node_type, DefaultPanel)
 
 
 def get_ctrl_mode(mode_key: str) -> str:
-    """Return the controller mode string for the given registry key.
-
-    Args:
-        mode_key: Registry key (e.g. ``'nucleus'``).
-
-    Returns:
-        The ``ctrl_mode`` stored for that key, or ``mode_key`` itself if
-        the key is not registered.
-    """
+    """Resolve the controller mode string for a given registry key."""
     entry = _MODE_REGISTRY.get(mode_key)
-    if entry:
-        return entry['ctrl_mode']
-    return mode_key
+    return entry['ctrl_mode'] if entry else mode_key
 
 
 # ---------------------------------------------------------------------------
-# Abstract base class
+# Abstract base
 # ---------------------------------------------------------------------------
 
 class DeformerPanelBase(QtWidgets.QWidget):
-    """Abstract base widget for deformer-specific sub-panels.
+    """Zone-based ABC for Slimfast deformer sub-panels.
 
-    Subclasses live inside the Slimfast deformer group, between the source
-    combo and the copy/paste row.  They respond to lifecycle hooks called by
-    ``SlimfastWidget`` and emit :attr:`map_selected` to request map switches.
+    The constructor assembles three named vertical zones in order::
 
-    Attributes:
-        map_selected: Emitted with the map attribute name to activate.
-                      Connected to ``SlimfastController.select_map`` by the
-                      parent widget.
+        [header]  — badge / status / map-type indicator (optional)
+        [body]    — main content: list, combo, canvas …  (optional)
+        [footer]  — extra action row                     (optional)
+
+    Only zones whose factory returns a non-None widget are added to the
+    layout.  Subclasses override only the zones they need.
+
+    Capability ClassVars
+    --------------------
+    Declare capabilities at the top of the subclass — no need to override
+    three separate one-liner methods::
+
+        class MyPanel(DeformerPanelBase):
+            _has_envelope      = False   # hides the envelope spinbox
+            _has_artisan_clamp = False   # skips clamp sync on enterEvent
+
+    Use ``@panel_for(has_artisan_clamp=False)`` for the same effect at
+    registration time without touching the class body.
+
+    Signals
+    -------
+    map_selected(str)
+        Emitted when the panel activates a new map attribute name.
+        Connected to ``SlimfastController.select_map`` by ``main_ui.py``.
     """
 
+    # Capability defaults — override per subclass or via @panel_for
+    _has_envelope:      ClassVar[bool] = True
+    _has_paint:         ClassVar[bool] = True
+    _has_artisan_clamp: ClassVar[bool] = True
+
     map_selected = Signal(str)
+
+    def __init__(self, parent: Optional[QtWidgets.QWidget] = None) -> None:
+        super().__init__(parent)
+        lay = QtWidgets.QVBoxLayout(self)
+        lay.setContentsMargins(0, 2, 0, 2)
+        lay.setSpacing(3)
+        for widget in filter(None, [
+            self.build_header(),
+            self.build_body(),
+            self.build_footer(),
+        ]):
+            lay.addWidget(widget)
+
+    # ------------------------------------------------------------------
+    # Zone factories — override in subclasses
+    # ------------------------------------------------------------------
+
+    def build_header(self) -> Optional[QtWidgets.QWidget]:
+        """Return a widget for the top zone, or None to skip."""
+        return None
+
+    def build_body(self) -> Optional[QtWidgets.QWidget]:
+        """Return a widget for the main content zone, or None to skip."""
+        return None
+
+    def build_footer(self) -> Optional[QtWidgets.QWidget]:
+        """Return a widget for the bottom zone, or None to skip."""
+        return None
+
+    # ------------------------------------------------------------------
+    # Lifecycle hooks — override in subclasses
+    # ------------------------------------------------------------------
 
     def on_source_changed(self,
                           source: Optional['WeightSource'],
                           active_map: str,
-                          ctrl: 'SlimfastController',) -> None:
-        """React to the active ``WeightSource`` changing.
+                          ctrl: 'SlimfastController') -> None:
+        """React to the active WeightSource changing.
 
         Called by ``SlimfastWidget._on_active_changed`` after the controller
-        has updated its state.  Override to refresh bone lists, map badges, etc.
-
-        Args:
-            source:     New active source, or ``None`` when nothing is selected.
-            active_map: Currently active map attribute name (empty string when
-                        ``source`` is ``None``).
-            ctrl:       Controller instance for read-only queries.
+        has updated.  Override to refresh badges, lists, etc.
         """
 
     def on_combo_changed(self, node_type: str, maps: List[str]) -> None:
-        """React to a different row being selected in the source combo.
+        """React to a different source-combo row being selected.
 
-        Called by ``SlimfastWidget._on_source_combo_changed`` *before* the
-        controller activates the new source.  Override to pre-populate
-        secondary widgets (e.g. target lists).
-
-        Args:
-            node_type: Maya type string of the newly selected node.
-            maps:      All map attribute names available on that node.
+        Called by ``SlimfastWidget._on_source_combo_changed`` *before*
+        ``on_source_changed`` fires for the new source.  Override to
+        pre-populate secondary widgets (target list, map picker …).
         """
 
-    def has_envelope(self) -> bool:
-        """Return ``True`` if the envelope spinbox should be shown.
+    # ------------------------------------------------------------------
+    # Capability accessors — read by main_ui.py; do not override manually
+    # when using @panel_for or ClassVar declarations
+    # ------------------------------------------------------------------
 
-        Returns:
-            ``True`` by default; override to ``False`` for panel types whose
-            deformer nodes have no ``envelope`` attribute (e.g. nCloth maps,
-            vertex-color alpha).
-        """
-        return True
-
-    def has_paint(self) -> bool:
-        """Return ``True`` if the Paint button should be enabled.
-
-        Returns:
-            ``True`` by default; override to ``False`` when the panel type
-            cannot be painted via the standard artisan context.
-        """
-        return True
+    def has_envelope(self)      -> bool: return self._has_envelope
+    def has_paint(self)         -> bool: return self._has_paint
+    def has_artisan_clamp(self) -> bool: return self._has_artisan_clamp
 
 
 # ---------------------------------------------------------------------------
-# Built-in panels
+# DefaultPanel
 # ---------------------------------------------------------------------------
 
 class DefaultPanel(DeformerPanelBase):
-    """Empty placeholder panel used for generic deformer types."""
+    """Generic panel for cluster, softMod, wire, and blendShape.
 
-
-class BlendShapePanel(DeformerPanelBase):
-    """Adds a secondary combobox for selecting a blendShape target map.
-
-    Emits :attr:`map_selected` whenever the user picks a different target.
+    For blendShape sources the secondary target combo appears automatically
+    when ``on_combo_changed`` is called with ``node_type='blendShape'``.
+    For all other deformer types the combo stays hidden — no separate
+    BlendShapePanel class is needed.
     """
 
-    def __init__(self, parent: Optional[QtWidgets.QWidget] = None) -> None:
-        super().__init__(parent)
-        lay = QtWidgets.QVBoxLayout(self)
+    def build_body(self) -> Optional[QtWidgets.QWidget]:
+        """Build the hidden-by-default blendShape target combo."""
+        container = QtWidgets.QWidget()
+        lay = QtWidgets.QVBoxLayout(container)
         lay.setContentsMargins(0, 0, 0, 0)
-        lay.setSpacing(2)
+        lay.setSpacing(0)
 
-        self._combo = QtWidgets.QComboBox()
-        self._combo.setMinimumWidth(220)
-        self._combo.setToolTip('BlendShape target map')
-        self._combo.currentIndexChanged.connect(self._on_target_changed)
-        lay.addWidget(self._combo)
+        self._bs_combo = QtWidgets.QComboBox()
+        self._bs_combo.setMinimumWidth(220)
+        self._bs_combo.setToolTip('BlendShape target map')
+        self._bs_combo.setVisible(False)
+        self._bs_combo.currentIndexChanged.connect(self._on_bs_target_changed)
+        lay.addWidget(self._bs_combo)
 
-    @Slot(int)
-    def _on_target_changed(self, index: int) -> None:
-        map_name = self._combo.itemData(index)
-        if map_name:
-            self.map_selected.emit(map_name)
+        return container
 
     def on_combo_changed(self, node_type: str, maps: List[str]) -> None:
-        """Populate the target combo from the new blendShape map list.
-
-        Args:
-            node_type: Expected to be ``'blendShape'``.
-            maps:      All map attribute names on the node.
-        """
-        if node_type != 'blendShape':
+        """Show/populate the blendShape combo; hide it for all other types."""
+        is_bs = (node_type == 'blendShape')
+        self._bs_combo.setVisible(is_bs)
+        if not is_bs:
             return
-        self._combo.blockSignals(True)
-        self._combo.clear()
+        self._bs_combo.blockSignals(True)
+        self._bs_combo.clear()
         for m in maps:
-            display_label = 'base weights' if m == 'weightList' else m
-            self._combo.addItem(display_label, m)
-        self._combo.blockSignals(False)
+            self._bs_combo.addItem('base weights' if m == 'weightList' else m, m)
+        self._bs_combo.blockSignals(False)
+
+    @Slot(int)
+    def _on_bs_target_changed(self, index: int) -> None:
+        data = self._bs_combo.itemData(index)
+        if data:
+            self.map_selected.emit(data)
+
+
+# ---------------------------------------------------------------------------
+# NucleusPanel
+# ---------------------------------------------------------------------------
+
+_NUCLEUS_MAP_TYPE_INFO: Dict[int, tuple] = {
+    0: ('● None  (map disabled)', '#888888'),
+    1: ('● PerVertex',            '#4ecdc4'),
+    2: ('● Texture',              '#ddcc44'),
+}
 
 
 class NucleusPanel(DeformerPanelBase):
-    """Adds a colour-coded badge label showing the map type of a nucleus map.
+    """Colour-coded map-type badge for nCloth / nRigid maps."""
 
-    Possible states: ``None (disabled)``, ``PerVertex``, ``Texture``.
-    """
+    _has_envelope = False
 
-    _MAP_TYPE_INFO: Dict[int, tuple] = {
-        0: ('● None  (map disabled)', '#888888'),
-        1: ('● PerVertex', '#4ecdc4'),
-        2: ('● Texture', '#ddcc44'),
-    }
-
-    def __init__(self, parent: Optional[QtWidgets.QWidget] = None) -> None:
-        super().__init__(parent)
-        lay = QtWidgets.QVBoxLayout(self)
-        lay.setContentsMargins(0, 0, 0, 0)
-
+    def build_header(self) -> Optional[QtWidgets.QWidget]:
         self._badge = QtWidgets.QLabel()
-        self._badge.setAlignment(QtCore.Qt.AlignCenter)
+        self._badge.setAlignment(Qt.AlignCenter)
         self._badge.setStyleSheet('font-size: 11px;')
-        lay.addWidget(self._badge)
+        return self._badge
 
-    def on_source_changed(
-        self,
-        source: Optional['WeightSource'],
-        active_map: str,
-        ctrl: 'SlimfastController',
-    ) -> None:
-        """Update the badge text and colour from the nCloth map type.
-
-        Args:
-            source:     Expected to be an ``NClothMap`` instance.
-            active_map: Active map attribute name.
-            ctrl:       Unused; provided for interface consistency.
-        """
-        # Import here to avoid a hard dependency at module level.
+    def on_source_changed(self,
+                          source: Optional['WeightSource'],
+                          active_map: str,
+                          ctrl: 'SlimfastController') -> None:
         from dw_maya.dw_nucleus_utils import NClothMap
         if not isinstance(source, NClothMap) or not active_map:
             self._badge.setText('')
             return
         try:
             mt = source.map_type(active_map)
-            text, color = self._MAP_TYPE_INFO.get(mt, (f'● type={mt}', '#aaaaaa'))
+            text, color = _NUCLEUS_MAP_TYPE_INFO.get(mt, (f'● type={mt}', '#aaaaaa'))
             self._badge.setText(text)
             self._badge.setStyleSheet(f'color: {color}; font-size: 11px;')
         except Exception:
             self._badge.setText('')
 
-    def has_envelope(self) -> bool:
-        """Return ``False`` — nCloth nodes have no ``envelope`` attribute."""
-        return False
 
+# ---------------------------------------------------------------------------
+# VtxAlphaPanel
+# ---------------------------------------------------------------------------
 
 class VtxAlphaPanel(DeformerPanelBase):
-    """Adds a greyscale-preview toggle for ``VertexColorAlpha`` sources.
+    """Greyscale preview toggle for VertexColorAlpha sources."""
 
-    The toggle calls ``source.enable_preview()`` / ``source.disable_preview()``
-    which switches the active colour set to a greyscale display mode in the
-    Maya viewport.
-    """
+    _has_envelope      = False
+    _has_paint         = False
+    _has_artisan_clamp = False
 
-    def __init__(self, parent: Optional[QtWidgets.QWidget] = None) -> None:
-        super().__init__(parent)
-        lay = QtWidgets.QVBoxLayout(self)
-        lay.setContentsMargins(0, 0, 0, 0)
-
-        self._preview_btn = QtWidgets.QPushButton('👁  Alpha B&W preview')
-        self._preview_btn.setCheckable(True)
-        self._preview_btn.setFixedHeight(24)
-        self._preview_btn.setStyleSheet(
+    def build_header(self) -> Optional[QtWidgets.QWidget]:
+        self._source = None
+        btn = QtWidgets.QPushButton('👁  Alpha B&W preview')
+        btn.setCheckable(True)
+        btn.setFixedHeight(24)
+        btn.setStyleSheet(
             'QPushButton { background-color: #443355; color: #ccaaee; }'
             'QPushButton:hover { background-color: #554466; }'
             'QPushButton:checked { background-color: #775599; color: white; }'
         )
-        self._preview_btn.setToolTip(
-            'Toggle greyscale preview of the alpha channel in the viewport'
-        )
-        self._preview_btn.toggled.connect(self._on_toggled)
-        lay.addWidget(self._preview_btn)
-
-        self._source = None
+        btn.setToolTip('Toggle greyscale preview of the alpha channel in the viewport')
+        btn.toggled.connect(self._on_toggled)
+        self._preview_btn = btn
+        return btn
 
     def on_source_changed(self,
                           source: Optional['WeightSource'],
                           active_map: str,
-                          ctrl: 'SlimfastController',) -> None:
-        """Track the active ``VertexColorAlpha`` and reset the button when
-        switching away.
-
-        Args:
-            source:     New source; stored only if it is a ``VertexColorAlpha``.
-            active_map: Unused.
-            ctrl:       Unused.
-        """
+                          ctrl: 'SlimfastController') -> None:
         from dw_maya.dw_paint.vertex_color_alpha import VertexColorAlpha
         is_alpha = isinstance(source, VertexColorAlpha)
         self._source = source if is_alpha else None
         if not is_alpha and self._preview_btn.isChecked():
-            # Uncheck without triggering a preview toggle on a dead source.
             self._preview_btn.blockSignals(True)
             self._preview_btn.setChecked(False)
             self._preview_btn.blockSignals(False)
@@ -398,66 +411,56 @@ class VtxAlphaPanel(DeformerPanelBase):
     def _on_toggled(self, checked: bool) -> None:
         if self._source is None:
             return
-        if checked:
-            self._source.enable_preview()
-        else:
-            self._source.disable_preview()
-
-    def has_envelope(self) -> bool:
-        """Return ``False`` — vertex colour alpha maps have no envelope."""
-        return False
-
-    def has_paint(self) -> bool:
-        """Return ``False`` — vtxAlpha is not painted via artisan."""
-        return False
+        self._source.enable_preview() if checked else self._source.disable_preview()
 
 
 # ---------------------------------------------------------------------------
-# Built-in registrations (executed at import time)
+# Built-in registrations
 # ---------------------------------------------------------------------------
+# skinCluster is intentionally absent from 'deformer' node_types so that
+# wgt_skin_panel.py (when imported) can register SkinPanel for it cleanly.
 
 register_deformer_panel(
-    mode_key='all',
-    label='All',
-    panel_class=DefaultPanel,
-    ctrl_mode='all',
-    node_types=[],
-    order=0,
+    mode_key    = 'all',
+    label       = 'All',
+    panel_class = DefaultPanel,
+    ctrl_mode   = 'all',
+    node_types  = [],
+    order       = 0,
 )
 
 register_deformer_panel(
-    mode_key='deformer',
-    label='Deformer',
-    panel_class=DefaultPanel,
-    ctrl_mode='deformer',
-    node_types=['cluster', 'softMod', 'wire', 'skinCluster'],
-    order=10,
+    mode_key    = 'deformer',
+    label       = 'Deformer',
+    panel_class = DefaultPanel,
+    ctrl_mode   = 'deformer',
+    node_types  = ['cluster', 'softMod', 'wire'],   # skinCluster registered separately
+    order       = 10,
 )
 
 register_deformer_panel(
-    mode_key='blendShape',
-    label='BlendShape',
-    panel_class=BlendShapePanel,
-    ctrl_mode='deformer',
-    node_types=['blendShape'],
-    order=20,
+    mode_key    = 'blendShape',
+    label       = 'BlendShape',
+    panel_class = DefaultPanel,        # DefaultPanel shows secondary combo
+    ctrl_mode   = 'deformer',
+    node_types  = ['blendShape'],
+    order       = 20,
 )
 
 register_deformer_panel(
-    mode_key='nucleus',
-    label='nCloth',
-    panel_class=NucleusPanel,
-    ctrl_mode='nucleus',
-    node_types=['nCloth', 'nRigid'],
-    order=30,
+    mode_key    = 'nucleus',
+    label       = 'nCloth',
+    panel_class = NucleusPanel,
+    ctrl_mode   = 'nucleus',
+    node_types  = ['nCloth', 'nRigid'],
+    order       = 30,
 )
 
 register_deformer_panel(
-    mode_key='vtxColor',
-    label='vtxAlpha',
-    panel_class=VtxAlphaPanel,
-    ctrl_mode='vtxColor',
-    node_types=['vtxColor'],
-    order=40,
+    mode_key    = 'vtxColor',
+    label       = 'vtxAlpha',
+    panel_class = VtxAlphaPanel,
+    ctrl_mode   = 'vtxColor',
+    node_types  = ['vtxColor'],
+    order       = 40,
 )
-
