@@ -103,6 +103,24 @@ _SHEAR_ATTRS: List[str] = ["shxy", "shxz", "shyz"]
 # Scale attrs — driven only by scaleConstraint (rarer than parent/point/orient)
 _SCALE_ATTRS: List[str] = ["sx", "sy", "sz"]
 
+import maya.api.OpenMaya as om
+
+def get_dag_path(node):
+    sel = om.MSelectionList()
+    sel.add(node)
+    return sel.getDagPath(0)
+
+def is_already_parented(child, parent):
+    child_path = get_dag_path(child)
+    parent_path = get_dag_path(parent)
+
+    if child_path.length() < 2:
+        return False
+
+    actual_parent = om.MDagPath(child_path)
+    actual_parent.pop()
+
+    return actual_parent.fullPathName() == parent_path.fullPathName()
 
 # ---------------------------------------------------------------------------
 # Internal helpers
@@ -327,8 +345,7 @@ def _walk_dirty(node: Dict, prefix: str, acc: List[str]) -> None:
 @contextlib.contextmanager
 def unlocked_attrs(
     node: Union[str, Any],
-    attrs: List[str],
-) -> Generator[Dict[str, Any], None, None]:
+    attrs: List[str],) -> Generator[Dict[str, Any], None, None]:
     """
     Temporarily unlock and unhide attributes, then restore their original state.
 
@@ -517,8 +534,7 @@ def reset_node_pivot(node: Union[str, Any]) -> bool:
 def fix_node(
     node: Union[str, Any],
     fix_matrix: bool = True,
-    fix_pivot: bool = True,
-) -> Dict[str, bool]:
+    fix_pivot: bool = True,) -> Dict[str, bool]:
     """
     Apply selected fixes to a single node.
 

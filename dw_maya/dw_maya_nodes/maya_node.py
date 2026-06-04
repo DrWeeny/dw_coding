@@ -232,10 +232,17 @@ class MayaNode(ObjPointer):
             str: Transform full/partial path, or ``self.sh`` as fallback.
         """
         node = self.__node
-        if cmds.nodeType(node) == 'transform':
+        # Joints (and other transform-derived types such as locators, cameras…)
+        # have nodeType 'joint' / 'locator' / etc., NOT 'transform', but they ARE
+        # transforms.  Check the full inheritance chain so all of them are handled
+        # the same way as a plain transform — returning themselves rather than
+        # falling into the shape-walking code path below.
+        _inherited = cmds.nodeType(node, inherited=True) or []
+        if 'transform' in _inherited:
             if "|" in node:
                 # Already a long/partial long path – ensure it resolves uniquely.
-                _tr = cmds.ls(node, type='transform', long=True)
+                # Do NOT filter by type='transform': joints won't match that filter.
+                _tr = cmds.ls(node, long=True)
                 return _tr[0] if _tr else None
             return node
         # node is a shape → walk up with fullPath=True so the result is usable
@@ -520,10 +527,17 @@ class MayaNode(ObjPointer):
         Example:
             >>> sphere.parentTo(group)
         """
+        from dw_maya.dw_maya_utils.dw_maya_hierarchy import is_already_parented
         if isinstance(target, MayaNode):
-            cmds.parent(self.tr, target.tr)
+            if not is_already_parented(self.tr, target.tr):
+                cmds.parent(self.tr, target.tr)
+            else:
+                cmds.warning(f"Target node {target.tr} already has a parent")
         else:
-            cmds.parent(self.tr, target)
+            if not is_already_parented(self.tr, target):
+                cmds.parent(self.tr, target)
+            else:
+                cmds.warning(f"Target node {target} already has a parent")
 
     def rename(self, name: str):
         """Rename node maintaining Maya naming conventions.

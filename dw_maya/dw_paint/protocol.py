@@ -221,9 +221,26 @@ class WeightSource(ABC):
     def get_artisan_name(self) -> str:
         return "artAttrContext"
 
+    def paint(self, *args, **kwargs):
+        """Entry point — always chains pre → _paint → post."""
+        self.prepaint(*args, **kwargs)
+        try:
+            self._paint(*args, **kwargs)
+        finally:
+            self.postpaint(*args, **kwargs)  # always runs, even if _paint raises
+
     @abstractmethod
-    def paint(self) -> None:
-        """Open Maya's artisan paint tool for the currently active map."""
+    def _paint(self, *args, **kwargs):
+        """Override this in your subclass, not paint()."""
+        ...
+
+    def prepaint(self, *args, **kwargs):
+        """Override optionally."""
+        pass
+
+    def postpaint(self) -> None:
+        from dw_maya.dw_paint.artisan_maya import inject_ramp_into_artattr
+        inject_ramp_into_artattr()
 
     # ------------------------------------------------------------------
     # Default get / set — override when Maya's attr format differs

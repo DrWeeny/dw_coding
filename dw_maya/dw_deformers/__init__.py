@@ -2,3 +2,7 @@ from dw_maya.dw_deformers.dw_core import is_deformer, listDeformers, editDeforme
 from dw_maya.dw_deformers.dw_create_wrap import createWrap
 from dw_maya.dw_deformers.dw_shrinkwrap import shrinkWrap
 from dw_maya.dw_deformers.dw_stickies import createSticky
+
+# registring
+import dw_maya.dw_deformers.dw_deformer_class
+import dw_maya.dw_deformers.dw_skinning_class
