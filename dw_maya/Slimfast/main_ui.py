@@ -1425,9 +1425,9 @@ class SlimfastWidget(QtWidgets.QWidget):
 
         self._panel_container.setCurrentWidget(panel)
         self._current_panel = panel
-        _size =self._current_panel._max_size
+        _size = self._current_panel._max_size
         self._panel_container.setFixedHeight(_size)
-        self._panel_container.setSizePolicy(QtWidgets.QSizePolicy.Maximum, QtWidgets.QSizePolicy.Maximum)
+        self._panel_container.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed)
         self.adjustSize()
 
         # Envelope row visibility is driven by the panel type.

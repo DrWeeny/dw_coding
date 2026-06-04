@@ -38,6 +38,7 @@ except ImportError:
     from PySide2 import QtCore, QtGui, QtWidgets
     from PySide2.QtCore import Signal, Slot, Qt
 
+from dw_ressources import get_icon_path
 from dw_maya.Slimfast.wgt_deformer_panel import DeformerPanelBase, panel_for
 from dw_logger import get_logger
 
@@ -57,6 +58,8 @@ _ROLE_IS_ACTIVE = Qt.UserRole + 2    # bool : currently active paint influence
 _LOCK_COL_W = 26
 _ROW_HEIGHT = 22
 
+_LOCK_ICON_PATH = get_icon_path("padlock_locked")
+_UNLOCK_ICON_PATH = get_icon_path("padlock_unlocked")
 
 # ---------------------------------------------------------------------------
 # Model — lock_changed fires only via model.setData, not item.setData

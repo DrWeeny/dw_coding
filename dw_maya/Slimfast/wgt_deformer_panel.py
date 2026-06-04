@@ -225,15 +225,14 @@ class DeformerPanelBase(QtWidgets.QWidget):
     def __init__(self, parent: Optional[QtWidgets.QWidget] = None) -> None:
         super().__init__(parent)
         lay = QtWidgets.QVBoxLayout(self)
-        lay.setContentsMargins(0, 2, 0, 2)
-        lay.setSpacing(3)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(2)
         for widget in filter(None, [
             self.build_header(),
             self.build_body(),
             self.build_footer(),
         ]):
             lay.addWidget(widget)
-        lay.addStretch()
     # ------------------------------------------------------------------
     # Zone factories — override in subclasses
     # ------------------------------------------------------------------
@@ -379,12 +378,15 @@ class VtxAlphaPanel(DeformerPanelBase):
     _has_envelope      = False
     _has_paint         = False
     _has_artisan_clamp = False
+    _min_size = 50
+    _max_size = 50
 
     def build_header(self) -> Optional[QtWidgets.QWidget]:
         self._source = None
         btn = QtWidgets.QPushButton('👁  Alpha B&W preview')
         btn.setCheckable(True)
-        btn.setFixedHeight(24)
+        btn.setFixedHeight(32)
+        btn.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed)
         btn.setStyleSheet(
             'QPushButton { background-color: #443355; color: #ccaaee; }'
             'QPushButton:hover { background-color: #554466; }'
