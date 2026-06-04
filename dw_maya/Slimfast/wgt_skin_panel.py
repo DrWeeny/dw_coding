@@ -29,6 +29,7 @@ Author: DrWeeny
 
 from __future__ import annotations
 
+import os
 from typing import Dict, Generator, List, Optional, TYPE_CHECKING
 
 try:
@@ -58,8 +59,15 @@ _ROLE_IS_ACTIVE = Qt.UserRole + 2    # bool : currently active paint influence
 _LOCK_COL_W = 26
 _ROW_HEIGHT = 22
 
-_LOCK_ICON_PATH = get_icon_path("padlock_locked")
-_UNLOCK_ICON_PATH = get_icon_path("padlock_unlocked")
+def _as_fs_path(value) -> str:
+    """Return a Qt-friendly filesystem path string (handles pathlib paths)."""
+    if not value:
+        return ''
+    return str(os.fspath(value))
+
+
+_LOCK_ICON_PATH = _as_fs_path(get_icon_path("padlock_locked"))
+_UNLOCK_ICON_PATH = _as_fs_path(get_icon_path("padlock_unlocked"))
 
 # ---------------------------------------------------------------------------
 # Model — lock_changed fires only via model.setData, not item.setData
@@ -93,7 +101,7 @@ class JointInfluenceModel(QtGui.QStandardItemModel):
 # ---------------------------------------------------------------------------
 
 class _LockDelegate(QtWidgets.QStyledItemDelegate):
-    """Renders each row:   [🔒|🔓]  │  JointShortName
+    """Renders each row:   [icon]  │  JointShortName
 
     Visual states
     -------------
@@ -103,8 +111,21 @@ class _LockDelegate(QtWidgets.QStyledItemDelegate):
     normal   → palette defaults
     """
 
-    _LOCKED_GLYPH   = '🔒'
-    _UNLOCKED_GLYPH = '🔓'
+    _ICON_SIZE = 14   # px — lock icon is scaled to this square
+
+    def __init__(self, parent: Optional[QtWidgets.QWidget] = None) -> None:
+        super().__init__(parent)
+        size = QtCore.QSize(self._ICON_SIZE, self._ICON_SIZE)
+        self._px_locked   = (
+            QtGui.QPixmap(_LOCK_ICON_PATH).scaled(
+                size, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+            if _LOCK_ICON_PATH else QtGui.QPixmap()
+        )
+        self._px_unlocked = (
+            QtGui.QPixmap(_UNLOCK_ICON_PATH).scaled(
+                size, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+            if _UNLOCK_ICON_PATH else QtGui.QPixmap()
+        )
 
     def paint(self,
               painter: QtGui.QPainter,
@@ -127,12 +148,15 @@ class _LockDelegate(QtWidgets.QStyledItemDelegate):
             bg = option.palette.base().color()
         painter.fillRect(rect, bg)
 
-        # Lock glyph
-        lock_rect   = QtCore.QRect(rect.left(), rect.top(), _LOCK_COL_W, rect.height())
-        glyph       = self._LOCKED_GLYPH if locked else self._UNLOCKED_GLYPH
-        glyph_color = QtGui.QColor('#555555') if locked else QtGui.QColor('#999999')
-        painter.setPen(glyph_color)
-        painter.drawText(lock_rect, Qt.AlignCenter, glyph)
+        # Lock icon — centred in the left column
+        lock_rect = QtCore.QRect(rect.left(), rect.top(), _LOCK_COL_W, rect.height())
+        pixmap    = self._px_locked if locked else self._px_unlocked
+        if not pixmap.isNull():
+            px = lock_rect.left() + (lock_rect.width()  - pixmap.width())  // 2
+            py = lock_rect.top()  + (lock_rect.height() - pixmap.height()) // 2
+            painter.setOpacity(0.55 if locked else 0.85)
+            painter.drawPixmap(px, py, pixmap)
+            painter.setOpacity(1.0)
 
         # Separator
         painter.setPen(QtGui.QColor('#2e2e2e'))
@@ -219,16 +243,19 @@ class _InfluenceTreeView(QtWidgets.QTreeView):
         proxy = self.model()
         src_model = proxy.sourceModel() if hasattr(proxy, 'sourceModel') else proxy
 
+        icon_lock   = QtGui.QIcon(_LOCK_ICON_PATH)   if _LOCK_ICON_PATH   else QtGui.QIcon()
+        icon_unlock = QtGui.QIcon(_UNLOCK_ICON_PATH) if _UNLOCK_ICON_PATH else QtGui.QIcon()
+
         menu  = QtWidgets.QMenu(self)
-        a_lock_all   = menu.addAction('🔒  Lock All')
-        a_unlock_all = menu.addAction('🔓  Unlock All')
+        a_lock_all   = menu.addAction(icon_lock,   'Lock All')
+        a_unlock_all = menu.addAction(icon_unlock, 'Unlock All')
 
         a_lock_sel = a_unlock_sel = None
         index = self.indexAt(pos)
         if index.isValid():
             menu.addSeparator()
-            a_lock_sel   = menu.addAction('🔒  Lock Selected')
-            a_unlock_sel = menu.addAction('🔓  Unlock Selected')
+            a_lock_sel   = menu.addAction(icon_lock,   'Lock Selected')
+            a_unlock_sel = menu.addAction(icon_unlock, 'Unlock Selected')
 
         action = menu.exec_(self.viewport().mapToGlobal(pos))
         if action is None:
