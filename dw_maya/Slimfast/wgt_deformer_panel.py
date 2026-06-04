@@ -90,8 +90,7 @@ def register_deformer_panel(
         panel_class: Type['DeformerPanelBase'],
         ctrl_mode:   str = '',
         node_types:  Optional[List[str]] = None,
-        order:       int = 100,
-) -> None:
+        order:       int = 100,) -> None:
     """Register a deformer mode radio button and its companion sub-panel.
 
     Args:
@@ -118,8 +117,7 @@ def panel_for(
         label:      str,
         ctrl_mode:  str = 'deformer',
         order:      int = 100,
-        **capabilities,   # has_envelope, has_paint, has_artisan_clamp
-):
+        **capabilities,):
     """Decorator: registration + capability overrides in one declaration.
 
     Capabilities listed as keyword args override the ``DeformerPanelBase``
@@ -219,6 +217,8 @@ class DeformerPanelBase(QtWidgets.QWidget):
     _has_envelope:      ClassVar[bool] = True
     _has_paint:         ClassVar[bool] = True
     _has_artisan_clamp: ClassVar[bool] = True
+    _min_size: ClassVar[int] = 20
+    _max_size: ClassVar[int] = 20
 
     map_selected = Signal(str)
 
@@ -233,7 +233,7 @@ class DeformerPanelBase(QtWidgets.QWidget):
             self.build_footer(),
         ]):
             lay.addWidget(widget)
-
+        lay.addStretch()
     # ------------------------------------------------------------------
     # Zone factories — override in subclasses
     # ------------------------------------------------------------------
@@ -438,14 +438,14 @@ register_deformer_panel(
     order       = 10,
 )
 
-register_deformer_panel(
-    mode_key    = 'blendShape',
-    label       = 'BlendShape',
-    panel_class = DefaultPanel,        # DefaultPanel shows secondary combo
-    ctrl_mode   = 'deformer',
-    node_types  = ['blendShape'],
-    order       = 20,
-)
+# register_deformer_panel(
+#     mode_key    = 'blendShape',
+#     label       = 'BlendShape',
+#     panel_class = DefaultPanel,        # DefaultPanel shows secondary combo
+#     ctrl_mode   = 'deformer',
+#     node_types  = ['blendShape'],
+#     order       = 20,
+# )
 
 register_deformer_panel(
     mode_key    = 'nucleus',

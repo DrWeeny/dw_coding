@@ -310,44 +310,12 @@ def apply_operation(source: WeightSource,
 # Internal helpers — called by Deformer.paint() and NClothMap.paint()
 # ---------------------------------------------------------------------------
 
-def _paint_skin_cluster(source: WeightSource) -> None:
-    """Open Artisan for SkinCluster and select the active influence."""
-    mesh = source.mesh_name
-    mesh_short = mesh.split('|')[-1]
-
-    vtx = cmds.filterExpand(selectionMask=31, expand=False) or []
-    if vtx:
-        cmds.select(vtx, replace=True)
-        cmds.select(mesh_short, add=True)
-    else:
-        cmds.select(mesh_short, replace=True)
-
-    mel.eval('ArtPaintSkinWeightsTool')
-
-    active_map = source.current_map
-    if not active_map or active_map == 'weightList':
-        return
-
-    bone_full = active_map.split('|')[-1]
-    try:
-        mel.eval(f'artSkinInflListChanging "{bone_full}" 1')
-        mel.eval('artSkinInflListChanged artAttrSkinPaintCtx')
-    except Exception as e:
-        logger.warning(f"Could not select influence '{bone_full}' — {e}")
-
-def _paint_deformer(source: WeightSource, artisan_context_name:str="artAttrContext") -> None:
-    """Open artisan for a standard deformer WeightMap.
-
-    Uses ``artSetToolAndSelectAttr`` — the same MEL path Maya's own UI takes.
-    This correctly refreshes both the viewport weight-colour feedback and the
-    Tool Settings panel even when multiple deformers are stacked.
-
-    The attribute string format is ``"deformerType.nodeName.attributeName"``.
-
-    Args:
-        source: A deformer-backed WeightMap with :attr:`node_name` set.
-    """
+def _paint_deformer(source: 'WeightSource', artisan_context_name: str = "artAttrContext") -> None:
+    """Open artisan for a standard deformer WeightMap."""
     node_type = cmds.nodeType(source.node_name)
+
+    # skinCluster uses a dedicated artisan context — dispatch before the
+    # generic _ARTISAN_ATTRS lookup which doesn't know about it.
     if node_type == 'skinCluster':
         _paint_skin_cluster(source)
         return
@@ -374,13 +342,34 @@ def _paint_deformer(source: WeightSource, artisan_context_name:str="artAttrConte
     if not cmds.artAttrCtx(artisan_context_name, exists=True):
         cmds.artAttrCtx(artisan_context_name)
 
-    # artSetToolAndSelectAttr expects the MEL *command* name ('artAttrCtx'),
-    # NOT the context instance name ('artAttrContext').
-    # The instance name is used for cmds queries/edits; the command name is
-    # used in MEL callbacks (artAttrCallback.mel internally calls it as a proc).
     mel.eval('toolPropertyWindow;')
     mel.eval(f'setToolTo "{artisan_context_name}";')
     mel.eval(f'artSetToolAndSelectAttr "artAttrCtx" "{artisan_attr}"')
+
+def _paint_skin_cluster(source: WeightSource) -> None:
+    """Open Artisan for SkinCluster and select the active influence."""
+    mesh = source.mesh_name
+    mesh_short = mesh.split('|')[-1]
+
+    vtx = cmds.filterExpand(selectionMask=31, expand=False) or []
+    if vtx:
+        cmds.select(vtx, replace=True)
+        cmds.select(mesh_short, add=True)
+    else:
+        cmds.select(mesh_short, replace=True)
+
+    mel.eval('ArtPaintSkinWeightsTool')
+
+    active_map = source.current_map
+    if not active_map or active_map == 'weightList':
+        return
+
+    bone_full = active_map.split('|')[-1]
+    try:
+        mel.eval(f'artSkinInflListChanging "{bone_full}" 1')
+        mel.eval('artSkinInflListChanged artAttrSkinPaintCtx')
+    except Exception as e:
+        logger.warning(f"Could not select influence '{bone_full}' — {e}")
 
 
 def _paint_nucleus_map(source: WeightSource,

@@ -315,6 +315,9 @@ class SkinPanel(DeformerPanelBase):
       repopulate without re-triggering ``_on_item_clicked``.
     """
 
+    _min_size = 5
+    _max_size = 200
+
     def __init__(self, parent: Optional[QtWidgets.QWidget] = None) -> None:
         # ── Initialise all state BEFORE super().__init__() ──────────────────
         # DeformerPanelBase.__init__ calls build_body() immediately, so these
@@ -582,19 +585,14 @@ class SkinPanel(DeformerPanelBase):
         joint_name = full_path.rsplit('|', 1)[-1]   # strip DAG prefix, keep ns
 
         self._mark_active(full_path)
-        self.map_selected.emit(joint_name)
 
         if self._source is not None:
-            if hasattr(self._source, 'use_map'):
-                try:
-                    self._source.use_map(joint_name)
-                except Exception as exc:
-                    logger.warning(f"SkinPanel: use_map('{joint_name}') failed: {exc}")
-            if hasattr(self._source, 'paint'):
-                try:
-                    self._source.paint()
-                except Exception as exc:
-                    logger.warning(f"SkinPanel: paint() failed: {exc}")
+            try:
+                self._source.use_map(joint_name)
+                self._source.paint()
+            except Exception as e:
+                import traceback
+                logger.warning(f"SkinPanel paint failed: {e}\n{traceback.format_exc()}")
 
         logger.debug(f"SkinPanel: activated influence '{joint_name}'")
 

@@ -1425,6 +1425,10 @@ class SlimfastWidget(QtWidgets.QWidget):
 
         self._panel_container.setCurrentWidget(panel)
         self._current_panel = panel
+        _size =self._current_panel._max_size
+        self._panel_container.setFixedHeight(_size)
+        self._panel_container.setSizePolicy(QtWidgets.QSizePolicy.Maximum, QtWidgets.QSizePolicy.Maximum)
+        self.adjustSize()
 
         # Envelope row visibility is driven by the panel type.
         self._update_envelope_row()
@@ -1603,11 +1607,7 @@ class SlimfastWidget(QtWidgets.QWidget):
 
     @Slot(int)
     def _on_source_combo_changed(self, combo_index: int) -> None:
-        """Decode (source_idx, map_name) from the selected row and activate both.
-
-        Also switches the active sub-panel to the one registered for the
-        selected node type and forwards ``on_combo_changed`` to the new panel.
-        """
+        """Decode (source_idx, map_name) from the selected row and activate both."""
         if combo_index < 0:
             return
         model = self._source_combo.model()
@@ -1625,15 +1625,26 @@ class SlimfastWidget(QtWidgets.QWidget):
         if active_maps and map_name != active_maps[0]:
             self._ctrl.select_map(map_name)
 
-        # Resolve node type and switch to the matching panel.
         extra = item.data(QtCore.Qt.UserRole + 1)
         node_type = extra[0] if extra else ''
         maps = extra[1] if extra else []
 
         panel_class = wgt_deformer_panel.get_panel_class(node_type)
+        old_panel = self._current_panel  # capture BEFORE switch
         self._switch_to_panel(panel_class)
+
         if self._current_panel is not None:
             self._current_panel.on_combo_changed(node_type, maps)
+
+            # active_changed already fired on old_panel inside select_source().
+            # If the panel class changed, the new panel never received
+            # on_source_changed — re-sync it explicitly.
+            if self._current_panel is not old_panel:
+                self._current_panel.on_source_changed(
+                    self._ctrl.active_source,
+                    self._ctrl.active_map or '',
+                    self._ctrl,
+                )
 
     @Slot(object)
     def _on_active_changed(self, source: Optional[WeightSource]) -> None:
@@ -1895,20 +1906,22 @@ class SlimfastWidget(QtWidgets.QWidget):
     # ------------------------------------------------------------------
     # Help dialog
     # ------------------------------------------------------------------
-    def enterEvent(self, event) -> None:
-        """Called when mouse enters the widget bounding box.
 
-        Soft-syncs the clamp UI from Maya's current artisan context, but
-        throttled to at most once every ``_CLAMP_SYNC_INTERVAL`` seconds so
-        the round-trip to Maya is cheap even when the cursor crosses the
-        window border quickly.
+    def enterEvent(self, event) -> None:
+        """Throttled artisan-clamp sync on mouse enter.
+
+        Skipped when the active panel opts out via has_artisan_clamp() → False
+        (e.g. SkinPanel, which uses artAttrSkinPaintCtx instead of the
+        generic artAttrContext).
         """
         super().enterEvent(event)
         import time
         now = time.monotonic()
         if now - getattr(self, '_last_clamp_sync', 0.0) >= self._CLAMP_SYNC_INTERVAL:
             self._last_clamp_sync = now
-            self._get_artisan_clamp()
+            if (self._current_panel is None
+                    or self._current_panel.has_artisan_clamp()):
+                self._get_artisan_clamp()
 
     def closeEvent(self, event) -> None:
         """Persist smooth iteration count and section/mode visibilities on close."""

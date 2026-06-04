@@ -412,7 +412,7 @@ class VertexColorAlpha(WeightSource):
         # Not used — we override get/set directly.
         return ''
 
-    def paint(self) -> None:
+    def _paint(self) -> None:
         """Open an interactive artisan brush that paints only the alpha channel.
 
         Uses ``artUserPaintCtx`` with the proven callback pattern:
