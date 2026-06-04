@@ -436,7 +436,7 @@ register_deformer_panel(
     label       = 'Deformer',
     panel_class = DefaultPanel,
     ctrl_mode   = 'deformer',
-    node_types  = ['cluster', 'softMod', 'wire'],   # skinCluster registered separately
+    node_types  = [], 
     order       = 10,
 )
 
