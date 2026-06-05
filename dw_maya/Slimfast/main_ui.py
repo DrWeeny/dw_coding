@@ -1919,9 +1919,10 @@ class SlimfastWidget(QtWidgets.QWidget):
         now = time.monotonic()
         if now - getattr(self, '_last_clamp_sync', 0.0) >= self._CLAMP_SYNC_INTERVAL:
             self._last_clamp_sync = now
-            if (self._current_panel is None
-                    or self._current_panel.has_artisan_clamp()):
+            if (self._current_panel is None or self._current_panel.has_artisan_clamp()):
                 self._get_artisan_clamp()
+            if self._current_panel is not None:
+                self._current_panel.on_enter()  # ← panel-specific re-sync hook
 
     def closeEvent(self, event) -> None:
         """Persist smooth iteration count and section/mode visibilities on close."""

@@ -271,6 +271,15 @@ class DeformerPanelBase(QtWidgets.QWidget):
         pre-populate secondary widgets (target list, map picker …).
         """
 
+    def on_enter(self) -> None:
+        """Called when the mouse enters SlimfastWidget.
+
+        Override for lightweight sync on re-focus — e.g. re-reading lock
+        states, refreshing a status badge, etc.  Runs under the same
+        ``_CLAMP_SYNC_INTERVAL`` throttle as the artisan clamp sync so it
+        won't spam Maya if the cursor crosses the border quickly.
+        """
+
     # ------------------------------------------------------------------
     # Capability accessors — read by main_ui.py; do not override manually
     # when using @panel_for or ClassVar declarations

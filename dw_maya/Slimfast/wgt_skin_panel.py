@@ -40,7 +40,7 @@ except ImportError:
     from PySide2.QtCore import Signal, Slot, Qt
 
 from dw_ressources import get_icon_path
-from dw_maya.Slimfast.wgt_deformer_panel import DeformerPanelBase, panel_for
+from dw_maya.Slimfast.wgt_deformer_panel import DeformerPanelBase, panel_for, register_deformer_panel
 from dw_logger import get_logger
 
 if TYPE_CHECKING:
@@ -291,8 +291,7 @@ def _iter_all_items(
 def _set_all_locks_recursive(
         model: QtGui.QStandardItemModel,
         root: QtGui.QStandardItem,
-        locked: bool,
-) -> None:
+        locked: bool,) -> None:
     """Call ``model.setData(_ROLE_LOCKED)`` on every descendant.
 
     Using ``model.setData()`` (not ``item.setData()``) so ``lock_changed``
@@ -306,13 +305,6 @@ def _set_all_locks_recursive(
 # Panel
 # ---------------------------------------------------------------------------
 
-@panel_for(
-    node_types        = ['skinCluster'],
-    label             = 'SkinCluster',
-    ctrl_mode         = 'deformer',
-    order             = 11,
-    has_artisan_clamp = False,   # skin uses artAttrSkinPaintCtx, not artAttrCtx
-)
 class SkinPanel(DeformerPanelBase):
     """Influence tree panel for skinCluster — complex panel demo.
 
@@ -667,3 +659,16 @@ class SkinPanel(DeformerPanelBase):
                 locked = False
             item.setData(locked, _ROLE_LOCKED)   # item path — no lock_changed
         logger.debug(f"SkinPanel: refreshed lock states for '{self._node_name}'")
+
+    def on_enter(self) -> None:
+        """Re-read lock states when the user returns to Slimfast."""
+        self._on_refresh_locks()
+
+register_deformer_panel(
+    mode_key    = 'skinCluster',
+    label       = 'SkinCluster',
+    panel_class = SkinPanel,
+    ctrl_mode   = 'deformer',
+    node_types  = ['skinCluster'],
+    order       = 11,
+)
