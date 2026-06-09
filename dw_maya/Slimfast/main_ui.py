@@ -208,6 +208,24 @@ class SlimfastWidget(QtWidgets.QWidget):
 
         view_menu.addSeparator()
 
+        # --- Auto paint ---
+        self._auto_paint_action = QtWidgets.QAction('Auto > paint', self)
+        self._auto_paint_action.setCheckable(True)
+        auto_paint = settings.value('auto_paint', False, type=bool)
+        self._auto_paint_action.setChecked(bool(auto_paint))
+        self._auto_paint_action.toggled.connect(self._on_auto_paint_toggled)
+        view_menu.addAction(self._auto_paint_action)
+
+        # --- Use Color Ramp ---
+        self._use_color_ramp_action = QtWidgets.QAction('Use Color Ramp', self)
+        self._use_color_ramp_action.setCheckable(True)
+        use_color_ramp = settings.value('use_color_ramp', False, type=bool)
+        self._use_color_ramp_action.setChecked(bool(use_color_ramp))
+        self._use_color_ramp_action.toggled.connect(self._on_use_ramp_color_toggled)
+        view_menu.addAction(self._use_color_ramp_action)
+
+        view_menu.addSeparator()
+
         # --- Visible modes submenu ---
         modes_menu = view_menu.addMenu('Visible modes')
         self._mode_visibility_actions = {}
@@ -651,7 +669,6 @@ class SlimfastWidget(QtWidgets.QWidget):
         self._display_range_widget.hide()
         lay.addWidget(self._display_range_widget)
 
-
         return grp
 
     def _build_weights_group(self) -> QtWidgets.QGroupBox:
@@ -959,6 +976,20 @@ class SlimfastWidget(QtWidgets.QWidget):
         self._range_fit_btn.clicked.connect(self._on_range_fit)
         self._sel_mode_check.toggled.connect(self._on_sel_mode_toggled)
 
+    # ------------------------------------------------------------------
+    # QMENU - auto functions
+    # ------------------------------------------------------------------
+    @Slot(bool)
+    def _on_auto_paint_toggled(self, checked: bool) -> None:
+        """Persist auto-paint preference."""
+        settings = QtCore.QSettings(self._org, self._appname)
+        settings.setValue('auto_paint', checked)
+
+    @Slot(bool)
+    def _on_use_ramp_color_toggled(self, checked: bool) -> None:
+        """Persist and apply color-ramp preference to Maya's paint UI."""
+        settings = QtCore.QSettings(self._org, self._appname)
+        settings.setValue('use_color_ramp', checked)
 
     # ------------------------------------------------------------------
     # QProperty — smooth iterations
@@ -1601,9 +1632,21 @@ class SlimfastWidget(QtWidgets.QWidget):
         stale Maya values left over from a previous session are reset).
         """
         self._ctrl.paint()
+
+        # inject color ramp if checked :
+        # Re-apply ramp state after paint opens/refreshes artisan UI.
+        use_ramp = bool(getattr(self, '_use_color_ramp_action', None)
+                        and self._use_color_ramp_action.isChecked())
+        try:
+            from dw_maya.dw_paint.artisan_maya import inject_ramp_into_artattr
+            inject_ramp_into_artattr(use_ramp=use_ramp)
+        except Exception as e:
+            logger.warning(f'Color ramp injection failed: {e}')
+
         lo = self._display_range_slider.low
         hi = self._display_range_slider.high
         self._ctrl.set_artisan_color_range(lo, hi)
+        self._refresh_display_range()
 
     @Slot(int)
     def _on_source_combo_changed(self, combo_index: int) -> None:
@@ -1645,6 +1688,11 @@ class SlimfastWidget(QtWidgets.QWidget):
                     self._ctrl.active_map or '',
                     self._ctrl,
                 )
+
+        # Auto-paint when enabled from the View menu preference.
+        if getattr(self, '_auto_paint_action', None) and self._auto_paint_action.isChecked():
+            if self._ctrl.active_source is not None:
+                self._on_paint_clicked()
 
     @Slot(object)
     def _on_active_changed(self, source: Optional[WeightSource]) -> None:
@@ -1874,22 +1922,6 @@ class SlimfastWidget(QtWidgets.QWidget):
         self._value_row_widget.setVisible(value_mode)
         settings = QtCore.QSettings(self._org, self._appname)
         settings.setValue('sel_value_mode', value_mode)
-
-    def _on_select_zero(self) -> None:
-        mods = QtWidgets.QApplication.keyboardModifiers()
-        self._ctrl.select_vertices_by_weight(
-            from_zero=True,
-            tolerance=self._tol_spinbox.value(),
-            key_mod=self._qt_mods_to_maya(mods)
-        )
-
-    def _on_select_one(self) -> None:
-        mods = QtWidgets.QApplication.keyboardModifiers()
-        self._ctrl.select_vertices_by_weight(
-            from_zero=False,
-            tolerance=self._tol_spinbox.value(),
-            key_mod=self._qt_mods_to_maya(mods)
-        )
 
     @staticmethod
     def _qt_mods_to_maya(mods: QtCore.Qt.KeyboardModifiers) -> int:
