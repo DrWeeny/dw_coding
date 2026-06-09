@@ -81,6 +81,19 @@ class SlimfastWidget(QtWidgets.QWidget):
     # QProperty so external scripts / shelf buttons can read/write smooth iterations
     smooth_iterations_changed = Signal(int)
 
+    # Colour palette per backend type
+    _SOURCE_COLORS = {
+        'nCloth':             '#4ecdc4',
+        'nRigid':             '#4ecdc4',
+        'blendShape':         '#e8a838',
+        'skinCluster':        '#a0c8ff',
+        'cluster':            '#cccccc',
+        'softMod':            '#cccccc',
+        'wire':               '#cccccc',
+        'VertexColorAlpha':   '#cc88dd',
+        'vtxColor':           '#cc88dd',
+    }
+
     def __init__(self, parent: Optional[QtWidgets.QWidget] = None):
         super().__init__(parent or _maya_main_window())
         self.setWindowTitle('Slimfast 2.0')
@@ -1479,19 +1492,6 @@ class SlimfastWidget(QtWidgets.QWidget):
         except Exception:
             attr_exists = False
         self._envelope_row_widget.setVisible(attr_exists)
-
-    # Colour palette per backend type
-    _SOURCE_COLORS = {
-        'nCloth':             '#4ecdc4',
-        'nRigid':             '#4ecdc4',
-        'blendShape':         '#e8a838',
-        'skinCluster':        '#a0c8ff',
-        'cluster':            '#cccccc',
-        'softMod':            '#cccccc',
-        'wire':               '#cccccc',
-        'VertexColorAlpha':   '#cc88dd',
-        'vtxColor':           '#cc88dd',
-    }
 
     @Slot(list, list)
     def _on_sources_changed(self, node_labels: list, map_lists: list) -> None:

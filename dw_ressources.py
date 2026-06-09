@@ -42,3 +42,37 @@ def get_icon_path(resource_name: str, ext:str=None) -> Path:
 # Validate resources directory exists
 if not RESOURCES_DIR.exists():
     raise ImportError(f"Resources directory not found at {RESOURCES_DIR}")
+
+def _as_fs_path(value) -> str:
+    """Return a Qt-friendly filesystem path string (handles pathlib paths)."""
+    import os
+    if not value:
+        return ''
+    return str(os.fspath(value))
+
+def get_ressource_path(resource_name):
+    from pathlib import Path
+    resource_path = RESOURCES_DIR
+
+    name = Path(resource_name)
+
+    if name.suffix:
+        ext = name.suffix
+        stem = name.stem
+    else:
+        stem = name.name
+        ext = None
+
+    for path in resource_path.rglob("*"):
+        if not path.is_file():
+            continue
+
+        if path.stem != stem:
+            continue
+
+        if ext is not None and path.suffix.lower() != ext.lower():
+            continue
+
+        return path
+
+    return None
