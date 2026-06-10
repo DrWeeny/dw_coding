@@ -27,6 +27,7 @@ logger = get_logger()
 
 import traceback
 
+
 # ---------------------------------------------------------------------------
 # Controller — all Maya logic, zero PySide6
 # ---------------------------------------------------------------------------
@@ -464,7 +465,7 @@ class SlimfastController:
 
     @singleUndoChunk
     def paste_weights(self) -> None:
-        """Paste clipboard weights to the active source."""
+        """Paste clipboard weights to the active source on selected vertices only."""
         if not self._require_active():
             return
         if not self._clipboard:
@@ -476,8 +477,23 @@ class SlimfastController:
                 f"source has {self._active.vtx_count} vertices."
             )
             return
-        self._active.set_weights(self._clipboard)
-        logger.info(f"Pasted weights to '{self._active.node_name}'.")
+
+        # Get current vertex selection mask
+        mask = self._get_vtx_mask()
+
+        if mask is None:
+            # No selection — paste all
+            self._active.set_weights(self._clipboard)
+            logger.info(f"Pasted weights to '{self._active.node_name}' (all vertices).")
+        else:
+            # Selection exists — paste only on selected vertices
+            current_weights = list(self._active.get_weights())
+            for idx in mask:
+                if idx < len(self._clipboard):
+                    current_weights[idx] = self._clipboard[idx]
+            self._active.set_weights(current_weights)
+            logger.info(f"Pasted weights to '{self._active.node_name}' ({len(mask)} selected vertices).")
+
 
     def select_by_mod(self, vtx_list:list, key_mod:int=0) -> None:
         if key_mod == 1:
@@ -593,17 +609,22 @@ class SlimfastController:
             select_border(mode="inner")
 
     @singleUndoChunk
-    def apply_vector_weights(self, direction: str, falloff: str = 'linear',
-                              invert: bool = False, mode: str = 'vector') -> None:
+    def apply_vector_weights(self, direction: str,
+                             falloff: str = 'linear',
+                             invert: bool = False,
+                             mode: str = 'vector',
+                             op: str = 'replace') -> None:
         """Distribute weights by projection along a world-space direction.
 
+        Respects current vertex selection if active.
+
         Args:
-            direction: Predefined axis key (``'x+'``, ``'x-'``, ``'y+'``, ``'y-'``,
-                       ``'z+'``, ``'z-'``) or a ``'x,y,z'`` custom vector string.
-                       Ignored when mode is ``'normal'``.
-            falloff:   Curve type — ``'linear'``, ``'quadratic'``, ``'smooth'``, ``'smooth2'``.
-            invert:    Invert the result.
-            mode:      ``'vector'`` | ``'projection'`` | ``'distance'`` | ``'normal'``.
+         direction: Predefined axis key (``'x+'``, ``'x-'``, ``'y+'``, ``'y-'``,
+                    ``'z+'``, ``'z-'``) or a ``'x,y,z'`` custom vector string.
+                    Ignored when mode is ``'normal'``.
+         falloff:   Curve type — ``'linear'``, ``'quadratic'``, ``'smooth'``, ``'smooth2'``.
+         invert:    Invert the result.
+         mode:      ``'vector'`` | ``'projection'`` | ``'distance'`` | ``'normal'``.
         """
         if not self._require_active():
             return
@@ -619,18 +640,66 @@ class SlimfastController:
         else:
             dir_arg = direction
         try:
-            apply_operation(self._active, 'vector',
-                            direction=dir_arg, falloff=falloff, invert=invert, mode=mode)
+            from dw_maya.dw_paint.operations import set_directional_weights
+            mask = self._get_vtx_mask()
+            # Compute new weight distribution for entire mesh
+            new_weights = set_directional_weights(self._active.mesh_name,
+                                                  dir_arg,
+                                                  remap_range=None,
+                                                  falloff=falloff,
+                                                  origin=None,
+                                                  invert=invert,
+                                                  mode=mode)
+            if new_weights is None:
+                logger.warning("Vector weights operation returned no data.")
+                return
+
+            weights = list(self._active.get_weights())
+
+            def _apply_op(a, b, op_key: str):
+                if op_key == 'replace':
+                    return b
+                if op_key == 'add':
+                    return a + b
+                if op_key == 'subtract':
+                    return a - b
+                if op_key == 'multiply':
+                    return a * b
+                # default
+                return b
+
+            if mask is None:
+                # apply operation to all vertices
+                if op == 'replace':
+                    self._active.set_weights(new_weights)
+                else:
+                    result = [_apply_op(a, b, op) for a, b in zip(weights, new_weights)]
+                    self._active.set_weights(result)
+                logger.debug("Vector weights applied to all vertices.")
+            else:
+                # apply only to masked indices
+                result = list(weights)
+                for idx in mask:
+                    if idx < len(new_weights):
+                        result[idx] = _apply_op(result[idx], new_weights[idx], op)
+                self._active.set_weights(result)
+                logger.debug(f"Vector weights applied to {len(mask)} selected vertices (op={op}).")
+
+            # Apply clamp post-processing if needed
+            self._clamp_weights_post(mask)
         except Exception as e:
             logger.error(f"Vector weights failed: {e}")
 
     @singleUndoChunk
     def apply_radial_weights(self,
-                              falloff: str = 'linear',
-                              invert: bool = False,
-                              center: tuple = None,
-                              radius: float = None) -> None:
+                               falloff: str = 'linear',
+                               invert: bool = False,
+                               center: tuple = None,
+                               radius: float = None,
+                               op: str = 'replace') -> None:
         """Distribute weights by radial distance from a centre point.
+
+        Respects current vertex selection if active.
 
         When *center* or *radius* are ``None``, they are resolved in this order:
         1. Current soft-selection radius (Maya ``softSelectFalloffCurve`` / ``softSelectDistance``).
@@ -641,6 +710,7 @@ class SlimfastController:
             invert:  Invert the result.
             center:  Explicit ``(x, y, z)`` world-space centre.  Auto if ``None``.
             radius:  Explicit max radius.  Auto if ``None``.
+            op:      Operation to combine with existing weights: 'replace'|'add'|'subtract'|'multiply'.
         """
         if not self._require_active():
             return
@@ -675,9 +745,49 @@ class SlimfastController:
 
         logger.debug(f"apply_radial_weights: center={resolved_center} radius={resolved_radius}")
         try:
-            apply_operation(self._active, 'radial',
-                            falloff=falloff, invert=invert,
-                            center=resolved_center, radius=resolved_radius)
+            mask = self._get_vtx_mask()
+            from dw_maya.dw_paint.operations import set_radial_weights
+            new_weights = set_radial_weights(
+                self._active.mesh_name,
+                center=resolved_center,
+                radius=resolved_radius,
+                falloff=falloff,
+                invert=invert,
+            )
+            if new_weights is None:
+                logger.warning("Radial weights operation returned no data.")
+                return
+
+            weights = list(self._active.get_weights())
+
+            def _apply_op(a, b, op_key: str):
+                if op_key == 'replace':
+                    return b
+                if op_key == 'add':
+                    return a + b
+                if op_key == 'subtract':
+                    return a - b
+                if op_key == 'multiply':
+                    return a * b
+                return b
+
+            if mask is None:
+                if op == 'replace':
+                    self._active.set_weights(new_weights)
+                else:
+                    result = [_apply_op(a, b, op) for a, b in zip(weights, new_weights)]
+                    self._active.set_weights(result)
+                logger.debug("Radial weights applied to all vertices.")
+            else:
+                result = list(weights)
+                for idx in mask:
+                    if idx < len(new_weights):
+                        result[idx] = _apply_op(result[idx], new_weights[idx], op)
+                self._active.set_weights(result)
+                logger.debug(f"Radial weights applied to {len(mask)} selected vertices (op={op}).")
+
+            self._clamp_weights_post(mask)
+            self._restore_wear_paint()
         except Exception as e:
             logger.error(f"Radial weights failed: {e}")
 
@@ -721,19 +831,29 @@ class SlimfastController:
 
     @singleUndoChunk
     def transfer_weights(self,
-                         src_weights: List[float],
-                         src_mesh: str,
-                         tgt_ws: 'WeightSource',
-                         src_vtx_transform:list = None) -> None:
-        """Transfer weights from a source mesh to the target WeightSource.
-
+                          src_weights: List[float],
+                          src_mesh: str,
+                          tgt_ws: 'WeightSource',
+                          max_distance: Optional[float] = None,
+                          preserve_unmapped: bool = True,
+                          src_vtx_transform: list = None) -> None:
+        """
+        Transfer weights from a source mesh to the target WeightSource.
         Uses nearest-neighbour interpolation in world space, so source and
-        target may have completely different topologies.
+        target may have completely different topologies. Optionally restricts
+        transfer to vertices within a maximum distance (useful for partial transfers
+        like a single arm rig).
 
         Args:
-            src_weights: Per-vertex weight list from the source mesh.
-            src_mesh:    Source mesh (transform or shape) name in the scene.
-            tgt_ws:      Target WeightSource to receive the transferred weights.
+         src_weights: Per-vertex weight list from the source mesh.
+         src_mesh:    Source mesh (transform or shape) name in the scene.
+         tgt_ws:      Target WeightSource to receive the transferred weights.
+         max_distance: Optional maximum distance threshold. If set, only transfer
+                      weights from source vertices within this distance.
+                      ``None`` = no distance limit (transfer all).
+         preserve_unmapped: If ``True``, keep original target weights for vertices
+                           beyond max_distance. If ``False``, set them to 0.0.
+         src_vtx_transform: Optional pre-computed source vertex positions.
         """
         if not src_weights:
             logger.warning("transfer_weights: source has no stored weights.")
@@ -761,6 +881,7 @@ class SlimfastController:
             tgt_pos = _get_world_positions(tgt_ws.mesh_name)
 
             src_arr = np.array(src_weights, dtype=np.float64)
+            tgt_arr = np.array(tgt_ws.get_weights(), dtype=np.float64)
 
             # Nearest-neighbour query
             try:
@@ -770,17 +891,39 @@ class SlimfastController:
             except ImportError:
                 # Brute-force fallback (slower but no scipy dependency)
                 nn_idx = []
+                distances = []
                 for tp in tgt_pos:
-                    dists = np.sum((src_pos - tp) ** 2, axis=1)
-                    nn_idx.append(int(np.argmin(dists)))
+                    dists = np.sqrt(np.sum((src_pos - tp) ** 2, axis=1))
+                    min_dist_idx = int(np.argmin(dists))
+                    nn_idx.append(min_dist_idx)
+                    distances.append(dists[min_dist_idx])
                 nn_idx = np.array(nn_idx)
+                distances = np.array(distances)
 
-            new_weights = src_arr[nn_idx].tolist()
-            tgt_ws.set_weights(new_weights)
-            logger.info(
-                f"transfer_weights: {len(new_weights)} weights transferred "
-                f"from '{src_mesh}' → '{tgt_ws.node_name}'"
-            )
+             # Apply distance limit if specified
+            new_weights = np.array(tgt_arr, dtype=np.float64)
+            if max_distance is not None:
+                within_distance = distances <= max_distance
+                new_weights[within_distance] = src_arr[nn_idx[within_distance]]
+
+                # Handle unmapped vertices
+                if not preserve_unmapped:
+                    new_weights[~within_distance] = 0.0
+
+                transferred_count = np.sum(within_distance)
+                logger.info(
+                    f"transfer_weights: {transferred_count} of {len(new_weights)} vertices transferred "
+                    f"from '{src_mesh}' → '{tgt_ws.node_name}' (max_distance={max_distance})"
+                )
+            else:
+                # No distance limit — transfer all
+                new_weights = src_arr[nn_idx]
+                logger.info(
+                    f"transfer_weights: {len(new_weights)} weights transferred "
+                    f"from '{src_mesh}' → '{tgt_ws.node_name}'"
+                )
+
+            tgt_ws.set_weights(new_weights.tolist())
         except Exception as e:
             logger.error(f"transfer_weights failed: {e}")
 

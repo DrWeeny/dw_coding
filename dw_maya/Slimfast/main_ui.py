@@ -53,6 +53,9 @@ import dw_maya.dw_nucleus_utils.dw_core
 import dw_maya.dw_nucleus_utils.dw_nucleus_paint
 from dw_logger import get_logger
 
+from dw_ressources import get_ressource_path
+
+ICON_PIPETTE =  str(get_ressource_path("pipette.png"))
 
 logger = get_logger()
 
@@ -102,6 +105,8 @@ class SlimfastWidget(QtWidgets.QWidget):
 
         self._org = "DrWeeny"
         self._appname = "SlimfastWidget"
+
+        self._is_picking = False
 
         self._signals = SlimfastSignals(self)
         self._ctrl = SlimfastController(self._signals)
@@ -401,6 +406,17 @@ class SlimfastWidget(QtWidgets.QWidget):
         lay.addWidget(self._adv_radial_widget)
 
         # ---- Shared controls ------------------------------------------
+        # Operation selector (replace / add / subtract / multiply)
+        op_row = QtWidgets.QHBoxLayout()
+        op_row.addWidget(QtWidgets.QLabel('Op'))
+        self._adv_op_combo = QtWidgets.QComboBox()
+        self._adv_op_combo.addItems(['replace', 'add', 'subtract', 'multiply'])
+        op_row.addWidget(self._adv_op_combo)
+        op_row.addStretch()
+        lay.addLayout(op_row)
+
+
+        # ---- Shared controls ------------------------------------------
         self._adv_invert_check = QtWidgets.QCheckBox('Invert')
         lay.addWidget(self._adv_invert_check)
 
@@ -463,6 +479,23 @@ class SlimfastWidget(QtWidgets.QWidget):
         self._transfer_tgt_label.setStyleSheet('color: #aaaaaa; font-size: 11px;')
         tgt_row.addWidget(self._transfer_tgt_label, stretch=1)
         lay.addLayout(tgt_row)
+
+        # -- Transfer options: max distance + preserve unmapped ------------
+        opts_row = QtWidgets.QHBoxLayout()
+        self._transfer_limit_check = QtWidgets.QCheckBox('Limit distance')
+        self._transfer_max_distance_spin = QtWidgets.QDoubleSpinBox()
+        self._transfer_max_distance_spin.setRange(0.0, 99999.0)
+        self._transfer_max_distance_spin.setDecimals(3)
+        self._transfer_max_distance_spin.setValue(0.0)
+        self._transfer_max_distance_spin.setEnabled(False)
+        self._transfer_limit_check.toggled.connect(self._transfer_max_distance_spin.setEnabled)
+        opts_row.addWidget(self._transfer_limit_check)
+        opts_row.addWidget(self._transfer_max_distance_spin)
+        self._transfer_preserve_check = QtWidgets.QCheckBox('Preserve unmapped')
+        self._transfer_preserve_check.setChecked(True)
+        opts_row.addWidget(self._transfer_preserve_check)
+        opts_row.addStretch()
+        lay.addLayout(opts_row)
 
         # -- Transfer button -----------------------------------------------
         transfer_btn = QtWidgets.QPushButton('Transfer ▶')
@@ -722,13 +755,23 @@ class SlimfastWidget(QtWidgets.QWidget):
         op_row.addStretch()
         lay.addLayout(op_row)
 
+        sub_row = QtWidgets.QHBoxLayout()
         self._weight_slider = SliderWithButton(label='weight',
                                                btn_label='Set',
                                                default=0.5,
                                                decimals=2,
                                                step=0.01,
                                                label_width=48)
-        lay.addWidget(self._weight_slider)
+        self._pb_picker = QtWidgets.QPushButton()
+        self._pb_picker.setFixedSize(25, 25)
+        _icon = QtGui.QIcon(str(ICON_PIPETTE))
+        self._pb_picker.setIcon(_icon)
+        self._pb_picker.setIconSize(QtCore.QSize(25, 25))
+        self._pb_picker.setFlat(True)
+
+        sub_row.addWidget(self._weight_slider)
+        sub_row.addWidget(self._pb_picker)
+        lay.addLayout(sub_row)
 
         # --- Clamp Widget ---
         clamp_row = QtWidgets.QHBoxLayout()
@@ -980,6 +1023,8 @@ class SlimfastWidget(QtWidgets.QWidget):
             lambda: self._ctrl.set_artisan_value(self._weight_slider.value)
         )
         self._weight_slider.value_changed.connect(self._on_weight_slider_changed)
+        self._pb_picker.clicked.connect(self._on_pb_picker_clicked)
+
 
         # Clamp section
         self._clamp_slider.range_changed.connect(self._set_artisan_clamp)
@@ -1072,8 +1117,9 @@ class SlimfastWidget(QtWidgets.QWidget):
         """Execute the cross-topology weight transfer."""
         src_weights = self._transfer_src_btn.stored_weights
         if isinstance(src_weights, (list, tuple)):
-            if isinstance(src_weights[0], (list, tuple)):
+            if isinstance(src_weights[0],  (list, tuple)):
                 src_weights = src_weights[0]
+
 
         if not src_weights:
             QtWidgets.QMessageBox.warning(
@@ -1147,10 +1193,19 @@ class SlimfastWidget(QtWidgets.QWidget):
                 'Select the target mesh, refresh, and pick a deformer.'
             )
             return
+        max_dist = None
+        if getattr(self, '_transfer_limit_check', None) and self._transfer_limit_check.isChecked():
+            max_dist = float(self._transfer_max_distance_spin.value())
+        preserve = True
+        if getattr(self, '_transfer_preserve_check', None):
+            preserve = bool(self._transfer_preserve_check.isChecked())
+
         self._ctrl.transfer_weights(src_weights,
                                     src_mesh_name,
                                     tgt_ws,
-                                    src_vtx_transform)
+                                    max_distance=max_dist,
+                                    preserve_unmapped=preserve,
+                                    src_vtx_transform=src_vtx_transform)
 
     @Slot()
     def _on_border_sel(self):
@@ -1411,6 +1466,15 @@ class SlimfastWidget(QtWidgets.QWidget):
         so we don't flood on every tick.
         """
         self._ctrl.set_artisan_value(value)
+
+    @Slot()
+    def _on_pb_picker_clicked(self):
+        self._is_picking = True
+        if self._ctrl.active_source:
+            self._ctrl.active_source.use_artisan_color_picker()
+
+    def _set_weight_value_on_slider(self, value:float):
+        self._weight_slider.value = value
 
     @Slot()
     def _on_set_weight(self, value: float = None) -> None:
@@ -1813,6 +1877,7 @@ class SlimfastWidget(QtWidgets.QWidget):
         mode = self._adv_mode_combo.currentText()
         falloff = self._adv_falloff_combo.currentText()
         invert = self._adv_invert_check.isChecked()
+        op = self._adv_op_combo.currentText()
 
         if mode == 'vector':
             vec_mode = self._adv_vec_mode_combo.currentText()
@@ -1824,7 +1889,7 @@ class SlimfastWidget(QtWidgets.QWidget):
                 checked = self._adv_axis_group.checkedButton()
                 direction = checked.property('axis') if checked else 'y+'
             self._ctrl.apply_vector_weights(direction, falloff=falloff,
-                                            invert=invert, mode=vec_mode)
+                                            invert=invert, mode=vec_mode, op=op)
         elif mode == 'radial':
             cx = self._adv_center_x.value()
             cy = self._adv_center_y.value()
@@ -1832,7 +1897,7 @@ class SlimfastWidget(QtWidgets.QWidget):
             center = (cx, cy, cz) if any((cx, cy, cz)) else None
             radius = self._adv_radius_spin.value() or None
             self._ctrl.apply_radial_weights(falloff=falloff, invert=invert,
-                                            center=center, radius=radius)
+                                            center=center, radius=radius, op=op)
 
     @Slot(str)
     def _on_adv_mode_changed(self, mode: str) -> None:
@@ -1978,6 +2043,13 @@ class SlimfastWidget(QtWidgets.QWidget):
         generic artAttrContext).
         """
         super().enterEvent(event)
+
+        if self._is_picking:
+            if self._ctrl.active_source:
+                value = self._ctrl.active_source.get_artisan_paint_value()
+                self._set_weight_value_on_slider(value)
+            self._is_picking = False
+
         import time
         now = time.monotonic()
         if now - getattr(self, '_last_clamp_sync', 0.0) >= self._CLAMP_SYNC_INTERVAL:

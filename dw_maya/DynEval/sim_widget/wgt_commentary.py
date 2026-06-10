@@ -6,15 +6,23 @@ Subscribes to cache selection to show relevant comments.
 """
 
 from pathlib import Path
-from PySide6 import QtWidgets, QtCore, QtGui
-
+try:
+    from PySide6 import QtCore, QtGui, QtWidgets
+    from PySide6.QtCore import Slot
+    from shiboken6 import wrapInstance
+except ImportError:
+    # Fallback for older Maya versions shipping PySide2
+    from PySide2 import QtCore, QtGui, QtWidgets
+    from PySide2.QtCore import Slot
+    from shiboken2 import wrapInstance
 from dw_logger import get_logger
 
 # Local imports
-from ..hub_keys import HubKeys
-from .wgt_base import DynEvalWidget
+from dw_maya.DynEval.hub_keys import DynEvalKeys
+from dw_maya.DynEval.sim_widget.wgt_base import DynEvalWidgetBase
 
 logger = get_logger()
+
 
 
 class CommentTitle(QtWidgets.QFrame):
@@ -69,7 +77,7 @@ class CommentTitle(QtWidgets.QFrame):
         self.title_label.setText(text if text else "Comment")
 
 
-class CommentEditor(DynEvalWidget):
+class CommentEditor(DynEvalWidgetBase):
     """
     Widget for viewing and editing comments on caches/presets.
 
@@ -85,8 +93,8 @@ class CommentEditor(DynEvalWidget):
     save_requested = QtCore.Signal(str)  # Emits comment text when save requested
     comment_changed = QtCore.Signal(str)  # Emits when comment is modified
 
-    def __init__(self, title: str = None, size: tuple = (400, 40), parent=None):
-        super().__init__(parent)
+    def __init__(self, hub, title=None, size=(400, 40), parent=None):
+        super().__init__(hub, parent)
 
         # Current context
         self._current_cache = None
@@ -211,8 +219,8 @@ class CommentEditor(DynEvalWidget):
 
     def _setup_hub_subscriptions(self):
         """Setup DataHub subscriptions."""
-        self.hub_subscribe(HubKeys.CACHE_SELECTED, self._on_cache_selected)
-        self.hub_subscribe(HubKeys.SELECTED_ITEM, self._on_item_selected)
+        self.subscribe(DynEvalKeys.CACHE_SELECTED, self._on_cache_selected)
+        self.subscribe(DynEvalKeys.SELECTED_NODE, self._on_item_selected)
 
     # ========================================================================
     # HUB CALLBACKS
@@ -311,21 +319,35 @@ class CommentEditor(DynEvalWidget):
 
         self.save_btn.setEnabled(has_text and has_cache)
 
-        # Publish current comment
-        self.hub_publish(HubKeys.COMMENT_CURRENT, self.write_area.toPlainText())
-
         # Emit signal
         self.comment_changed.emit(self.write_area.toPlainText())
 
     def _emit_save(self):
-        """Emit save request."""
         comment = self.getComment()
-        if comment.strip():
-            self.save_requested.emit(comment)
-
-            # Optionally copy to display after save
+        if not comment.strip():
+            return
+        if self._save_to_disk(comment):
             self.display_area.setText(comment)
             self.write_area.clear()
+            self.save_requested.emit(comment)
+
+    def _save_to_disk(self, comment: str) -> bool:
+        if not self._current_item or not self._current_cache:
+            return False
+        try:
+            from dw_maya.dw_presets_io import dw_json
+            metadata_path = Path(self._current_item.metadata())
+            solver = getattr(self._current_item, "solver_name", "")
+            version = str(self._current_cache.version)
+            payload = {"comment": {solver: {version: comment}}}
+            if metadata_path.exists():
+                dw_json.merge_json(str(metadata_path), payload, defer=True)
+            else:
+                dw_json.save_json(str(metadata_path), payload, defer=True)
+            return True
+        except Exception as e:
+            logger.error(f"Échec sauvegarde commentaire : {e}")
+            return False
 
     def _clear_write_area(self):
         """Clear the write area."""
@@ -359,4 +381,3 @@ class CommentEditor(DynEvalWidget):
         """Copy text from display area to write area."""
         self.write_area.setText(self.display_area.toPlainText())
 
-    # CLEANUP - handled by DynEvalWidget base class

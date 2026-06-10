@@ -228,6 +228,16 @@ def set_artisan_value(value: float, context_name: Optional[str] = None) -> None:
     except Exception:
         pass
 
+def use_artisan_color_picker(ctx:str=None):
+    if ctx is None:
+        ctx = cmds.currentCtx()
+    cmds.artAttrCtx(ctx, edit=True, pickValue=True)
+
+def get_artisan_paint_value(ctx: str = None):
+    if ctx is None:
+        ctx = cmds.currentCtx()
+    return cmds.artAttrCtx(ctx, query=True, value=True)
+
 def get_art_use_ramp_color()->bool:
     # Check ramp not already injected
     if cmds.checkBoxGrp('artisanRampUseRamp', exists=True):

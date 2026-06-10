@@ -17,3 +17,7 @@ class DynEvalKeys:
     # Maps tab
     MAP_SELECTED    = "dyn.map.selected"     # MapInfo | None
     PAINT_REQUESTED = "dyn.paint.request"    # MapInfo  (one-shot, triggers Slimfast)
+
+    COMMENT_SAVED = "dyn.comment.saved"  # str — optionnel, pour feedback
+
+    COMMENT_CURRENT = "dyn.comment.current"
