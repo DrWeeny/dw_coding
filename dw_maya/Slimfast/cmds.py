@@ -57,6 +57,11 @@ class SlimfastController:
         self._clamp_lower: float = 0.0
         self._clamp_upper: float = 1.0
 
+        # optimisation for live slider selection
+        self._live_selection_cache = None
+        self._cached_weights = None
+        self._cached_mesh = None
+
     # ------------------------------------------------------------------
     # Source / map management
     # ------------------------------------------------------------------
@@ -485,25 +490,52 @@ class SlimfastController:
             cmds.select(vtx_list, replace=True)
 
     def select_vertices_by_range(self,
-                                 min_value:float=0,
-                                 max_value:float=1,
-                                 key_mod:int=0) -> None:
-        """Select vertices near 0 (from_zero=True) or near 1 (False)."""
+                                 min_value: float = 0,
+                                 max_value: float = 1,
+                                 key_mod: int = 0,
+                                 use_cache: bool = False) -> None:
+        """Select vertices in [min_value, max_value] weight range.
+
+        Args:
+            use_cache: If True, use pre-cached weights from _on_range_press.
+                       Speeds up live updates during slider drag.
+        """
         if not self._require_active():
             return
-        weights = self._active.get_weights()
-        indices = [i for i, w in enumerate(weights) if w <= max_value if w >= min_value]
 
-        mesh = self._active.mesh_name
+        # Use cached weights during live drag, else fetch fresh
+        if use_cache and self._cached_weights is not None:
+            weights = self._cached_weights
+            mesh = self._cached_mesh
+        else:
+            weights = self._active.get_weights()
+            mesh = self._active.mesh_name
+
+        # Filter vertices in range
+        indices = [i for i, w in enumerate(weights)
+                   if min_value <= w <= max_value]
+
         if not indices:
             cmds.select(clear=True)
-            logger.info("No vertices match the weight criteria.")
             return
 
-        mel.eval(f'doMenuComponentSelection("{mesh}", "vertex")')
+        # Build selection
         ranges = dw_maya.dw_maya_utils.create_maya_ranges(indices)
         vtx_list = [f'{mesh}.vtx[{r}]' for r in ranges]
         self.select_by_mod(vtx_list, key_mod)
+
+    # Add these methods
+    def _on_range_selection_pressed(self) -> None:
+        """Called when user presses slider handle — cache weights once."""
+        if not self._require_active():
+            return
+        self._cached_weights = self._active.get_weights()
+        self._cached_mesh = self._active.mesh_name
+
+    def _on_range_selection_released(self) -> None:
+        """Called when user releases slider — clear cache."""
+        self._cached_weights = None
+        self._cached_mesh = None
 
     def select_vertices_by_weight(self,
                                   from_zero: bool = True,

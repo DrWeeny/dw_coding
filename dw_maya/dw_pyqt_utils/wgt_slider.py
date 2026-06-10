@@ -9,6 +9,7 @@ except ImportError:
 
 from typing import Optional, Union
 
+
 def get_qt_width_from_str(text: str,
                           font: QtGui.QFont = None,
                           size: int = 9) -> int:
@@ -28,6 +29,7 @@ def get_qt_width_from_str(text: str,
     w_width = lbl.sizeHint().width()
 
     return w_width
+
 
 class WidgetSizeGroup(QtCore.QObject):
     """
@@ -60,6 +62,7 @@ class WidgetSizeGroup(QtCore.QObject):
 
         for w in self._widgets:
             w.setMinimumWidth(max_width)
+
 
 class SliderWithButton(QtWidgets.QWidget):
     """Horizontal slider bidirectionally synced with a spinbox, plus a button.
@@ -98,7 +101,7 @@ class SliderWithButton(QtWidgets.QWidget):
                  default: float = 0.5,
                  decimals: int = 2,
                  step: float = 0.01,
-                 label_width = 0,
+                 label_width=0,
                  has_button: bool = True,
                  parent: Optional[QtWidgets.QWidget] = None):
         super().__init__(parent)
@@ -117,7 +120,6 @@ class SliderWithButton(QtWidgets.QWidget):
             layout.addWidget(lbl)
 
         self._spinbox = QtWidgets.QDoubleSpinBox()
-        self._spinbox.setLocale(QtCore.QLocale(QtCore.QLocale.English, QtCore.QLocale.UnitedStates))
         if isinstance(min_val, (int, float)):
             self._spinbox.setMinimum(min_val)
         if isinstance(max_val, (int, float)):
@@ -178,11 +180,15 @@ class SliderWithButton(QtWidgets.QWidget):
     @value.setter
     def value(self, v: float) -> None:
         self._spinbox.setValue(v)
-        
+
+
 class RangeSlider(QtWidgets.QSlider):
     """Custom double-handled range slider."""
 
     rangeChanged = QtCore.Signal(float, float)
+    sliderPressed = QtCore.Signal()  # Emitted when user presses a handle
+    sliderMoved = QtCore.Signal(float, float)  # Emitted during drag
+    sliderReleased = QtCore.Signal()  # Emitted when user releases a handle
 
     def __init__(self, orientation=QtCore.Qt.Horizontal, parent=None):
         super().__init__(orientation, parent)
@@ -210,6 +216,7 @@ class RangeSlider(QtWidgets.QSlider):
             self.isSliderDown = True
             self.update()
             self._emit_range()
+            self.sliderPressed.emit()
 
     def mouseMoveEvent(self, event):
         if self.isSliderDown:
@@ -224,9 +231,15 @@ class RangeSlider(QtWidgets.QSlider):
             self.update()
             self._emit_range()
 
+            # Emit sliderMoved with current normalized range
+            min_val = self.first_position / 99.0
+            max_val = self.second_position / 99.0
+            self.sliderMoved.emit(min_val, max_val)
+
     def mouseReleaseEvent(self, event):
         self.isSliderDown = False
         self.movement = 0
+        self.sliderReleased.emit()
 
     def _emit_range(self):
         """Emit the current range as normalized values."""
@@ -266,6 +279,7 @@ class RangeSlider(QtWidgets.QSlider):
         self.second_position = int(max_val * 99)
         self.update()
 
+
 class RangeSliderWithSpinbox(QtWidgets.QWidget):
     """Double-handle range slider flanked by two spinboxes.
 
@@ -277,7 +291,10 @@ class RangeSliderWithSpinbox(QtWidgets.QWidget):
     Typing a value outside the current limits **auto-extends** those limits.
 
     Signals:
-        range_changed(float, float): Emitted on every handle / spinbox move.
+        range_changed(float, float):    Emitted on every handle / spinbox move.
+        slider_pressed():               Emitted when user presses a slider handle.
+        slider_moved(float, float):     Emitted during drag with (min, max) normalized [0-1].
+        slider_released():              Emitted when user releases the slider.
 
     Args:
         limit_min: Lower bound (default ``0.0``).
@@ -288,11 +305,15 @@ class RangeSliderWithSpinbox(QtWidgets.QWidget):
     Example::
 
         w = RangeSliderWithSpinbox(limit_min=0.0, limit_max=2.5)
-        w.range_changed.connect(lambda lo, hi: print(lo, hi))
-        w.set_limits(min_w, max_w)   # recalibrate from actual weights
+        w.slider_pressed.connect(on_selection_start)
+        w.slider_moved.connect(on_vertex_selection_live_update)
+        w.slider_released.connect(on_selection_end)
     """
 
     range_changed = QtCore.Signal(float, float)
+    slider_pressed = QtCore.Signal()
+    slider_moved = QtCore.Signal(float, float)
+    slider_released = QtCore.Signal()
 
     def __init__(self,
                  limit_min: float = 0.0,
@@ -311,11 +332,11 @@ class RangeSliderWithSpinbox(QtWidgets.QWidget):
         layout.setSpacing(3)
 
         self._spin_min = QtWidgets.QDoubleSpinBox()
-        self._spin_min.setLocale(QtCore.QLocale(QtCore.QLocale.English, QtCore.QLocale.UnitedStates))
         self._spin_min.setDecimals(decimals)
         self._spin_min.setSingleStep(10 ** -decimals)
         self._spin_min.setFixedWidth(60)
-        self._spin_min.setRange(-9999.0, 9999.0)   # wide open — limits are logical only
+        self._spin_min.setRange(-9999.0, 9999.0)  # wide open — limits are logical only
+        self._spin_min.setLocale(QtCore.QLocale(QtCore.QLocale.English, QtCore.QLocale.UnitedStates))
         self._spin_min.setToolTip('Lower bound — type to extend the range')
         layout.addWidget(self._spin_min)
 
@@ -324,11 +345,11 @@ class RangeSliderWithSpinbox(QtWidgets.QWidget):
         layout.addWidget(self._slider, stretch=1)
 
         self._spin_max = QtWidgets.QDoubleSpinBox()
-        self._spin_max.setLocale(QtCore.QLocale(QtCore.QLocale.English, QtCore.QLocale.UnitedStates))
         self._spin_max.setDecimals(decimals)
         self._spin_max.setSingleStep(10 ** -decimals)
         self._spin_max.setFixedWidth(60)
-        self._spin_max.setRange(-9999.0, 9999.0)   # wide open — limits are logical only
+        self._spin_max.setRange(-9999.0, 9999.0)  # wide open — limits are logical only
+        self._spin_max.setLocale(QtCore.QLocale(QtCore.QLocale.English, QtCore.QLocale.UnitedStates))
         self._spin_max.setToolTip('Upper bound — type to extend the range')
         layout.addWidget(self._spin_max)
 
@@ -343,6 +364,9 @@ class RangeSliderWithSpinbox(QtWidgets.QWidget):
         self.set_limits(limit_min, limit_max)
 
         self._slider.rangeChanged.connect(self._on_slider_changed)
+        self._slider.sliderPressed.connect(self.slider_pressed)
+        self._slider.sliderMoved.connect(self.slider_moved)
+        self._slider.sliderReleased.connect(self.slider_released)
         self._spin_min.valueChanged.connect(self._on_spin_min_changed)
         self._spin_max.valueChanged.connect(self._on_spin_max_changed)
 
@@ -455,4 +479,3 @@ class RangeSliderWithSpinbox(QtWidgets.QWidget):
             self._syncing = False
         self._push_to_slider()
         self.range_changed.emit(self._spin_min.value(), self._spin_max.value())
-

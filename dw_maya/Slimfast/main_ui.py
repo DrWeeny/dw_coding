@@ -229,6 +229,14 @@ class SlimfastWidget(QtWidgets.QWidget):
         self._auto_paint_action.toggled.connect(self._on_auto_paint_toggled)
         view_menu.addAction(self._auto_paint_action)
 
+        # --- Auto Select ---
+        self._auto_range_select_action = QtWidgets.QAction('Auto > range select', self)
+        self._auto_range_select_action.setCheckable(True)
+        auto_range_select = settings.value('auto_range_select', False, type=bool)
+        self._auto_range_select_action.setChecked(bool(auto_range_select))
+        self._auto_range_select_action.toggled.connect(self._on_auto_range_select_toggled)
+        view_menu.addAction(self._auto_range_select_action)
+
         # --- Use Color Ramp ---
         self._use_color_ramp_action = QtWidgets.QAction('Use Color Ramp', self)
         self._use_color_ramp_action.setCheckable(True)
@@ -989,6 +997,11 @@ class SlimfastWidget(QtWidgets.QWidget):
         self._range_fit_btn.clicked.connect(self._on_range_fit)
         self._sel_mode_check.toggled.connect(self._on_sel_mode_toggled)
 
+        ## select dynamically with slider
+        self._range_sel.slider_moved.connect(self._on_selection_range_moved)
+        self._range_sel.slider_pressed.connect(self._on_range_selection_pressed)
+        self._range_sel.slider_released.connect(self._on_range_selection_released)
+
     # ------------------------------------------------------------------
     # QMENU - auto functions
     # ------------------------------------------------------------------
@@ -997,6 +1010,12 @@ class SlimfastWidget(QtWidgets.QWidget):
         """Persist auto-paint preference."""
         settings = QtCore.QSettings(self._org, self._appname)
         settings.setValue('auto_paint', checked)
+
+    @Slot(bool)
+    def _on_auto_range_select_toggled(self, checked: bool) -> None:
+        """Persist auto-paint preference."""
+        settings = QtCore.QSettings(self._org, self._appname)
+        settings.setValue('auto_range_select', checked)
 
     @Slot(bool)
     def _on_use_ramp_color_toggled(self, checked: bool) -> None:
@@ -1853,6 +1872,18 @@ class SlimfastWidget(QtWidgets.QWidget):
             self._range_sel.low, self._range_sel.high,
             self._qt_mods_to_maya(mods)
         )
+
+    def _on_selection_range_moved(self, low, high):
+        if self._auto_range_select_action.isChecked():
+            self._ctrl.select_vertices_by_range(low, high, use_cache=True)
+
+    def _on_range_selection_pressed(self):
+        if self._auto_range_select_action.isChecked():
+            self._ctrl._on_range_selection_pressed()
+
+    def _on_range_selection_released(self):
+        if self._auto_range_select_action.isChecked():
+            self._ctrl._on_range_selection_released()
 
     def _on_select_by_limit(self, max_limit:bool=True):
         """
