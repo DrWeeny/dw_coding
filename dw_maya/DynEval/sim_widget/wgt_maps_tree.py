@@ -23,7 +23,7 @@ import maya.cmds as cmds
 from dw_logger import get_logger
 
 # Local imports
-from ..hub_keys import HubKeys
+from ..hub_keys import DynEvalKeys
 from .wgt_base import DynEvalWidget
 from ..sim_cmds import vtx_map_management
 
@@ -171,12 +171,12 @@ class MapTreeWidget(DynEvalWidget):
     Widget for managing vertex maps.
 
     Subscribes to:
-        - HubKeys.SELECTED_ITEM: Updates map list when selection changes
-        - HubKeys.PAINT_ACTIVE: Reacts to paint tool state
+        - DynEvalKeys.SELECTED_ITEM: Updates map list when selection changes
+        - DynEvalKeys.PAINT_ACTIVE: Reacts to paint tool state
 
     Publishes:
-        - HubKeys.MAP_SELECTED: When a map is selected
-        - HubKeys.MAP_LIST: Current list of maps
+        - DynEvalKeys.MAP_SELECTED: When a map is selected
+        - DynEvalKeys.MAP_LIST: Current list of maps
     """
 
     # Qt Signals
@@ -292,8 +292,8 @@ class MapTreeWidget(DynEvalWidget):
 
     def _setup_hub_subscriptions(self):
         """Setup DataHub subscriptions."""
-        self.hub_subscribe(HubKeys.SELECTED_ITEM, self._on_node_selected)
-        self.hub_subscribe(HubKeys.PAINT_ACTIVE, self._on_paint_state_changed)
+        self.hub_subscribe(DynEvalKeys.SELECTED_ITEM, self._on_node_selected)
+        self.hub_subscribe(DynEvalKeys.PAINT_ACTIVE, self._on_paint_state_changed)
 
     # ========================================================================
     # HUB CALLBACKS
@@ -340,7 +340,7 @@ class MapTreeWidget(DynEvalWidget):
                 self.model.appendRow([name_item, type_item])
 
             # Publish map list to hub
-            self.hub_publish(HubKeys.MAP_LIST, maps_info)
+            self.hub_publish(DynEvalKeys.MAP_LIST, maps_info)
 
             # Clear filters
             self.search_box.clear()
@@ -456,7 +456,7 @@ class MapTreeWidget(DynEvalWidget):
         # Publish and emit first selected
         if selected_maps:
             map_info = selected_maps[0]
-            self.hub_publish(HubKeys.MAP_SELECTED, map_info)
+            self.hub_publish(DynEvalKeys.MAP_SELECTED, map_info)
             self.mapSelected.emit(map_info)
 
     def _on_type_changed(self, map_info: MapInfo, new_type: MapType):
@@ -501,8 +501,8 @@ class MapTreeWidget(DynEvalWidget):
             )
 
             # Publish paint context
-            self.hub_publish(HubKeys.PAINT_ACTIVE, True)
-            self.hub_publish(HubKeys.PAINT_CONTEXT, (self._node_name, map_info.name, self._mesh_name))
+            self.hub_publish(DynEvalKeys.PAINT_ACTIVE, True)
+            self.hub_publish(DynEvalKeys.PAINT_CONTEXT, (self._node_name, map_info.name, self._mesh_name))
 
     def _reset_selected(self):
         """Reset selected maps to default values."""

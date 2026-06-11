@@ -18,6 +18,7 @@ from .wgt_base import DynEvalMainWindow, DynEvalWidgetBase
 
 # Widgets
 from .wgt_cache_tree import CacheTreeWidget, CacheInfo, CacheType
+from .wgt_treewidget_toggle import SimulationTreeView
 from .wgt_maps_tree import MapTreeWidget, MapInfo, MapType
 from .wgt_commentary import CommentEditor
 from .wgt_paint_map import VertexMapEditor, EditorConfig
@@ -27,6 +28,7 @@ __all__ = [
     "DynEvalMainWindow",
     "DynEvalWidgetBase",
     # Widgets
+    'SimulationTreeView',
     'CacheTreeWidget',
     'CacheInfo',
     'CacheType',

@@ -26,9 +26,9 @@ import re
 from dw_logger import get_logger
 
 # Local imports
-from ..hub_keys import HubKeys
-from .wgt_base import DynEvalWidget
-from ..dendrology.cache_leaf import CacheItem
+from dw_maya.DynEval.hub_keys import DynEvalKeys
+from dw_maya.DynEval.sim_widget.wgt_base import DynEvalWidget
+from dw_maya.DynEval.dendrology.cache_leaf import CacheItem
 
 logger = get_logger()
 
@@ -73,11 +73,11 @@ class CacheTreeWidget(DynEvalWidget):
     Widget for managing simulation caches.
 
     Subscribes to:
-        - HubKeys.SELECTED_ITEM: Updates cache list when selection changes
+        - DynEvalKeys.SELECTED_ITEM: Updates cache list when selection changes
 
     Publishes:
-        - HubKeys.CACHE_SELECTED: When a cache is selected
-        - HubKeys.CACHE_ATTACHED: When cache attachment state changes
+        - DynEvalKeys.CACHE_SELECTED: When a cache is selected
+        - DynEvalKeys.CACHE_ATTACHED: When cache attachment state changes
     """
 
     # Qt Signals (for backwards compatibility with direct connections)
@@ -157,8 +157,8 @@ class CacheTreeWidget(DynEvalWidget):
     def _setup_hub_subscriptions(self):
         """Setup DataHub subscriptions."""
         # Subscribe to selection changes
-        self.hub_subscribe(HubKeys.SELECTED_ITEM, self._on_node_selected)
-        self.hub_subscribe(HubKeys.SELECTED_ITEMS, self._on_nodes_selected)
+        self.hub_subscribe(DynEvalKeys.SELECTED_ITEM, self._on_node_selected)
+        self.hub_subscribe(DynEvalKeys.SELECTED_ITEMS, self._on_nodes_selected)
 
     # ========================================================================
     # HUB CALLBACKS
@@ -351,7 +351,7 @@ class CacheTreeWidget(DynEvalWidget):
             cache_info = selected_items[0].cache_info
 
             # Publish to hub
-            self.hub_publish(HubKeys.CACHE_SELECTED, cache_info)
+            self.hub_publish(DynEvalKeys.CACHE_SELECTED, cache_info)
 
             # Emit Qt signal for backwards compatibility
             self.cache_selected.emit(cache_info)
@@ -393,7 +393,7 @@ class CacheTreeWidget(DynEvalWidget):
             cache_info.is_attached = True
 
             # Publish updated state
-            self.hub_publish(HubKeys.CACHE_SELECTED, cache_info)
+            self.hub_publish(DynEvalKeys.CACHE_SELECTED, cache_info)
 
             # Refresh list
             self.build_cache_list()
@@ -411,7 +411,7 @@ class CacheTreeWidget(DynEvalWidget):
             self.cache_detached.emit(cache_info)
 
             # Publish updated state
-            self.hub_publish(HubKeys.CACHE_SELECTED, cache_info)
+            self.hub_publish(DynEvalKeys.CACHE_SELECTED, cache_info)
 
             self.build_cache_list()
 

@@ -21,3 +21,10 @@ class DynEvalKeys:
     COMMENT_SAVED = "dyn.comment.saved"  # str — optionnel, pour feedback
 
     COMMENT_CURRENT = "dyn.comment.current"
+
+    # ------------------------------------------------------------------
+    # Backward-compat aliases for old widgets not yet migrated.
+    SELECTED_ITEM  = SELECTED_NODE    # was HubKeys.SELECTED_ITEM
+    SELECTED_ITEMS = SELECTED_NODE    # was HubKeys.SELECTED_ITEMS
+    CACHE_ATTACHED = CACHE_SELECTED   # was HubKeys.CACHE_ATTACHED
+    CACHE_CREATE_REQUESTED = "dyn.cache.create"

@@ -189,3 +189,36 @@ class DynEvalWidgetBase(QtWidgets.QWidget):
     def closeEvent(self, event):
         self.cleanup()
         super().closeEvent(event)
+
+class DynEvalWidget(QtWidgets.QWidget):
+    """
+    Backward-compat stub for widgets not yet migrated to DynEvalWidgetBase.
+
+    Old widgets (wgt_cache_tree, wgt_maps_tree, wgt_commentary) inherit from
+    this class and call hub_subscribe / hub_publish.  Those calls are silent
+    no-ops here — the widgets simply won't react to hub events until they are
+    properly migrated.
+
+    Do NOT use for new widgets.  Use DynEvalWidgetBase instead.
+    """
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._legacy_subs: list = []
+
+    # Hub stubs — no-ops until the widget is migrated
+    def hub_subscribe(self, key: str, callback) -> None:
+        pass
+
+    def hub_publish(self, key: str, value) -> None:
+        pass
+
+    def hub_get(self, key: str, default=None):
+        return default
+
+    def cleanup(self) -> None:
+        self._legacy_subs.clear()
+
+    def closeEvent(self, event):
+        self.cleanup()
+        super().closeEvent(event)

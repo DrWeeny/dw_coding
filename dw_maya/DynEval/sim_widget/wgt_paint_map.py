@@ -25,7 +25,7 @@ from maya import cmds
 from dw_logger import get_logger
 
 # Local imports
-from ..hub_keys import HubKeys, PaintContext
+from ..hub_keys import DynEvalKeys
 from .wgt_base import DynEvalWidget
 
 logger = get_logger()
@@ -150,13 +150,13 @@ class VertexMapEditor(DynEvalWidget):
     Advanced editor for vertex map painting and flooding.
 
     Subscribes to:
-        - HubKeys.SELECTED_ITEM: Update combo boxes
-        - HubKeys.SELECTED_MESH: Current mesh
-        - HubKeys.MAP_SELECTED: Currently selected map
+        - DynEvalKeys.SELECTED_ITEM: Update combo boxes
+        - DynEvalKeys.SELECTED_MESH: Current mesh
+        - DynEvalKeys.MAP_SELECTED: Currently selected map
 
     Publishes:
-        - HubKeys.PAINT_ACTIVE: Paint tool state
-        - HubKeys.PAINT_CONTEXT: Current paint context
+        - DynEvalKeys.PAINT_ACTIVE: Paint tool state
+        - DynEvalKeys.PAINT_CONTEXT: Current paint context
     """
 
     # Qt Signals
@@ -390,9 +390,9 @@ class VertexMapEditor(DynEvalWidget):
 
     def _setup_hub_subscriptions(self):
         """Subscribe to hub keys."""
-        self.hub_subscribe(HubKeys.SELECTED_ITEM, self._on_selection_changed)
-        self.hub_subscribe(HubKeys.SELECTED_MESH, self._on_mesh_changed)
-        self.hub_subscribe(HubKeys.MAP_SELECTED, self._on_map_selected)
+        self.hub_subscribe(DynEvalKeys.SELECTED_ITEM, self._on_selection_changed)
+        self.hub_subscribe(DynEvalKeys.SELECTED_MESH, self._on_mesh_changed)
+        self.hub_subscribe(DynEvalKeys.MAP_SELECTED, self._on_map_selected)
 
     # ========================================================================
     # HUB CALLBACKS

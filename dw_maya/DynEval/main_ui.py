@@ -28,15 +28,11 @@ from __future__ import annotations
 
 from typing import Optional
 
-try:
-    from PySide6 import QtCore, QtGui, QtWidgets
-    from PySide6.QtCore import Qt, Signal, Slot
-    from shiboken6 import wrapInstance
-except ImportError:
-    # Fallback for older Maya versions shipping PySide2
-    from PySide2 import QtCore, QtGui, QtWidgets
-    from PySide2.QtCore import Qt, Signal, Slot
-    from shiboken2 import wrapInstance
+from dw_maya.DynEval.sim_cmds.compat import (
+    QtCore, QtGui, QtWidgets, Qt, Signal, Slot,
+    wrapInstance, QShortcut, qt_exec,
+)
+
 
 import maya.cmds as cmds
 import maya.OpenMayaUI as omui
@@ -173,8 +169,8 @@ class SimTreePanel(DynEvalWidgetBase):
         layout.addWidget(self._status)
 
         # Undo / redo — only active while the mouse is inside this panel
-        self._undo = QtGui.QShortcut(QtGui.QKeySequence(), self)
-        self._redo = QtGui.QShortcut(QtGui.QKeySequence(), self)
+        self._undo = QShortcut(QtGui.QKeySequence(), self)
+        self._redo = QShortcut(QtGui.QKeySequence(), self)
         self._undo.activated.connect(self._handle_undo)
         self._redo.activated.connect(self._handle_redo)
 
