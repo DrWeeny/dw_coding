@@ -20,7 +20,7 @@ class ClothTreeItem(BaseSimulationItem):
 
     def __init__(self, name):
         super().__init__(name)
-        self.setText(self.short_name)
+        self.setText(self.display_name)
         self._setup_item()
 
     @property
@@ -35,11 +35,17 @@ class ClothTreeItem(BaseSimulationItem):
 
     @property
     def mesh_transform(self):
-        hist = cmds.listHistory(self.node + '.outputMesh', lf=False, f=True)
-        o = [i for i in hist if cmds.nodeType(i) == 'mesh']
-        o = [i for i in o if len(i.split('.')) == 1]
-        o = lsTr(o[0], long=True)[0]
-        return o
+        """Transform of the simulated output mesh, or None if unresolved."""
+        try:
+            hist = cmds.listHistory(self.node + '.outputMesh', lf=False, f=True) or []
+            shapes = [i for i in hist if cmds.nodeType(i) == 'mesh' and len(i.split('.')) == 1]
+            if not shapes:
+                return None
+            transforms = lsTr(shapes[0], long=True)
+            return transforms[0] if transforms else None
+        except Exception as e:
+            logger.warning(f"mesh_transform lookup failed for {self.node!r}: {e}")
+            return None
 
     def _get_current_state(self) -> bool:
         """Get current state from Maya with error handling."""

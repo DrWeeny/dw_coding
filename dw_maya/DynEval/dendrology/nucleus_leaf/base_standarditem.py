@@ -99,7 +99,7 @@ class BaseSimulationItem(QtGui.QStandardItem):
         self.setData(self._node_data.namespace, self.CUSTOM_ROLES['NAMESPACE'])
         self.setData(self._node_data.solver, self.CUSTOM_ROLES['SOLVER'])
         self.setData(self.node_type, self.CUSTOM_ROLES['NODE_TYPE'])
-        self.setData(self.short_name, QtCore.Qt.DisplayRole)
+        self.setData(self.display_name, QtCore.Qt.DisplayRole)
 
         # Initialize state
         current_state = self._get_current_state()
@@ -200,6 +200,19 @@ class BaseSimulationItem(QtGui.QStandardItem):
         except:
             node = self.node
         return node.split('|')[-1].split(':')[-1].split('_Sim')[0]
+
+    @property
+    def display_name(self) -> str:
+        """User-facing tree label — the transform of the simulated mesh.
+
+        Falls back to short_name when mesh_transform can't be resolved
+        (e.g. the solver item itself, or a sim node with no connected
+        output mesh yet).
+        """
+        target = self.mesh_transform
+        if not target:
+            return self.short_name
+        return target.split('|')[-1].split(':')[-1].split('_Sim')[0]
 
     @property
     def state_attr(self):

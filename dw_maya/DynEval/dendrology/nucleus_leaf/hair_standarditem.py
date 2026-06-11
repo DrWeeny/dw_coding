@@ -16,6 +16,9 @@ import maya.cmds as cmds
 
 # external
 from .base_standarditem import BaseSimulationItem
+from dw_logger import get_logger
+
+logger = get_logger()
 
 
 class HairTreeItem(BaseSimulationItem):
@@ -23,16 +26,20 @@ class HairTreeItem(BaseSimulationItem):
 
     def __init__(self, name):
         super().__init__(name)
-        self.setText(self.short_name)
+        self.setText(self.display_name)
         self.setIcon(QtGui.QIcon("path/to/hair_icon.png"))
 
         self._setup_item()
 
     @property
     def mesh_transform(self):
-        """Returns the transform of the hair node's mesh."""
-        parent = cmds.listRelatives(self.node, p=True, f=True)
-        return parent[0] if parent else None
+        """Transform that owns the hairSystem shape, or None if unresolved."""
+        try:
+            parent = cmds.listRelatives(self.node, p=True, f=True)
+            return parent[0] if parent else None
+        except Exception as e:
+            logger.warning(f"mesh_transform lookup failed for {self.node!r}: {e}")
+            return None
 
     @property
     def short_name(self):

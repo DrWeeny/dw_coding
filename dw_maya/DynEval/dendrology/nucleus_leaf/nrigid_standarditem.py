@@ -27,7 +27,7 @@ class NRigidTreeItem(BaseSimulationItem):
 
     def __init__(self, name):
         super().__init__(name)
-        self.setText(self.short_name)
+        self.setText(self.display_name)
         self.setIcon(QtGui.QIcon("path/to/rigid_icon.png"))
 
         self._setup_item()
@@ -48,12 +48,20 @@ class NRigidTreeItem(BaseSimulationItem):
 
     @property
     def mesh_transform(self):
-        """Gets the associated mesh transform for the nRigid node."""
-        connected_meshes = [
-            i for i in cmds.listConnections(f"{self.node}.inputMesh", sh=True)
-            if cmds.nodeType(i) == 'mesh' and len(i.split('.')) == 1
-        ]
-        return dwu.lsTr(connected_meshes[0], long=True)[0] if connected_meshes else None
+        """Transform of the input collider mesh, or None if unresolved."""
+        try:
+            connections = cmds.listConnections(f"{self.node}.inputMesh", sh=True) or []
+            connected_meshes = [
+                i for i in connections
+                if cmds.nodeType(i) == 'mesh' and len(i.split('.')) == 1
+            ]
+            if not connected_meshes:
+                return None
+            transforms = dwu.lsTr(connected_meshes[0], long=True)
+            return transforms[0] if transforms else None
+        except Exception as e:
+            logger.warning(f"mesh_transform lookup failed for {self.node!r}: {e}")
+            return None
 
     @property
     def state_attr(self):

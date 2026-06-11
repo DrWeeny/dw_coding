@@ -8,7 +8,7 @@ class NucleusStandardItem(BaseSimulationItem):
 
     def __init__(self, node):
         super().__init__(node)
-        self.setText(self.short_name)
+        self.setText(self.display_name)
         self._setup_item()
 
 
