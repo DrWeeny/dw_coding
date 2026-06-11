@@ -1,6 +1,9 @@
 from pathlib import Path
-from PySide6 import QtCore
-
+try:
+    from PySide6 import QtCore
+except ImportError:
+    # Fallback for older Maya versions shipping PySide2
+    from PySide2 import QtCore
 # internal
 from maya import cmds
 from .base_standarditem import BaseSimulationItem

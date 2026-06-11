@@ -8,26 +8,23 @@ Imported automatically by systems/__init__.py.
 from __future__ import annotations
 
 import maya.cmds as cmds
-
 try:
-    from PySide6 import QtCore, QtGui, QtWidgets
-    from PySide6.QtCore import Slot
-    from shiboken6 import wrapInstance
+    from PySide6 import QtGui
 except ImportError:
     # Fallback for older Maya versions shipping PySide2
-    from PySide2 import QtCore, QtGui, QtWidgets
-    from PySide2.QtCore import Slot
-    from shiboken2 import wrapInstance
+    from PySide2 import QtGui
+
 from dw_logger import get_logger
 
-from dw_maya.DynEval.sim_registry import SimSystem, register
-from dw_maya.DynEval.dendrology.nucleus_leaf import (
+from ..sim_registry import SimSystem, register
+from ..dendrology.nucleus_leaf import (
     NucleusStandardItem,
     ClothTreeItem,
     HairTreeItem,
     NRigidTreeItem,
 )
-from dw_maya.DynEval.sim_cmds import info_management
+from ..sim_cmds import info_management
+from ..sim_cmds.nucleus_cache_ops import NucleusCacheOps
 
 logger = get_logger()
 
@@ -100,9 +97,11 @@ def _get_nucleus_children(solver_node: str) -> list[str]:
     children: list[str] = []
 
     for attr in ('inputActive', 'inputPassive'):
-        nodes = cmds.listConnections(f'{solver_node}.{attr}',
-                                     source=True,
-                                     destination=False,) or []
+        nodes = cmds.listConnections(
+            f'{solver_node}.{attr}',
+            source=True,
+            destination=False,
+        ) or []
         for n in nodes:
             if n not in seen:
                 seen.add(n)
@@ -129,5 +128,5 @@ register(SimSystem(
     discover       = lambda: cmds.ls(type='nucleus') or [],
     make_item      = _make_nucleus_item,
     get_children   = _get_nucleus_children,
-    cache_ops      = None,   # TODO: NucleusCacheOps
+    cache_ops      = NucleusCacheOps,
 ))

@@ -1,5 +1,14 @@
 from __future__ import annotations
-from PySide6 import QtCore, QtGui, QtWidgets
+try:
+    from PySide6 import QtCore, QtGui, QtWidgets
+    from PySide6.QtCore import Qt, Signal, Slot
+    from shiboken6 import wrapInstance
+except ImportError:
+    # Fallback for older Maya versions shipping PySide2
+    from PySide2 import QtCore, QtGui, QtWidgets
+    from PySide2.QtCore import Qt, Signal, Slot
+    from shiboken2 import wrapInstance
+
 from typing import Optional, List, Dict, Any, Union
 import maya.cmds as cmds
 from pathlib import Path

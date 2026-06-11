@@ -17,17 +17,15 @@
 
 #----------------------------------------------------------------------------#
 #----------------------------------------------------------------- IMPORTS --#
-
-# built-in
-import sys, os
-# ----- Edit sysPath -----#
-rdPath = 'E:\\dw_coding\\dw_open_tools'
-if not rdPath in sys.path:
-    print(f"Add {rdPath} to sysPath")
-    sys.path.insert(0, rdPath)
-import re
-from PySide6 import QtCore, QtGui, QtWidgets
-
+try:
+    from PySide6 import QtCore, QtGui, QtWidgets
+    from PySide6.QtCore import Qt, Signal, Slot
+    from shiboken6 import wrapInstance
+except ImportError:
+    # Fallback for older Maya versions shipping PySide2
+    from PySide2 import QtCore, QtGui, QtWidgets
+    from PySide2.QtCore import Qt, Signal, Slot
+    from shiboken2 import wrapInstance
 
 class MapItemModel(QtGui.QStandardItem):
     """Model item representing a paintable map in the tree view."""

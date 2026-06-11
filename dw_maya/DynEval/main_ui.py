@@ -27,31 +27,26 @@ DynEvalMainWindow contract (expected from wgt_base.py):
 from __future__ import annotations
 
 from typing import Optional
-from pathlib import Path
 
 try:
     from PySide6 import QtCore, QtGui, QtWidgets
-    from PySide6.QtCore import Slot
+    from PySide6.QtCore import Qt, Signal, Slot
     from shiboken6 import wrapInstance
 except ImportError:
     # Fallback for older Maya versions shipping PySide2
     from PySide2 import QtCore, QtGui, QtWidgets
-    from PySide2.QtCore import Slot
+    from PySide2.QtCore import Qt, Signal, Slot
     from shiboken2 import wrapInstance
 
 import maya.cmds as cmds
-
 import maya.OpenMayaUI as omui
 
 from dw_logger import get_logger
-import json_utils.core as dw_json
 
-from dw_maya.DynEval.hub_keys import DynEvalKeys
-import dw_maya.DynEval.sim_widget.wgt_commentary
-from dw_maya.DynEval.sim_widget.wgt_commentary import CommentEditor
-from dw_maya.DynEval.sim_registry import discover_all, build_solver_item
-from dw_maya.DynEval.sim_widget.wgt_treewidget_toggle import SimulationTreeView
-from dw_maya.DynEval.sim_widget.wgt_base import DynEvalMainWindow, DynEvalWidgetBase
+from .hub_keys import DynEvalKeys
+from .sim_registry import discover_all, build_solver_item, get_system
+from .sim_widget import SimulationTreeView
+from .sim_widget.wgt_base import DynEvalMainWindow, DynEvalWidgetBase
 
 logger = get_logger()
 
@@ -202,9 +197,9 @@ class SimTreePanel(DynEvalWidgetBase):
 
             for _system_name, solver_nodes in systems.items():
                 for solver_node in solver_nodes:
-                    row = build_solver_item(solver_node)
-                    if row:
-                        self.tree.model().invisibleRootItem().appendRow(row)
+                    solver_item = build_solver_item(solver_node)
+                    if solver_item:
+                        self.tree.model().invisibleRootItem().appendRow(solver_item)
 
             self._expand_top_level()
             self._status.hide()
@@ -362,11 +357,9 @@ class SimDetailPanel(DynEvalWidgetBase):
         self.tabs = QtWidgets.QTabWidget()
         self.cache_tab = CacheVersionPanel(hub)
         self.maps_tab  = MapListPanel(hub)
-        self.comment_tab = CommentEditor(hub)
 
         self.tabs.addTab(self.cache_tab, "Cache")
         self.tabs.addTab(self.maps_tab,  "Maps")
-        self.tabs.addTab(self.comment_tab, "Comment")
         layout.addWidget(self.tabs)
 
 
@@ -458,16 +451,22 @@ class CacheVersionPanel(DynEvalWidgetBase):
         self.cache_list.clear()
         if not self._current_item:
             return
-        if not hasattr(self._current_item, "get_cache_list"):
+
+        node_type = getattr(self._current_item, "node_type", None)
+        system    = get_system(node_type) if node_type else None
+        if not system or not system.cache_ops:
             return
 
-        for cache_info in self._current_item.get_cache_list():
-            frames = ""
-            if hasattr(cache_info, "start") and hasattr(cache_info, "end"):
-                frames = f"{cache_info.start} – {cache_info.end}"
-            date = getattr(cache_info, "date", "")
-
-            row = QtWidgets.QTreeWidgetItem([cache_info.version, date, frames])
+        for cache_info in system.cache_ops.list_caches(self._current_item):
+            frames = (
+                f"{cache_info.start} \u2013 {cache_info.end}"
+                if (cache_info.start or cache_info.end) else "\u2014"
+            )
+            row = QtWidgets.QTreeWidgetItem([
+                cache_info.version,
+                cache_info.date,
+                frames,
+            ])
             row.setData(0, QtCore.Qt.UserRole, cache_info)
             self.cache_list.addTopLevelItem(row)
 
@@ -491,25 +490,54 @@ class CacheVersionPanel(DynEvalWidgetBase):
     def _create_cache(self):
         if not self._current_item:
             return
-        # TODO: system = get_system(self._current_item.node_type)
-        #       system.cache_ops.create(self._current_item, self.hub_get(DynEvalKeys.FRAME_RANGE))
-        #       self._rebuild_list()
-        logger.debug("CacheVersionPanel._create_cache: not yet implemented")
+        system = get_system(getattr(self._current_item, "node_type", None))
+        if not system or not system.cache_ops:
+            logger.warning("_create_cache: no cache_ops for this node type")
+            return
+        frame_range = self.hub_get(DynEvalKeys.FRAME_RANGE) or (1, 100)
+        try:
+            system.cache_ops.create(self._current_item, frame_range)
+            self._rebuild_list()
+        except Exception as e:
+            logger.error(f"Cache creation failed: {e}")
+            cmds.warning(str(e))
 
     def _attach_selected(self):
         cache_info = self._selected_cache_info()
         if not (cache_info and self._current_item):
             return
-        # TODO: system.cache_ops.attach(self._current_item, cache_info)
-        logger.debug("CacheVersionPanel._attach_selected: not yet implemented")
+        system = get_system(getattr(self._current_item, "node_type", None))
+        if not system or not system.cache_ops:
+            return
+        try:
+            system.cache_ops.attach(self._current_item, cache_info)
+        except Exception as e:
+            logger.error(f"Cache attach failed: {e}")
+            cmds.warning(str(e))
 
     def _delete_selected(self):
         cache_info = self._selected_cache_info()
         if not (cache_info and self._current_item):
             return
-        # TODO: system.cache_ops.delete(self._current_item, cache_info)
-        #       self._rebuild_list()
-        logger.debug("CacheVersionPanel._delete_selected: not yet implemented")
+        system = get_system(getattr(self._current_item, "node_type", None))
+        if not system or not system.cache_ops:
+            return
+
+        confirm = QtWidgets.QMessageBox.question(
+            self,
+            "Delete Cache",
+            f"Delete version {cache_info.version}?\nThis cannot be undone.",
+            QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
+        )
+        if confirm != QtWidgets.QMessageBox.Yes:
+            return
+
+        try:
+            system.cache_ops.delete(self._current_item, cache_info)
+            self._rebuild_list()
+        except Exception as e:
+            logger.error(f"Cache delete failed: {e}")
+            cmds.warning(str(e))
 
 
 # ============================================================================
@@ -595,96 +623,6 @@ class MapListPanel(DynEvalWidgetBase):
         if map_info:
             self.publish(DynEvalKeys.PAINT_REQUESTED, map_info)
 
-class CommentPanel(DynEvalWidgetBase):
-    """
-    Onglet commentaire — un commentaire par version de cache.
-
-    Subscribes to
-    -------------
-    SELECTED_NODE     met à jour le titre, vide l'éditeur
-    CACHE_SELECTED    charge le commentaire correspondant à cette version
-    """
-
-    def __init__(self, hub, parent=None):
-        super().__init__(hub, parent)
-        self._current_item  = None
-        self._current_cache = None
-
-        layout = QtWidgets.QVBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
-
-        # --- ton widget existant ----------------------------------------
-        self.editor = dw_maya.DynEval.sim_widget.wgt_commentary.CommentEditor(parent=self)
-        layout.addWidget(self.editor)
-        # ----------------------------------------------------------------
-
-        self.subscribe(DynEvalKeys.SELECTED_NODE,  self._on_node_changed)
-        self.subscribe(DynEvalKeys.CACHE_SELECTED, self._on_cache_selected)
-
-        # signal émis par wgt_commentaire quand l'utilisateur sauvegarde
-        self.editor.save_requested.connect(self._save_comment)   # adjust this
-
-    # ------------------------------------------------------------------
-    # Hub callbacks
-    # ------------------------------------------------------------------
-
-    def _on_node_changed(self, _old, new_item):
-        self._current_item  = new_item
-        self._current_cache = None
-
-        title = getattr(new_item, "short_name", str(new_item)) if new_item else ""
-        self.editor.setTitle(title)      # adjust this
-        self.editor.setComment("")       # adjust this
-
-    def _on_cache_selected(self, _old, cache_info):
-        self._current_cache = cache_info
-        self._load_comment()
-
-    # ------------------------------------------------------------------
-    # Load / save
-    # ------------------------------------------------------------------
-
-    def _load_comment(self):
-        self.editor.setComment("")       # adjust this
-
-        if not self._current_item or not self._current_cache:
-            return
-
-        try:
-            metadata_path = Path(self._current_item.metadata())
-            if not metadata_path.exists():
-                return
-
-            data   = dw_json.load_json(str(metadata_path))
-            solver = getattr(self._current_item, "solver_name", "")
-            text   = (data
-                      .get("comment", {})
-                      .get(solver, {})
-                      .get(self._current_cache.version, ""))
-            self.editor.setComment(text)   # adjust this
-
-        except Exception as e:
-            logger.warning(f"Commentaire non chargé : {e}")
-
-    def _save_comment(self, comment: str):
-        if not self._current_item or not self._current_cache:
-            return
-
-        try:
-            metadata_path = Path(self._current_item.metadata())
-            solver = getattr(self._current_item, "solver_name", "")
-
-            payload = {"comment": {solver: {self._current_cache.version: comment}}}
-
-            if metadata_path.exists():
-                dw_json.merge_json(str(metadata_path), payload, defer=True)
-            else:
-                dw_json.save_json(str(metadata_path), payload, defer=True)
-
-            self.publish(DynEvalKeys.COMMENT_SAVED, comment)
-
-        except Exception as e:
-            logger.error(f"Échec sauvegarde commentaire : {e}")
 
 # ============================================================================
 # INTERNAL: STATUS BAR

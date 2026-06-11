@@ -1,7 +1,16 @@
 from dataclasses import dataclass
 from typing import Optional, List, Dict, Union
 from enum import Enum
-from PySide6 import QtWidgets, QtGui, QtCore
+try:
+    from PySide6 import QtCore, QtGui, QtWidgets
+    from PySide6.QtCore import Qt, Signal, Slot
+    from shiboken6 import wrapInstance
+except ImportError:
+    # Fallback for older Maya versions shipping PySide2
+    from PySide2 import QtCore, QtGui, QtWidgets
+    from PySide2.QtCore import Qt, Signal, Slot
+    from shiboken2 import wrapInstance
+
 from pathlib import Path
 import maya.cmds as cmds
 from dw_logger import get_logger

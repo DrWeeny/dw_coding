@@ -1,5 +1,15 @@
 from pathlib import Path
-from PySide6 import QtWidgets, QtGui, QtCore
+
+try:
+    from PySide6 import QtCore, QtGui, QtWidgets
+    from PySide6.QtCore import Qt, Signal, Slot
+    from shiboken6 import wrapInstance
+except ImportError:
+    # Fallback for older Maya versions shipping PySide2
+    from PySide2 import QtCore, QtGui, QtWidgets
+    from PySide2.QtCore import Qt, Signal, Slot
+    from shiboken2 import wrapInstance
+
 from maya import cmds
 import re
 import dw_maya.dw_maya_utils as dwu

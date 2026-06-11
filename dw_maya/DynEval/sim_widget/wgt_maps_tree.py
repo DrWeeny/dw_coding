@@ -5,7 +5,16 @@ Displays and manages vertex maps for simulation nodes.
 Publishes map selection and subscribes to node selection.
 """
 
-from PySide6 import QtWidgets, QtCore, QtGui
+try:
+    from PySide6 import QtCore, QtGui, QtWidgets
+    from PySide6.QtCore import Qt, Signal, Slot
+    from shiboken6 import wrapInstance
+except ImportError:
+    # Fallback for older Maya versions shipping PySide2
+    from PySide2 import QtCore, QtGui, QtWidgets
+    from PySide2.QtCore import Qt, Signal, Slot
+    from shiboken2 import wrapInstance
+
 from dataclasses import dataclass
 from enum import Enum
 from typing import Optional, List, Dict, Any
