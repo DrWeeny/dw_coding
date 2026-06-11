@@ -40,7 +40,19 @@ import maya.OpenMayaUI as omui
 from dw_logger import get_logger
 
 from .hub_keys import DynEvalKeys
-import dw_maya.DynEval.sim_registry # noqa: F401
+# Ensure available simulation systems register themselves on import (nucleus, ...).
+# Importing the systems package triggers each backend module to call register()
+# (see systems/__init__.py). This must happen before discover_all() is used.
+import traceback
+try:
+    # Importing the systems package triggers each backend module to call register().
+    # Wrap in try/except so import-time exceptions are visible in the Script Editor
+    # instead of silently failing and leaving the registry empty.
+    import dw_maya.DynEval.systems  # noqa: F401
+except Exception:
+    traceback.print_exc()
+
+import dw_maya.DynEval.sim_registry  # noqa: F401
 from dw_maya.DynEval.sim_registry import discover_all, build_solver_item, get_system
 from dw_maya.DynEval.sim_widget import SimulationTreeView
 from dw_maya.DynEval.sim_widget.wgt_base import DynEvalMainWindow, DynEvalWidgetBase

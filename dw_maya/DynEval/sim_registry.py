@@ -100,7 +100,20 @@ def discover_all() -> dict[str, list[str]]:
     result: dict[str, list[str]] = {}
     seen:   set[str] = set()
 
-    for system in dict.fromkeys(_by_node_type.values()):   # deduplicate systems
+    # Deduplicate systems while preserving registration order. Using dict.fromkeys
+    # previously failed because SimSystem instances are dataclasses and not
+    # hashable by default (TypeError: unhashable type: 'SimSystem'). Instead
+    # deduplicate by identity (id) which is stable for the lifetime of the
+    # interpreter and avoids requiring __hash__ on SimSystem.
+    unique_systems = []
+    seen_ids: set[int] = set()
+    for system in _by_node_type.values():
+        sid = id(system)
+        if sid not in seen_ids:
+            seen_ids.add(sid)
+            unique_systems.append(system)
+
+    for system in unique_systems:
         solvers = [n for n in system.discover() if n not in seen]
         seen.update(solvers)
         if solvers:
