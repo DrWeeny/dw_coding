@@ -14,16 +14,7 @@ Usage:
 """
 
 # Base class - use this for new widgets
-from .wgt_base import (
-    DynEvalWidget,
-    DynEvalMainWindow,
-    DynEvalDockWidget,
-    DynEvalDialog,
-    HubMixin,
-    HubPublisher,
-    publishes,
-    on_hub_change,
-)
+from .wgt_base import DynEvalMainWindow, DynEvalWidgetBase
 
 # Widgets
 from .wgt_cache_tree import CacheTreeWidget, CacheInfo, CacheType
@@ -33,14 +24,8 @@ from .wgt_paint_map import VertexMapEditor, EditorConfig
 
 __all__ = [
     # Base
-    'DynEvalWidget',
-    'DynEvalMainWindow', 
-    'DynEvalDockWidget',
-    'DynEvalDialog',
-    'HubMixin',
-    'HubPublisher',
-    'publishes',
-    'on_hub_change',
+    "DynEvalMainWindow",
+    "DynEvalWidgetBase",
     # Widgets
     'CacheTreeWidget',
     'CacheInfo',
