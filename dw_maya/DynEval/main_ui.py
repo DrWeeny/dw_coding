@@ -40,10 +40,10 @@ import maya.OpenMayaUI as omui
 from dw_logger import get_logger
 
 from .hub_keys import DynEvalKeys
-from .sim_registry import discover_all, build_solver_item, get_system
-from .sim_widget import SimulationTreeView
-from .sim_widget.wgt_base import DynEvalMainWindow, DynEvalWidgetBase
-
+import dw_maya.DynEval.sim_registry # noqa: F401
+from dw_maya.DynEval.sim_registry import discover_all, build_solver_item, get_system
+from dw_maya.DynEval.sim_widget import SimulationTreeView
+from dw_maya.DynEval.sim_widget.wgt_base import DynEvalMainWindow, DynEvalWidgetBase
 logger = get_logger()
 
 
