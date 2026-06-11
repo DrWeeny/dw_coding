@@ -70,10 +70,13 @@ class SimulationTreeModel(QtGui.QStandardItemModel):
 class SimulationTreeView(QtWidgets.QTreeView):
     """Custom tree view for simulation nodes with toggle support."""
 
-    # custom signals :
-    itemDoubleClicked = QtCore.Signal(BaseSimulationItem)
-    selectionChanged = QtCore.Signal(list)
-    clicked = QtCore.Signal(BaseSimulationItem)
+    # Custom signals — use names that do not clash with Qt built-in signals
+    # (overriding built-in signal names causes native Qt emission code to
+    # attempt to call the Python attribute which raises
+    # "TypeError: native Qt signal is not callable").
+    item_double_clicked = QtCore.Signal(BaseSimulationItem)
+    selection_changed_custom = QtCore.Signal(list)
+    item_clicked = QtCore.Signal(BaseSimulationItem)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -107,7 +110,7 @@ class SimulationTreeView(QtWidgets.QTreeView):
 
         # Connect toggle signal to handle batch operations
         self.toggle_delegate.toggled.connect(self._handle_toggle)
-        self.doubleClicked.connect(self._handle_double_click)
+        self.doubleClicked.connect(self._handle_double_click)  # use built-in doubleClicked
         self.selectionModel().selectionChanged.connect(self._handle_selection_changed)
 
     def clear(self):
@@ -147,7 +150,8 @@ class SimulationTreeView(QtWidgets.QTreeView):
             item = self.model().itemFromIndex(item_index)
 
             if isinstance(item, BaseSimulationItem):
-                self.itemDoubleClicked.emit(item)
+                # Emit our custom signal (do not use Qt built-in names)
+                self.item_double_clicked.emit(item)
 
         except Exception as e:
             logger.error(f"Double-click handling failed: {e}")
@@ -156,7 +160,8 @@ class SimulationTreeView(QtWidgets.QTreeView):
         """Handle selection changes and emit selected items."""
         try:
             selected_items = self.get_selected_items()  # Use existing method
-            self.selectionChanged.emit(selected_items)  # Emit the items
+            # Emit a custom signal name to avoid colliding with Qt internals
+            self.selection_changed_custom.emit(selected_items)
             print(f"Selection changed: {len(selected_items)} items")  # Debug print
         except Exception as e:
             logger.error(f"Selection change handling failed: {e}")
@@ -188,7 +193,8 @@ class SimulationTreeView(QtWidgets.QTreeView):
         if index.isValid():
             item = self.model().itemFromIndex(self.model().index(index.row(), 0, index.parent()))
             if isinstance(item, BaseSimulationItem):
-                self.clicked.emit(item)
+                # Emit our custom clicked signal
+                self.item_clicked.emit(item)
 
     def keyPressEvent(self, event: QtGui.QKeyEvent) -> None:
         """Handle keyboard navigation and actions.
@@ -203,7 +209,7 @@ class SimulationTreeView(QtWidgets.QTreeView):
                 selected_items = self.get_selected_items()
                 if selected_items:
                     for item in selected_items:
-                        self.itemDoubleClicked.emit(item)
+                        self.item_double_clicked.emit(item)
 
             elif event.key() == QtCore.Qt.Key_Escape:
                 self.clear_selection()

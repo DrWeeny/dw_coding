@@ -58,6 +58,25 @@ def _make_nucleus_item(node: str) -> QtGui.QStandardItem | None:
         logger.warning(f"_make_nucleus_item: nodeType query failed for {node!r}: {e}")
         return None
 
+    # If a transform was passed, try to find a child shape with a known sim
+    # node type (nCloth, hairSystem, nRigid). Maya often reports the transform
+    # when listConnections/listRelatives are used; handle that case transparently.
+    if node_type == 'transform':
+        try:
+            shapes = cmds.listRelatives(node, s=True, f=True) or []
+            for shape in shapes:
+                try:
+                    st = cmds.nodeType(shape)
+                except Exception:
+                    continue
+                if st == 'nucleus':
+                    return NucleusStandardItem(shape)
+                cls = _ITEM_CLASSES.get(st)
+                if cls:
+                    return cls(shape)
+        except Exception as e:
+            logger.warning(f"_make_nucleus_item: failed to resolve shapes for transform {node!r}: {e}")
+
     if node_type == 'nucleus':
         try:
             return NucleusStandardItem(node)
