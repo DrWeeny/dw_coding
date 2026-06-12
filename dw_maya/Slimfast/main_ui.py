@@ -15,7 +15,7 @@ Classes:
     SlimfastController — all Maya logic, no PySide6 imports
     SlimfastWidget     — PySide6 QWidget, signals connect to controller
 
-Version: 2.0.0
+Version: 2.3.0
 Author:  DrWeeny
 """
 
@@ -617,6 +617,7 @@ class SlimfastWidget(QtWidgets.QWidget):
 
         # --- Mode radio buttons — built from the panel registry ---
         from dw_maya.dw_pyqt_utils.flow_layout import FlowLayout
+        mode_to_sel = self._get_preferred_mode()
         mode_wgt = QtWidgets.QWidget()
         mode_lay = FlowLayout(mode_wgt, margin=0, spacing=4)
         self._mode_group = QtWidgets.QButtonGroup(self)
@@ -625,7 +626,7 @@ class SlimfastWidget(QtWidgets.QWidget):
         for mode_key, entry in registry.items():
             btn = QtWidgets.QRadioButton(entry['label'])
             btn.setProperty('mode', mode_key)
-            if mode_key == 'all':
+            if mode_key == mode_to_sel:
                 btn.setChecked(True)
             self._mode_group.addButton(btn)
             mode_lay.addWidget(btn)
@@ -1068,6 +1069,18 @@ class SlimfastWidget(QtWidgets.QWidget):
         settings = QtCore.QSettings(self._org, self._appname)
         settings.setValue('use_color_ramp', checked)
 
+    def _get_preferred_mode(self)->str:
+        settings = QtCore.QSettings(self._org, self._appname)
+        mode_name = settings.value('mode_selected', "all", type=str)
+        return str(mode_name)
+
+    def _save_preferred_mode(self):
+        settings = QtCore.QSettings(self._org, self._appname)
+        for mode, btn in self._mode_btns.items():
+            if btn.isChecked():
+                settings.setValue('mode_selected', mode)
+                break
+
     # ------------------------------------------------------------------
     # QProperty — smooth iterations
     # ------------------------------------------------------------------
@@ -1376,12 +1389,17 @@ class SlimfastWidget(QtWidgets.QWidget):
         if btn is None:
             return
         btn.setVisible(visible)
-        # If the active button is hidden, fall back to 'All'
+        # Persist immediately so reloads don't lose the setting
+        settings = QtCore.QSettings(self._org, self._appname)
+        settings.setValue(f'mode_visible_{mode_key}', visible)
+        # If the active button is hidden, fall back to first visible button
         if not visible and btn.isChecked():
-            all_btn = self._mode_btns.get('all')
-            if all_btn and all_btn.isVisible():
-                all_btn.setChecked(True)
-                self._ctrl.set_mode('all')
+            for fallback_key in ('deformer', 'all', 'nucleus', 'vtxColor'):
+                fallback_btn = self._mode_btns.get(fallback_key)
+                if fallback_btn and fallback_btn.isVisible():
+                    fallback_btn.setChecked(True)
+                    self._ctrl.set_mode(fallback_key)
+                    break
 
 
     # ------------------------------------------------------------------
@@ -2070,6 +2088,7 @@ class SlimfastWidget(QtWidgets.QWidget):
         settings.setValue('remap_section_visible', self._remap_section.isVisible())
         for mode_key, btn in self._mode_btns.items():
             settings.setValue(f'mode_visible_{mode_key}', btn.isVisible())
+        self._save_preferred_mode()
         self._save_storage_to_hub()
         super().closeEvent(event)
 

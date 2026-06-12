@@ -105,9 +105,161 @@ class SkinCluster(Deformer):
     def influences(self) -> List[str]:
         return cmds.skinCluster(self.node_name, query=True, influence=True) or []
 
+    def _resolve_influence_index(self, influence_name: str) -> Optional[int]:
+        """Return the physical column index of *influence_name*.
+
+        Handles three name forms so callers never need to normalise:
+
+        - full DAG path  ``'|root|spine|ns:joint1'``
+        - short with ns  ``'ns:joint1'``
+        - short bare     ``'joint1'``
+
+        Returns:
+            Integer index, or ``None`` when the influence is not found.
+        """
+        all_infs = self.influences  # cmds.skinCluster(q=True, influence=True)
+
+        # 1. Exact match — covers the common case when names are consistent
+        if influence_name in all_infs:
+            return all_infs.index(influence_name)
+
+        # 2. Leaf-name fallback — strip DAG prefix from both sides
+        short_query = influence_name.split('|')[-1]
+        for i, inf in enumerate(all_infs):
+            if inf.split('|')[-1] == short_query:
+                return i
+
+        return None
+
     # ------------------------------------------------------------------
     # Bulk weight queries (API 2.0)
     # ------------------------------------------------------------------
+
+    def get_weights(self) -> List[float]:
+        """Per-vertex weight array for the active map.
+
+        Active map is set by :meth:`use_map`:
+
+        ``'weightList'``
+            Full packed flat array ``[vtx0_inf0, vtx0_inf1, …, vtxN_infM-1]``.
+            Length = ``vtx_count × influence_count``.
+
+        joint name
+            Per-vertex weights for that influence only.
+            Length = ``vtx_count``.
+
+        Both paths use ``MFnSkinCluster.getWeights`` (already called by
+        :meth:`get_all_weights`) — no ``_resolve_attr`` / ``cmds.getAttr``.
+        """
+        map_name = self._current_map or 'weightList'
+
+        weights, num_influences = self.get_all_weights()  # one API call
+
+        if map_name == 'weightList':
+            return weights
+
+        # Per-influence: extract one column from the flat array
+        inf_idx = self._resolve_influence_index(map_name)
+        if inf_idx is None:
+            logger.warning(
+                f"SkinCluster.get_weights: influence '{map_name}' not found "
+                f"on '{self.node_name}', returning zeros"
+            )
+            return [0.0] * self.vtx_count
+
+        # Flat layout: [vtx0_inf0, vtx0_inf1, …] → stride = num_influences
+        return list(weights[inf_idx::num_influences])
+
+    def set_weights(self, weights: List[float]) -> None:
+        """Write a weight array for the active map back to the skinCluster.
+
+        Active map is set by :meth:`use_map`:
+
+        joint name
+            Writes the per-vertex weight column for that influence via
+            ``MFnSkinCluster.setWeights`` with ``normalize=True`` so Maya
+            redistributes the remaining weight across the other (unlocked)
+            influences.  The skin cluster is always left normalised.
+
+        ``'weightList'``
+            Not implemented — the full packed write requires careful index
+            reconstruction and is not needed by Slimfast operations.
+            Use :meth:`transfer_soft_weights` / :func:`apply_weight_delta`
+            for bulk redistribution instead.
+
+        Args:
+            weights: Per-vertex float list (length must equal :attr:`vtx_count`).
+
+        Raises:
+            ValueError:          When the active influence is not found.
+            NotImplementedError: When ``current_map == 'weightList'``.
+        """
+        map_name = self._current_map or 'weightList'
+
+        if map_name == 'weightList':
+            raise NotImplementedError(
+                "SkinCluster.set_weights: writing the full packed 'weightList' "
+                "is not supported.  Activate a specific influence first with "
+                "use_map(joint_name), or use apply_weight_delta() for bulk "
+                "redistribution."
+            )
+
+        self._set_influence_weights_column(map_name, weights)
+
+    def _set_influence_weights_column(self,
+                                      influence_name: str,
+                                      weights: List[float]) -> None:
+        """Write per-vertex weights for one influence via the API.
+
+        Uses ``MFnSkinCluster.setWeights`` (API 2.0) with ``normalize=True``
+        so Maya redistributes the remaining weight across unlocked influences
+        automatically.
+
+        Only one column is written per call — all other influences are
+        untouched by the write itself; Maya's normalisation adjusts them.
+
+        Args:
+            influence_name: Short or long name of the influence joint.
+            weights:        Per-vertex float list (length == :attr:`vtx_count`).
+
+        Raises:
+            ValueError: When *influence_name* is not an influence of this node.
+        """
+        import maya.api.OpenMaya as om
+        import maya.api.OpenMayaAnim as oma
+
+        inf_idx = self._resolve_influence_index(influence_name)
+        if inf_idx is None:
+            raise ValueError(
+                f"SkinCluster._set_influence_weights_column: "
+                f"'{influence_name}' is not an influence of '{self.node_name}'.\n"
+                f"Known: {self.influences[:5]}{'…' if len(self.influences) > 5 else ''}"
+            )
+
+        # Build MFnSkinCluster
+        sel = om.MSelectionList()
+        sel.add(self.node_name)
+        skin_fn = oma.MFnSkinCluster(sel.getDependNode(0))
+
+        # Mesh DAG path — must extend to shape
+        sel.add(self.mesh_name)
+        dag = sel.getDagPath(1)
+        dag.extendToShape()
+
+        # setWeights(dagPath, components, influenceIndices, weights, normalize)
+        #   om.MObject()        → "all vertices" (same convention as getWeights)
+        #   inf_indices=[idx]   → only the target influence column
+        #   weights length      → vtx_count × len(inf_indices) == vtx_count
+        #   normalize=True      → redistribute remainder across unlocked infs
+        inf_indices = om.MIntArray([inf_idx])
+        wt_array = om.MDoubleArray(weights)
+
+        skin_fn.setWeights(dag, om.MObject(), inf_indices, wt_array, True)
+
+        logger.debug(
+            f"SkinCluster: wrote {len(weights)} weights for "
+            f"'{influence_name}' (col {inf_idx}) on '{self.node_name}'"
+        )
 
     def get_all_weights(self) -> Tuple[List[float], int]:
         """Return the full flat weight array and influence count.
@@ -128,15 +280,21 @@ class SkinCluster(Deformer):
         return list(weights), num_influences
 
     def get_influence_weights(self, influence: str) -> List[float]:
-        """Per-vertex weights for a single influence (fast array slice)."""
-        all_influences = self.influences
-        if influence not in all_influences:
-            logger.warning(f"Influence '{influence}' not found in '{self.node_name}'")
+        """Per-vertex weights for a single influence (fast array slice).
+
+        Uses :meth:`_resolve_influence_index` for robust name matching so
+        full DAG paths, short names and namespaced names all resolve correctly.
+        """
+        inf_idx = self._resolve_influence_index(influence)
+        if inf_idx is None:
+            logger.warning(
+                f"SkinCluster.get_influence_weights: '{influence}' not found "
+                f"in '{self.node_name}', returning zeros"
+            )
             return [0.0] * self.vtx_count
 
-        inf_index = all_influences.index(influence)
         weights, num_influences = self.get_all_weights()
-        return weights[inf_index::num_influences]
+        return list(weights[inf_idx::num_influences])
 
     # ------------------------------------------------------------------
     # Soft-selection / participation helpers (delegate to skinning.py)
