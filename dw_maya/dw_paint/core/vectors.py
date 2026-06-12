@@ -57,6 +57,11 @@ class VectorUtils:
     def get_direction_vector(direction: Union[str, Vector3D]) -> np.ndarray:
         """Get normalized direction vector from predefined direction or custom vector"""
         if isinstance(direction, str):
+            # Normalize UI axis-key format ('x+', 'x-', 'y+', ...) to
+            # VectorDirection's 'x' / '-x' / 'y' / '-y' / ...
+            if len(direction) == 2 and direction[0] in 'xyz' and direction[1] in '+-':
+                direction = direction[0] if direction[1] == '+' else f'-{direction[0]}'
+
             # Handle composite directions
             if direction in ["xy", "yx"]:
                 return VectorUtils.normalize((1, 1, 0))
@@ -104,7 +109,7 @@ class VectorUtils:
                               vector: Vector3D,
                               origin: Optional[Vector3D] = None,
                               mode: Literal['projection', 'distance'] = 'projection') -> float:
-        """Calculate signed distance of point along vector"""
+        """Calculate signed distance of point along vector, or its distance from the vector's axis"""
         if origin is None:
             origin = np.zeros(3)
 
@@ -116,6 +121,10 @@ class VectorUtils:
 
         if mode == 'projection':
             return float(np.dot(to_point, vector))
+        if mode == 'distance':
+            # Perpendicular distance from the axis line through origin along vector
+            perpendicular = to_point - np.dot(to_point, vector) * vector
+            return float(np.linalg.norm(perpendicular))
         return float(np.linalg.norm(to_point))
 
     @staticmethod

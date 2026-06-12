@@ -53,6 +53,11 @@ class SlimfastController:
         self._mesh: Optional[str] = None
         self._mode: str = 'all'
 
+        # Advanced ops — explicit vertex mask (None = whole mesh).  Captured
+        # on demand via set_advanced_mask_from_selection(), independent of
+        # whatever is selected in Maya at Apply-time.
+        self._mask_vtx_ids: Optional[List[int]] = None
+
         # Artisan clamp state — kept in sync with set_artisan_clamp so that
         # bulk numpy operations (flood, smooth) can apply the same limits.
         self._clamp_mode: str = 'none'   # 'none' | 'lower' | 'upper' | 'both'
@@ -383,6 +388,29 @@ class SlimfastController:
             return extract_id(vtx)
         return None
 
+    def set_advanced_mask_from_selection(self) -> int:
+        """Capture the current vertex selection as the Advanced-ops mask.
+
+        Until :meth:`clear_advanced_mask` is called, :meth:`apply_vector_weights`
+        and :meth:`apply_radial_weights` restrict their output to these
+        vertices, regardless of what is selected in Maya at Apply-time.
+
+        Returns:
+            Number of vertices captured (0 if the selection is empty or
+            object-level).
+        """
+        mask = self._get_vtx_mask()
+        self._mask_vtx_ids = mask
+        return len(mask) if mask else 0
+
+    def clear_advanced_mask(self) -> None:
+        """Clear the Advanced-ops vertex mask — operations apply to the whole mesh."""
+        self._mask_vtx_ids = None
+
+    def get_advanced_mask_count(self) -> Optional[int]:
+        """Return the size of the Advanced-ops mask, or None when unset (whole mesh)."""
+        return len(self._mask_vtx_ids) if self._mask_vtx_ids else None
+
     @timeIt(track_stats=True)
     @singleUndoChunk
     def smooth(self, iterations: int = 1) -> None:
@@ -617,7 +645,9 @@ class SlimfastController:
                              op: str = 'replace') -> None:
         """Distribute weights by projection along a world-space direction.
 
-        Respects current vertex selection if active.
+        Restricted to the Advanced-ops mask (see
+        :meth:`set_advanced_mask_from_selection`) if one is set, otherwise
+        applies to the whole mesh.
 
         Args:
          direction: Predefined axis key (``'x+'``, ``'x-'``, ``'y+'``, ``'y-'``,
@@ -642,7 +672,7 @@ class SlimfastController:
             dir_arg = direction
         try:
             from dw_maya.dw_paint.operations import set_directional_weights
-            mask = self._get_vtx_mask()
+            mask = self._mask_vtx_ids
             # Compute new weight distribution for entire mesh
             new_weights = set_directional_weights(self._active.mesh_name,
                                                   dir_arg,
@@ -700,7 +730,9 @@ class SlimfastController:
                                op: str = 'replace') -> None:
         """Distribute weights by radial distance from a centre point.
 
-        Respects current vertex selection if active.
+        Restricted to the Advanced-ops mask (see
+        :meth:`set_advanced_mask_from_selection`) if one is set, otherwise
+        applies to the whole mesh.
 
         When *center* or *radius* are ``None``, they are resolved in this order:
         1. Current soft-selection radius (Maya ``softSelectFalloffCurve`` / ``softSelectDistance``).
@@ -746,7 +778,7 @@ class SlimfastController:
 
         logger.debug(f"apply_radial_weights: center={resolved_center} radius={resolved_radius}")
         try:
-            mask = self._get_vtx_mask()
+            mask = self._mask_vtx_ids
             from dw_maya.dw_paint.operations import set_radial_weights
             new_weights = set_radial_weights(
                 self._active.mesh_name,

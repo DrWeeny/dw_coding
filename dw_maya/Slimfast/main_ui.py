@@ -403,6 +403,25 @@ class SlimfastWidget(QtWidgets.QWidget):
 
         lay.addWidget(self._adv_radial_widget)
 
+        # ---- Mask (shared by vector & radial) --------------------------
+        mask_row = QtWidgets.QHBoxLayout()
+        self._adv_mask_label = QtWidgets.QLabel('Mask: whole mesh')
+        mask_row.addWidget(self._adv_mask_label, stretch=1)
+        mask_pick_btn = QtWidgets.QPushButton('Pick')
+        mask_pick_btn.setFixedWidth(40)
+        mask_pick_btn.setToolTip(
+            'Restrict Apply to the currently selected vertices, until '
+            'cleared. Independent of the radial center pick.'
+        )
+        mask_pick_btn.clicked.connect(self._on_pick_advanced_mask)
+        mask_row.addWidget(mask_pick_btn)
+        mask_clear_btn = QtWidgets.QPushButton('Clear')
+        mask_clear_btn.setFixedWidth(40)
+        mask_clear_btn.setToolTip('Clear the mask — Apply affects the whole mesh.')
+        mask_clear_btn.clicked.connect(self._on_clear_advanced_mask)
+        mask_row.addWidget(mask_clear_btn)
+        lay.addLayout(mask_row)
+
         # ---- Shared controls ------------------------------------------
         # Operation selector (replace / add / subtract / multiply)
         op_row = QtWidgets.QHBoxLayout()
@@ -1952,6 +1971,22 @@ class SlimfastWidget(QtWidgets.QWidget):
         self._adv_center_x.setValue(cx)
         self._adv_center_y.setValue(cy)
         self._adv_center_z.setValue(cz)
+
+    @Slot()
+    def _on_pick_advanced_mask(self) -> None:
+        """Restrict Advanced ops Apply to the current vertex selection."""
+        count = self._ctrl.set_advanced_mask_from_selection()
+        if count:
+            self._adv_mask_label.setText(f'Mask: {count} verts')
+        else:
+            self._adv_mask_label.setText('Mask: whole mesh')
+            logger.warning("No vertex selection to use as mask — Apply will affect the whole mesh.")
+
+    @Slot()
+    def _on_clear_advanced_mask(self) -> None:
+        """Clear the Advanced ops vertex mask."""
+        self._ctrl.clear_advanced_mask()
+        self._adv_mask_label.setText('Mask: whole mesh')
 
     @Slot()
     def _on_read_soft_select_radius(self) -> None:
