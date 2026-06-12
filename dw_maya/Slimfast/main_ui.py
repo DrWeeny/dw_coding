@@ -106,8 +106,6 @@ class SlimfastWidget(QtWidgets.QWidget):
         self._org = "DrWeeny"
         self._appname = "SlimfastWidget"
 
-        self._is_picking = False
-
         self._signals = SlimfastSignals(self)
         self._ctrl = SlimfastController(self._signals)
 
@@ -1018,6 +1016,7 @@ class SlimfastWidget(QtWidgets.QWidget):
         self._set0_btn.clicked.connect(partial(self._on_set_weight, 0.0))
         self._set1_btn.clicked.connect(partial(self._on_set_weight, 1.0))
         self.set_invert_btn.clicked.connect(self._on_weight_invert)
+        self._op_group.buttonClicked.connect(self._on_op_mode_changed)
 
         self._weight_slider.button_clicked.connect(self._on_set_weight)
         self._weight_slider.sliderReleased.connect(
@@ -1486,10 +1485,21 @@ class SlimfastWidget(QtWidgets.QWidget):
         self._ctrl.set_artisan_value(value)
 
     @Slot()
-    def _on_pb_picker_clicked(self):
-        self._is_picking = True
-        if self._ctrl.active_source:
-            self._ctrl.active_source.use_artisan_color_picker()
+    def _on_pb_picker_clicked(self) -> None:
+        """Activate the one-shot viewport weight picker (eyedropper)."""
+        self._pb_picker.setEnabled(False)
+        self._ctrl.start_weight_picker(
+            on_picked=self._on_weight_picked,
+            on_cancel=self._on_weight_pick_done,
+        )
+
+    def _on_weight_picked(self, vtx_index: int, value: float) -> None:
+        """Apply the picked vertex's weight to the slider (and artisan brush)."""
+        self._set_weight_value_on_slider(value)
+        self._on_weight_pick_done()
+
+    def _on_weight_pick_done(self) -> None:
+        self._pb_picker.setEnabled(True)
 
     def _set_weight_value_on_slider(self, value:float):
         self._weight_slider.value = value
@@ -1546,6 +1556,13 @@ class SlimfastWidget(QtWidgets.QWidget):
         mode_key = btn.property('mode')
         ctrl_mode = wgt_deformer_panel.get_ctrl_mode(mode_key)
         self._ctrl.set_mode(ctrl_mode)
+
+    @Slot(QtWidgets.QAbstractButton)
+    def _on_op_mode_changed(self, btn: QtWidgets.QAbstractButton) -> None:
+        """Push the Replace/Add/Multiply selection to the artisan brush operation."""
+        op = btn.property('op')
+        if op:
+            self._ctrl.set_artisan_operation(op)
 
     def _switch_to_panel(
         self,
@@ -2061,12 +2078,6 @@ class SlimfastWidget(QtWidgets.QWidget):
         generic artAttrContext).
         """
         super().enterEvent(event)
-
-        if self._is_picking:
-            if self._ctrl.active_source:
-                value = self._ctrl.active_source.get_artisan_paint_value()
-                self._set_weight_value_on_slider(value)
-            self._is_picking = False
 
         import time
         now = time.monotonic()

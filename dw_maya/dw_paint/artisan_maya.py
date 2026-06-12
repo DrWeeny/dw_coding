@@ -228,15 +228,43 @@ def set_artisan_value(value: float, context_name: Optional[str] = None) -> None:
     except Exception:
         pass
 
-def use_artisan_color_picker(ctx:str=None):
-    if ctx is None:
-        ctx = cmds.currentCtx()
-    cmds.artAttrCtx(ctx, edit=True, pickValue=True)
+# ---------------------------------------------------------------------------
+# Paint operation (Replace / Add / Scale)
+# ---------------------------------------------------------------------------
 
-def get_artisan_paint_value(ctx: str = None):
-    if ctx is None:
-        ctx = cmds.currentCtx()
-    return cmds.artAttrCtx(ctx, query=True, value=True)
+# UI-facing op name -> Maya's artAttrCtx/artUserPaintCtx selectedattroper value
+_OP_TO_ATTROPER = {
+    'replace':  'absolute',
+    'add':      'additive',
+    'multiply': 'scale',
+}
+
+
+def set_artisan_operation(op: str, context_name: Optional[str] = None) -> None:
+    """Set the brush operation on *context_name* (or ``currentCtx()``).
+
+    Maps the UI-facing ``'replace'`` / ``'add'`` / ``'multiply'`` operation
+    names to Maya's ``selectedattroper`` values (``absolute`` / ``additive`` /
+    ``scale``), which correspond to the Replace / Add / Scale buttons in the
+    Tool Settings "Operation" section.
+
+    Args:
+        op:           ``'replace'``, ``'add'``, or ``'multiply'``.
+        context_name: Target context instance name.  Defaults to ``currentCtx()``.
+    """
+    attroper = _OP_TO_ATTROPER.get(op)
+    if attroper is None:
+        return
+    context_name = _ensure_ctx(context_name)
+    if context_name is None:
+        return
+    cmd = _resolve_cmd(context_name)
+    try:
+        if cmd(context_name, exists=True):
+            cmd(context_name, edit=True, selectedattroper=attroper)
+    except Exception:
+        pass
+
 
 def get_art_use_ramp_color()->bool:
     # Check ramp not already injected

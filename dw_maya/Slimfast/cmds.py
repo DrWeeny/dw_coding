@@ -1,5 +1,5 @@
 from maya import cmds, mel
-from typing import List, Optional, Tuple
+from typing import Callable, List, Optional, Tuple
 
 from dw_maya.dw_decorators.dw_keep_selection import keep_selection
 from dw_maya.dw_decorators import singleUndoChunk, timeIt
@@ -16,6 +16,7 @@ from dw_maya.dw_paint.artisan_maya import (
     set_artisan_clamp as _artisan_set_clamp,
     set_artisan_color_range as _artisan_set_color_range,
     set_artisan_value as _artisan_set_value,
+    set_artisan_operation as _artisan_set_operation,
     flood_smooth_vtx_map,
 )
 from dw_maya.dw_nucleus_utils import NClothMap
@@ -1017,3 +1018,50 @@ class SlimfastController:
                             minvalue=new_min, maxvalue=new_max)
         except Exception as e:
             logger.debug(f"set_artisan_value failed: {e}")
+
+    def set_artisan_operation(self, op: str) -> None:
+        """Push the paint operation to the active artisan context.
+
+        Maps the UI's Replace / Add / Multiply choice to Maya's
+        Replace / Add / Scale brush operations via
+        :func:`~artisan_maya.set_artisan_operation`. This is one-way
+        (UI -> artisan) — the artisan context is not read back to sync the UI.
+        """
+        from dw_maya.dw_paint.vertex_color_alpha import VertexColorAlpha
+        if not self._require_active():
+            return
+        if isinstance(self._active, VertexColorAlpha):
+            ctx = CTX_ALPHA
+        else:
+            ctx = self._resolve_paint_ctx()
+        if ctx is None:
+            return
+        try:
+            _artisan_set_operation(op, ctx)
+        except Exception as e:
+            logger.debug(f"set_artisan_operation failed: {e}")
+
+    def start_weight_picker(self,
+                            on_picked: Callable[[int, float], None],
+                            on_cancel: Optional[Callable[[], None]] = None) -> None:
+        """Start a one-shot viewport eyedropper for the active map's weights.
+
+        Reads the active map's weights up front and hands off to
+        :func:`~dw_maya.dw_paint.picker.pick_vertex_weight`, which raycasts
+        the next viewport click and resolves the nearest vertex — the
+        artisan picker is not involved, so pick vs. cancel is always known.
+        """
+        if not self._require_active():
+            if on_cancel:
+                on_cancel()
+            return
+        try:
+            weights = self._active.get_weights()
+        except Exception as e:
+            logger.error(f"start_weight_picker: failed to read weights: {e}")
+            if on_cancel:
+                on_cancel()
+            return
+
+        from dw_maya.dw_paint.picker import pick_vertex_weight
+        pick_vertex_weight(self._active.mesh_name, weights, on_picked, on_cancel)

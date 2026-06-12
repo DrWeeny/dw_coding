@@ -221,14 +221,6 @@ class WeightSource(ABC):
     def get_artisan_name(self) -> str:
         return "artAttrContext"
 
-    def use_artisan_color_picker(self):
-        from dw_maya.dw_paint.artisan_maya import use_artisan_color_picker
-        use_artisan_color_picker()
-
-    def get_artisan_paint_value(self):
-        from dw_maya.dw_paint.artisan_maya import get_artisan_paint_value
-        return get_artisan_paint_value(self.get_artisan_name())
-
     def paint(self, *args, **kwargs):
         """Entry point — always chains pre → _paint → post."""
         self.prepaint(*args, **kwargs)
