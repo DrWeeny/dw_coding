@@ -36,6 +36,7 @@ except ImportError:
     from PySide2 import QtCore, QtWidgets
     from shiboken2 import wrapInstance, getCppPointer
 
+from dw_maya.dw_paint.artisan_maya import get_artisan_radius, set_artisan_radius
 from dw_maya.dw_paint.core.mesh_data import MeshDataFactory
 from dw_logger import get_logger
 
@@ -91,7 +92,7 @@ class _ViewportPickFilter(QtCore.QObject):
         self._on_picked = on_picked
         self._on_cancel = on_cancel
         app.installEventFilter(self)
-        _show_pick_hint()
+        self._original_radius = _show_pick_hint()
 
     def eventFilter(self, obj, event) -> bool:
         event_type = event.type()
@@ -105,7 +106,7 @@ class _ViewportPickFilter(QtCore.QObject):
         return False
 
     def _stop(self) -> None:
-        _clear_pick_hint()
+        _clear_pick_hint(self._original_radius)
         self._app.removeEventFilter(self)
         self.deleteLater()
 
@@ -139,20 +140,31 @@ class _ViewportPickFilter(QtCore.QObject):
         return True
 
 
-def _show_pick_hint() -> None:
-    """Switch to a crosshair cursor and show a viewport hint while picking."""
+def _show_pick_hint() -> Optional[float]:
+    """Switch to a crosshair cursor, collapse the brush gizmo, and show a viewport hint.
+
+    Shrinking the brush radius to ``0`` while picking makes it visually
+    obvious that the click won't paint. Returns the original radius (or
+    ``None`` if it couldn't be read) so :func:`_clear_pick_hint` can restore it.
+    """
     QtWidgets.QApplication.setOverrideCursor(QtCore.Qt.CrossCursor)
+    original_radius = get_artisan_radius()
+    if original_radius is not None:
+        set_artisan_radius(0.0)
     try:
         cmds.inViewMessage(
             assistMessage='Click on the mesh to pick a weight value  (Esc to cancel)',
             position=_HINT_POSITION, fade=False)
     except Exception:
         pass
+    return original_radius
 
 
-def _clear_pick_hint() -> None:
-    """Restore the cursor and clear the viewport hint."""
+def _clear_pick_hint(original_radius: Optional[float]) -> None:
+    """Restore the cursor, brush radius, and clear the viewport hint."""
     QtWidgets.QApplication.restoreOverrideCursor()
+    if original_radius is not None:
+        set_artisan_radius(original_radius)
     try:
         cmds.inViewMessage(clear=_HINT_POSITION)
     except Exception:

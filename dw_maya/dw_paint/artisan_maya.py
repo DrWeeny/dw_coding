@@ -228,6 +228,41 @@ def set_artisan_value(value: float, context_name: Optional[str] = None) -> None:
     except Exception:
         pass
 
+
+# ---------------------------------------------------------------------------
+# Brush radius
+# ---------------------------------------------------------------------------
+
+def get_artisan_radius(context_name: Optional[str] = None) -> Optional[float]:
+    """Return the brush radius of *context_name* (or ``currentCtx()``).
+
+    Returns ``None`` when the context does not exist or an error occurs.
+    """
+    context_name = _ensure_ctx(context_name)
+    if context_name is None:
+        return None
+    cmd = _resolve_cmd(context_name)
+    try:
+        if cmd(context_name, exists=True):
+            return cmd(context_name, query=True, radius=True)
+    except Exception:
+        pass
+    return None
+
+
+def set_artisan_radius(value: float, context_name: Optional[str] = None) -> None:
+    """Set the brush radius on *context_name* (or ``currentCtx()``)."""
+    context_name = _ensure_ctx(context_name)
+    if context_name is None:
+        return
+    cmd = _resolve_cmd(context_name)
+    try:
+        if cmd(context_name, exists=True):
+            cmd(context_name, edit=True, radius=value)
+    except Exception:
+        pass
+
+
 # ---------------------------------------------------------------------------
 # Paint operation (Replace / Add / Scale)
 # ---------------------------------------------------------------------------
