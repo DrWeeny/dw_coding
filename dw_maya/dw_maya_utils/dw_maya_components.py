@@ -307,10 +307,11 @@ def create_maya_ranges(indices: List[ComponentID]) -> List[ComponentRange]:
 
     return ranges
 
-def invert_selection(select=True, range_opti=True):
+def invert_selection(sel=None, select=True, range_opti=True):
     """
     Invert selection of components
     Args:
+        sel (list | None): Components to invert. Defaults to the current selection.
         select (bool): Select the inverted components
         range_opti (bool): Use range notation for optimization
     Returns:
@@ -318,7 +319,8 @@ def invert_selection(select=True, range_opti=True):
     """
     from dw_maya.dw_maya_utils import lsTr
 
-    sel = cmds.ls(sl=True, flatten=True)
+    if sel is None:
+        sel = cmds.ls(sl=True, flatten=True)
 
     if not sel:
         # No component selection — fall back to full vtx selection on selected objects

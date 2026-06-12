@@ -42,6 +42,7 @@ from dw_logger import get_logger
 logger = get_logger()
 
 _MAX_RAY_DISTANCE = 1000000.0
+_HINT_POSITION = 'topCenter'
 
 
 def pick_vertex_weight(mesh_name: str,
@@ -90,6 +91,7 @@ class _ViewportPickFilter(QtCore.QObject):
         self._on_picked = on_picked
         self._on_cancel = on_cancel
         app.installEventFilter(self)
+        _show_pick_hint()
 
     def eventFilter(self, obj, event) -> bool:
         event_type = event.type()
@@ -103,6 +105,7 @@ class _ViewportPickFilter(QtCore.QObject):
         return False
 
     def _stop(self) -> None:
+        _clear_pick_hint()
         self._app.removeEventFilter(self)
         self.deleteLater()
 
@@ -134,6 +137,26 @@ class _ViewportPickFilter(QtCore.QObject):
         else:
             self._on_picked(vtx_index, self._weights[vtx_index])
         return True
+
+
+def _show_pick_hint() -> None:
+    """Switch to a crosshair cursor and show a viewport hint while picking."""
+    QtWidgets.QApplication.setOverrideCursor(QtCore.Qt.CrossCursor)
+    try:
+        cmds.inViewMessage(
+            assistMessage='Click on the mesh to pick a weight value  (Esc to cancel)',
+            position=_HINT_POSITION, fade=False)
+    except Exception:
+        pass
+
+
+def _clear_pick_hint() -> None:
+    """Restore the cursor and clear the viewport hint."""
+    QtWidgets.QApplication.restoreOverrideCursor()
+    try:
+        cmds.inViewMessage(clear=_HINT_POSITION)
+    except Exception:
+        pass
 
 
 def _event_global_pos(event) -> QtCore.QPoint:

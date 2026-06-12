@@ -965,7 +965,7 @@ class SlimfastController:
             remapped = [max(min(v, 1.0), 0.0) for v in remapped]
             self._active.set_weights(remapped)
             logger.info(
-                f"remap_weights: [{old_min},{old_max}] → [{new_min},{new_max}] "
+                f"remap_weights: [{old_min},{old_max}] -> [{new_min},{new_max}] "
                 f"applied to {len(remapped)} weights."
             )
         except Exception as e:
