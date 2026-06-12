@@ -298,7 +298,7 @@ class SlimfastController:
                 cmds.select(vtx, replace=True)
                 logger.debug(
                     f"paint: converted {len(faces)} face(s) + {len(edges)} edge(s)"
-                    f" → {len(vtx)} vertices"
+                    f" -> {len(vtx)} vertices"
                 )
 
     @keep_selection
@@ -914,14 +914,14 @@ class SlimfastController:
                 transferred_count = np.sum(within_distance)
                 logger.info(
                     f"transfer_weights: {transferred_count} of {len(new_weights)} vertices transferred "
-                    f"from '{src_mesh}' → '{tgt_ws.node_name}' (max_distance={max_distance})"
+                    f"from '{src_mesh}' -> '{tgt_ws.node_name}' (max_distance={max_distance})"
                 )
             else:
                 # No distance limit — transfer all
                 new_weights = src_arr[nn_idx]
                 logger.info(
                     f"transfer_weights: {len(new_weights)} weights transferred "
-                    f"from '{src_mesh}' → '{tgt_ws.node_name}'"
+                    f"from '{src_mesh}' -> '{tgt_ws.node_name}'"
                 )
 
             tgt_ws.set_weights(new_weights.tolist())

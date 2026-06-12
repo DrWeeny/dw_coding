@@ -455,7 +455,7 @@ class SlimfastWidget(QtWidgets.QWidget):
         self._transfer_src_btn.setFixedSize(44, 44)
         self._transfer_src_btn.setText('Src')
         self._transfer_src_btn.setToolTip(
-            'Right-click → Store  to capture the source mesh weights.\n'
+            'Right-click -> Store  to capture the source mesh weights.\n'
             'Then switch to the target deformer and click Transfer.'
         )
         src_row.addWidget(self._transfer_src_btn)
@@ -989,7 +989,7 @@ class SlimfastWidget(QtWidgets.QWidget):
     # ------------------------------------------------------------------
 
     def _connect_signals(self) -> None:
-        # Controller → UI
+        # Controller -> UI
         self._signals.sources_changed.connect(self._on_sources_changed)
         self._signals.mesh_changed.connect(self._mesh_label.setText)
         self._signals.active_changed.connect(self._on_active_changed)
@@ -1616,9 +1616,9 @@ class SlimfastWidget(QtWidgets.QWidget):
         """Rebuild the flat source combo from (node_labels, map_lists).
 
         Layout rules:
-        - Single-map deformers (cluster, softMod, wire, …) → one row.
-        - BlendShape → one row; panel switches to BlendShapePanel automatically.
-        - NClothMap → one row per map (nucleus maps are numerous).
+        - Single-map deformers (cluster, softMod, wire, …) -> one row.
+        - BlendShape -> one row; panel switches to BlendShapePanel automatically.
+        - NClothMap -> one row per map (nucleus maps are numerous).
         - A disabled separator row separates deformer and nucleus groups.
 
         UserRole  stores (source_idx, default_map_name).
@@ -2073,7 +2073,7 @@ class SlimfastWidget(QtWidgets.QWidget):
     def enterEvent(self, event) -> None:
         """Throttled artisan-clamp sync on mouse enter.
 
-        Skipped when the active panel opts out via has_artisan_clamp() → False
+        Skipped when the active panel opts out via has_artisan_clamp() -> False
         (e.g. SkinPanel, which uses artAttrSkinPaintCtx instead of the
         generic artAttrContext).
         """
@@ -2114,7 +2114,7 @@ class SlimfastWidget(QtWidgets.QWidget):
             "<b>Copy / Paste:</b> transfer weights between sources<br>"
             "<b>Paint:</b> open Maya artisan for the active source<br>"
             "<b>Set 0 / 1:</b> flood all vertices<br>"
-            "<b>Weight slider → Set:</b> flood current selection<br>"
+            "<b>Weight slider -> Set:</b> flood current selection<br>"
             "<b>Smooth:</b> artisan path needs paint tool active;<br>"
             "&nbsp;&nbsp;&nbsp;&nbsp;numpy path works any time<br>"
             "<b>Select ALL:</b> select all vertices of the active mesh<br>"

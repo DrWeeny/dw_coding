@@ -328,8 +328,6 @@ def invert_selection(sel=None, select=True, range_opti=True):
         if objs:
             new_list = [f"{o}.vtx[:]" for o in objs]
             if select:
-                cmds.selectMode(component=True)
-                cmds.selectType(vertex=True)
                 cmds.select(new_list)
             return new_list
         return []
@@ -351,15 +349,6 @@ def invert_selection(sel=None, select=True, range_opti=True):
         else:
             new_list += inverse
     if select:
-        compo_kwargs = {}
-        if compo_type == "vtx":
-            compo_kwargs = {"vertex" : True}
-        elif compo_type == "e":
-            compo_kwargs = {"edge" : True}
-        elif compo_type == "f":
-            compo_kwargs = {"facet" : True}
-        cmds.selectMode(component=True)
-        cmds.selectType(**compo_kwargs)
         cmds.select(new_list, r=True)
     return new_list
 

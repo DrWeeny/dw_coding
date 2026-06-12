@@ -56,11 +56,29 @@ def _ensure_ctx(context_name: Optional[str] = None) -> Optional[str]:
 # Nucleus helpers (kept for backward-compat)
 # ---------------------------------------------------------------------------
 
+def artisan_default_open():
+    mel.eval('toolPropertyWindow;')
+    mel.eval('setToolTo "artAttrContext";')
+
 def artisan_nucx_open() -> None:
     """Open the Tool Settings window and switch to the nCloth paint context."""
     mel.eval('toolPropertyWindow;')
     mel.eval('setToolTo "artAttrNClothContext";')
 
+def get_current_artisan_map(context_name: Optional[str] = None) -> list:
+    """
+    Returns: [shape_name, mapname, nodetype]
+    """
+    context_name = _ensure_ctx(context_name)
+    if context_name is None:
+        return None, None, None
+    cmd = _resolve_cmd(context_name)
+
+    # Get the attribute being painted
+    painted_attr = cmd(context_name, query=True, attrSelected=True)
+    node_type, painted_node, painted_map = painted_attr.split(".")
+
+    return painted_node, painted_map, node_type
 
 def set_brush_val(val: float, mod: str = 'absolute',
                   context_name: str = CTX_DEFORMER) -> None:
@@ -228,6 +246,21 @@ def set_artisan_value(value: float, context_name: Optional[str] = None) -> None:
     except Exception:
         pass
 
+def use_artisan_color_picker(ctx:str=None):
+    if ctx is None:
+        ctx = cmds.currentCtx()
+    cmds.artAttrCtx(ctx, edit=True, pickValue=True)
+
+def get_artisan_paint_value(ctx:str=None):
+    if ctx is None:
+        ctx = cmds.currentCtx()
+    return cmds.artAttrCtx(ctx, query=True, value=True)
+
+def get_art_use_ramp_color()->bool:
+    # Check ramp not already injected
+    if cmds.checkBoxGrp('artisanRampUseRamp', exists=True):
+        return cmds.checkBoxGrp('artisanRampUseRamp', query=True, value1=True)
+    return False
 
 # ---------------------------------------------------------------------------
 # Brush radius
@@ -300,13 +333,6 @@ def set_artisan_operation(op: str, context_name: Optional[str] = None) -> None:
     except Exception:
         pass
 
-
-def get_art_use_ramp_color()->bool:
-    # Check ramp not already injected
-    if cmds.checkBoxGrp('artisanRampUseRamp', exists=True):
-        return cmds.checkBoxGrp('artisanRampUseRamp', query=True, value1=True)
-    return False
-
 def inject_ramp_into_artattr(use_ramp=1):
     """
     inject the mel ramp widget
@@ -326,7 +352,6 @@ def inject_ramp_into_artattr(use_ramp=1):
     if cmds.checkBoxGrp('artisanRampUseRamp', exists=True):
         mel.eval(f'artisanRampCallback("{artisan_command}")')
         cmds.checkBoxGrp('artisanRampUseRamp', edit=True, value1=use_ramp)
-        return
 
     # Inject inside the operation frame
     cmds.setParent(target_frame)
