@@ -383,7 +383,11 @@ class SlimfastController:
             weights = self._active.get_weights()
             if not weights:
                 return 0, 1
-            lo = round(min(weights)) if round(min(weights)) > 1 else 0
+            # Round both ends to 1 decimal — do NOT snap the low end to 0, so a
+            # map whose minimum is 0.1 (or 1 on a 1–10 mass map) reports its real
+            # minimum and the [min] select button targets those vertices instead
+            # of the w==0 ones.
+            lo = round(min(weights), 1)
             hi = round(max(weights), 1)
             return (lo, hi)
         except Exception as e:

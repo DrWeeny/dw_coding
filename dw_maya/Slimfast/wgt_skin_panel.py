@@ -29,6 +29,7 @@ Author: DrWeeny
 
 from __future__ import annotations
 
+import math
 import os
 from typing import Dict, Generator, List, Optional, TYPE_CHECKING
 
@@ -302,6 +303,39 @@ def _set_all_locks_recursive(
 
 
 # ---------------------------------------------------------------------------
+# Adaptive-precision spin box
+# ---------------------------------------------------------------------------
+
+class _AdaptiveDoubleSpinBox(QtWidgets.QDoubleSpinBox):
+    """Double spin box whose shown precision follows the entered value.
+
+    A plain ``QDoubleSpinBox`` rounds input to its fixed ``decimals()`` — so with
+    3 decimals, typing ``0.0005`` is lost.  Here ``decimals`` is set high enough
+    to accept very small values, but ``textFromValue`` strips trailing zeros so
+    the field stays compact and displays exactly the precision the user typed
+    (``0.05`` shows ``0.05``, ``0.0005`` shows ``0.0005``).
+
+    ``stepBy`` is magnitude-aware: one up/down nudge changes the value by one
+    unit just below its leading digit, so stepping is useful at both ``0.5`` and
+    ``0.0005`` instead of a single coarse step.
+    """
+
+    def textFromValue(self, value: float) -> str:
+        s = f'{value:.{self.decimals()}f}'
+        if '.' in s:
+            s = s.rstrip('0').rstrip('.')
+        return s or '0'
+
+    def stepBy(self, steps: int) -> None:
+        v = self.value()
+        if v <= 0.0:
+            step = self.singleStep()
+        else:
+            step = 10.0 ** (math.floor(math.log10(v)) - 1)
+        self.setValue(v + steps * step)
+
+
+# ---------------------------------------------------------------------------
 # Panel
 # ---------------------------------------------------------------------------
 
@@ -402,16 +436,17 @@ class SkinPanel(DeformerPanelBase):
         prune_lbl.setStyleSheet('color: #888888; font-size: 10px;')
         bot.addWidget(prune_lbl)
 
-        self._prune_spin = QtWidgets.QDoubleSpinBox()
+        self._prune_spin = _AdaptiveDoubleSpinBox()
         self._prune_spin.setRange(0.0, 1.0)
-        self._prune_spin.setDecimals(3)
-        self._prune_spin.setSingleStep(0.005)
+        self._prune_spin.setDecimals(6)        # accept values down to 0.000001
+        self._prune_spin.setSingleStep(0.0005)  # base step from 0
         self._prune_spin.setValue(0.0)
-        self._prune_spin.setFixedWidth(64)
+        self._prune_spin.setFixedWidth(70)
         self._prune_spin.setToolTip(
             'Flood (Set) skips verts whose current weight on the active '
             'influence is below this, so tiny garbage weights are not moved '
-            'onto an unlocked sibling.\n0.0 = off.'
+            'onto an unlocked sibling.\n0.0 = off. Shown precision follows the '
+            'value you type (e.g. 0.0005).'
         )
         bot.addWidget(self._prune_spin)
 
