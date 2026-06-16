@@ -672,8 +672,6 @@ class SkinCluster(Deformer):
         import numpy as np
         import maya.api.OpenMaya as om
         import maya.api.OpenMayaAnim as oma
-        import maya.OpenMaya as om1
-        import maya.OpenMayaAnim as oma1
 
         # ── API 2.0 read side — influenceObjects() is the ordering authority
         sel = om.MSelectionList()
@@ -772,38 +770,9 @@ class SkinCluster(Deformer):
         abs_cols = np.where(absorbers)[0]
         modified = [inf_idx] + abs_cols.tolist()   # W columns (API-2.0 order)
 
-        # ── API 1.0 write side ──────────────────────────────────────────
-        sel1 = om1.MSelectionList()
-        sel1.add(self.node_name)
-        skin_obj1 = om1.MObject()
-        sel1.getDependNode(0, skin_obj1)
-        skin_fn1 = oma1.MFnSkinCluster(skin_obj1)
-
-        mesh_sel1 = om1.MSelectionList()
-        mesh_sel1.add(self.mesh_name)
-        dag1 = om1.MDagPath()
-        mesh_sel1.getDagPath(0, dag1)
-        dag1.extendToShape()
-
-        comp_fn1 = om1.MFnSingleIndexedComponent()
-        components1 = comp_fn1.create(om1.MFn.kMeshVertComponent)
-        comp_fn1.setCompleteData(n_vtx)
-
-        # Resolve modified columns into API 1.0's own influence order by name.
-        paths1 = om1.MDagPathArray()
-        skin_fn1.influenceObjects(paths1)
-        name_to_idx1 = {paths1[i].partialPathName(): i
-                        for i in range(paths1.length())}
-
-        inf_arr = om1.MIntArray()
-        for c in modified:
-            nm = inf_names[c]
-            idx1 = name_to_idx1.get(nm, name_to_idx1.get(nm.split('|')[-1]))
-            if idx1 is None:
-                raise RuntimeError(
-                    f"_lock_aware_write: influence '{nm}' not found in API 1.0 "
-                    f"order")
-            inf_arr.append(int(idx1))
+        # Names of the modified columns (API-2.0 order) — the shared writer
+        # resolves them to API 1.0 physical influence indices internally.
+        modified_names = [inf_names[c] for c in modified]
 
         def _redistribute(W):
             """Set target on vid_arr, move the delta onto unlocked siblings,
@@ -837,10 +806,9 @@ class SkinCluster(Deformer):
 
         def _write(W):
             vals = W[:, modified].reshape(-1)
-            wt_arr = om1.MDoubleArray(int(vals.size))
-            for i in range(vals.size):
-                wt_arr.set(float(vals[i]), i)
-            skin_fn1.setWeights(dag1, components1, inf_arr, wt_arr, False)
+            skinning.write_influence_columns(
+                self.node_name, self.mesh_name, n_vtx,
+                modified_names, vals, normalize=False)
 
         # Disable interactive normalisation for the whole write/verify loop.
         norm_attr = f'{self.node_name}.normalizeWeights'

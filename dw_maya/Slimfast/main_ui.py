@@ -1538,20 +1538,9 @@ class SlimfastWidget(QtWidgets.QWidget):
         if value is None:
             value = self._weight_slider.value
         self._ctrl.set_weight(value, self._current_op())
-        # Keep artisan brush in sync with the last-used value
+        # Keep artisan brush in sync with the last-used value — the UI drives
+        # the artisan one-way, and only on an explicit Set (not on every edit).
         self._ctrl.set_artisan_value(value)
-
-    @Slot()
-    def _on_set_weight(self, value: float = None) -> None:
-        """Relay value and op mode to the controller.
-
-        Args:
-            value: Explicit value (used by Set 0 / Set 1).
-                   Falls back to the slider value when omitted.
-        """
-        if value is None:
-            value = self._weight_slider.value
-        self._ctrl.set_weight(value, self._current_op())
 
     @Slot(int)
     def _on_tol_slider_changed(self, int_val: int) -> None:

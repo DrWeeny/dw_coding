@@ -157,6 +157,88 @@ def compute_weight_delta(bone_arrays: Dict[str, List[float]],
 
 
 # ---------------------------------------------------------------------------
+# write_influence_columns — shared low-level API 1.0 setWeights primitive
+# ---------------------------------------------------------------------------
+
+def write_influence_columns(skin_node: str,
+                            mesh_shape: str,
+                            n_vtx: int,
+                            influence_names: List[str],
+                            flat_values,
+                            normalize: bool = False) -> None:
+    """Write a set of influence columns for ALL vertices in one API 1.0 call.
+
+    Single low-level writer shared by
+    :meth:`dw_skinning_class.SkinCluster._lock_aware_write` (flood / smooth /
+    mirror / clipboard) and :func:`apply_weight_delta` (jiggle / soft transfer).
+    API 2.0's multi-influence ``setWeights`` overload mis-dispatches the
+    ``MIntArray`` + ``MDoubleArray`` case regardless of argument wrapping, so the
+    API 1.0 overload is used here.
+
+    Args:
+        skin_node:       skinCluster node name.
+        mesh_shape:      Deformed mesh shape or transform name (extended to shape).
+        n_vtx:           Vertex count — a complete vertex component is built.
+        influence_names: Names of the columns being written, in the SAME order as
+                         the value rows.  Resolved to API 1.0 physical
+                         ``influenceObjects()`` indices by exact-then-leaf match,
+                         so long DAG paths, short names and namespaced names all
+                         work.
+        flat_values:     Row-major flat sequence of length
+                         ``n_vtx * len(influence_names)``:
+                         ``[v0_c0, v0_c1, …, vN_cM-1]``.  Python list or numpy
+                         array.
+        normalize:       ``setWeights`` normalize flag (default ``False`` — the
+                         callers manage normalisation themselves).
+
+    Raises:
+        RuntimeError: When an influence name cannot be resolved on *skin_node*.
+    """
+    import maya.OpenMaya as om1       # API 1.0 — correct MIntArray dispatch
+    import maya.OpenMayaAnim as oma1
+
+    sel = om1.MSelectionList()
+    sel.add(skin_node)
+    skin_obj = om1.MObject()
+    sel.getDependNode(0, skin_obj)
+    skin_fn = oma1.MFnSkinCluster(skin_obj)
+
+    # Influence name → API 1.0 physical index
+    paths = om1.MDagPathArray()
+    skin_fn.influenceObjects(paths)
+    name_to_idx = {paths[i].partialPathName(): i for i in range(paths.length())}
+
+    inf_arr = om1.MIntArray()
+    for nm in influence_names:
+        idx = name_to_idx.get(nm)
+        if idx is None:
+            idx = name_to_idx.get(nm.split('|')[-1])
+        if idx is None:
+            raise RuntimeError(
+                f"write_influence_columns: influence '{nm}' not found in "
+                f"'{skin_node}' API 1.0 influence order"
+            )
+        inf_arr.append(int(idx))
+
+    mesh_sel = om1.MSelectionList()
+    mesh_sel.add(mesh_shape)
+    dag = om1.MDagPath()
+    mesh_sel.getDagPath(0, dag)
+    dag.extendToShape()
+
+    comp_fn = om1.MFnSingleIndexedComponent()
+    components = comp_fn.create(om1.MFn.kMeshVertComponent)
+    comp_fn.setCompleteData(n_vtx)
+
+    n = len(flat_values)
+    wt_arr = om1.MDoubleArray(n)
+    for i in range(n):
+        wt_arr.set(float(flat_values[i]), i)
+
+    skin_fn.setWeights(dag, components, inf_arr, wt_arr, normalize)
+
+
+# ---------------------------------------------------------------------------
 # apply_weight_delta
 # ---------------------------------------------------------------------------
 
@@ -236,16 +318,10 @@ def apply_weight_delta(skin_node: str,
             "soft_mask was probably built from a different mesh."
         )
 
-    # Explicit complete-vertex component — avoids the deformer-set member
-    # mismatch that causes kFailure when partial membership is involved.
-    fn_comp = om1.MFnSingleIndexedComponent()
-    components = fn_comp.create(om1.MFn.kMeshVertComponent)
-    fn_comp.setCompleteData(vtx_count)
-
     # ------------------------------------------------------------------ #
-    # 3. Build MIntArray — physical indices of modified influences only
-    #    (jiggle + donor bones that actually exist in this skin cluster)
-    #    Keys in bones_arr may be long DAG paths — normalise to partial name.
+    # 3. Resolve the modified influence names — jiggle + the donor bones that
+    #    actually exist in this skin cluster.  Keys in bones_arr may be long
+    #    DAG paths; write_influence_columns normalises them to partial names.
     # ------------------------------------------------------------------ #
     def _resolve_inf(name: str) -> int:
         """Return physical index for name, trying long then leaf form."""
@@ -259,12 +335,6 @@ def apply_weight_delta(skin_node: str,
         b for b in bones_arr if _resolve_inf(b) is not None
     ]
     n_mod = len(mod_names)
-
-    inf_arr = om1.MIntArray()
-    inf_arr.setLength(n_mod)
-    inf_arr.set(jiggle_phys, 0)
-    for i, name in enumerate(mod_names[1:], start=1):
-        inf_arr.set(_resolve_inf(name), i)
 
     # ------------------------------------------------------------------ #
     # 4. Read the CURRENT full weight array so we have a safe baseline.
@@ -304,12 +374,11 @@ def apply_weight_delta(skin_node: str,
     #    For vertices OUTSIDE the soft selection:
     #       - copy current value from getWeights so nothing changes.
     # ------------------------------------------------------------------ #
-    wt_arr = om1.MDoubleArray()
-    wt_arr.setLength(vtx_count * n_mod)
+    wt_flat: List[float] = [0.0] * (vtx_count * n_mod)
 
     for vi in range(vtx_count):
         base_mod = vi * n_mod
-        base_total = vi *    n_total_infs
+        base_total = vi * n_total_infs
         affected = jiggle_arr[vi] > 0.0
 
         for ii, name in enumerate(mod_names):
@@ -326,12 +395,14 @@ def apply_weight_delta(skin_node: str,
                     _resolve_inf(name)
                 )
                 w = current_wt[base_total + col] if col is not None else 0.0
-            wt_arr.set(w, base_mod + ii)
+            wt_flat[base_mod + ii] = w
 
     # ------------------------------------------------------------------ #
-    # 6. Single C++ call — no per-vertex Python loop, no skinPercent
+    # 6. Single C++ call via the shared API 1.0 writer — no skinPercent.
+    #    mod_names are resolved to physical influence indices inside.
     # ------------------------------------------------------------------ #
-    skin_fn.setWeights(dag_path, components, inf_arr, wt_arr, False)
+    write_influence_columns(skin_node, shape, vtx_count, mod_names, wt_flat,
+                            normalize=False)
 
     # Optional drift cleanup (floating-point only — our math is already exact)
     if normalize:
