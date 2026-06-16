@@ -177,9 +177,11 @@ class SkinCluster(Deformer):
 
         joint name
             Writes the per-vertex weight column for that influence via
-            ``MFnSkinCluster.setWeights`` with ``normalize=True`` so Maya
-            redistributes the remaining weight across the other (unlocked)
-            influences.  The skin cluster is always left normalised.
+            ``MFnSkinCluster.setWeights`` with ``normalize=True``.  This is the
+            generic array path used by smooth / mirror / clipboard ops.  For a
+            *flood* that must push freed weight onto the unlocked parent the way
+            Maya does, use :meth:`flood` (``cmds.skinPercent``) instead — it
+            applies Maya's own lock-aware normalisation on a vertex selection.
 
         ``'weightList'``
             Not implemented — the full packed write requires careful index
@@ -209,14 +211,19 @@ class SkinCluster(Deformer):
     def _set_influence_weights_column(self,
                                       influence_name: str,
                                       weights: List[float]) -> None:
-        """Write per-vertex weights for one influence via the API.
+        """Write per-vertex weights for one influence, lock-aware.
 
-        Uses ``MFnSkinCluster.setWeights`` (API 2.0) with ``normalize=True``
-        so Maya redistributes the remaining weight across unlocked influences
-        automatically.
+        Routes through :meth:`_lock_aware_write` so the freed/borrowed weight is
+        moved **only onto the unlocked sibling influences** (locked influences
+        untouched) exactly like :meth:`flood` — this is the generic array writer
+        for smooth / mirror / clipboard / transfer / remap.
 
-        Only one column is written per call — all other influences are
-        untouched by the write itself; Maya's normalisation adjusts them.
+        If the lock-aware path cannot run (returns ``False`` or raises) it falls
+        back to the legacy single-column ``MFnSkinCluster.setWeights`` (API 2.0)
+        with ``normalize=True``.  That fallback only *scales* the other
+        influences — it cannot lift weight onto influences that are currently 0,
+        so it does not respect locks the way the lock-aware path does; it exists
+        purely as a safety net so weight ops never silently no-op.
 
         Args:
             influence_name: Short or long name of the influence joint.
@@ -225,6 +232,17 @@ class SkinCluster(Deformer):
         Raises:
             ValueError: When *influence_name* is not an influence of this node.
         """
+        # Preferred path — lock-aware redistribution (shared with flood()).
+        try:
+            if self._lock_aware_write(influence_name, None, list(weights)):
+                return
+        except Exception as e:
+            logger.debug(
+                f"_set_influence_weights_column: lock-aware path failed, "
+                f"falling back to scale write — {e}"
+            )
+
+        # ── Fallback: legacy single-column scale write (API 2.0) ────────────
         import maya.api.OpenMaya as om
         import maya.api.OpenMayaAnim as oma
 
@@ -246,14 +264,11 @@ class SkinCluster(Deformer):
         dag = sel.getDagPath(1)
         dag.extendToShape()
 
-        # setWeights(dagPath, components, influenceIndices, weights, normalize)
-        #   om.MObject()        → "all vertices" (same convention as getWeights)
-        #   inf_indices=[idx]   → only the target influence column
-        #   weights length      → vtx_count × len(inf_indices) == vtx_count
-        #   normalize=True      → redistribute remainder across unlocked infs
+        # Single-influence write: the API 2.0 setWeights overload dispatches
+        # correctly for one influence (unlike the multi-influence MIntArray case
+        # used by flood(), which must use API 1.0).
         inf_indices = om.MIntArray([inf_idx])
         wt_array = om.MDoubleArray(weights)
-
         skin_fn.setWeights(dag, om.MObject(), inf_indices, wt_array, True)
 
         logger.debug(
@@ -530,5 +545,383 @@ class SkinCluster(Deformer):
         self.use_map(bone)
         self._paint()
 
+    def flood(self,
+              value: float,
+              components: Optional[List] = None,
+              operation: str = 'replace',
+              prune: float = 0.0) -> bool:
+        """Flood the active influence to *value* with deterministic, lock-aware
+        redistribution onto the unlocked sibling influences.
+
+        For each affected vertex the active influence is set to *value* and the
+        freed (or borrowed) weight is moved **only onto the other unlocked
+        influences**, keeping the per-vertex total at 1.0 and leaving every
+        locked influence (``lockInfluenceWeights``) byte-for-byte untouched.
+        With a single other unlocked influence (the typical "unlock parent +
+        child, flood child to 0" case) all the weight lands on that parent.
+
+        Implementation notes
+        ---------------------
+        * **API 1.0 write.**  API 2.0's ``MFnSkinCluster.setWeights``
+          mis-dispatches the multi-influence ``MIntArray``+``MDoubleArray``
+          overload (see ``dw_skinning.apply_weight_delta``); the API 1.0 overload
+          writes the correct columns.  Influence indices are resolved by NAME
+          into API 1.0's own ``influenceObjects()`` order (the two APIs need not
+          enumerate identically).
+        * **Normalisation off during the write.**  With interactive normalise on
+          (``normalizeWeights=1``) setWeights validates incrementally and may
+          reject the write; our matrix is already normalised, so it is disabled
+          for the whole operation and restored after.
+        * **Verify-and-retry.**  The first write on a freshly loaded skin can
+          land incompletely (leaving some vertices at sum 2.0).  Each pass reads
+          the live weights, recomputes and rewrites, then verifies the target is
+          at *value* and rows sum to 1.0 — repeating (up to 3×) does internally
+          what applying the flood twice by hand does.
+        * **Why not ``cmds.skinPercent(normalize=True)``?**  It redistributes
+          proportionally to *every* influence and leaves residual micro-weights,
+          and it overrides the target's lock.
+
+        Flooding a *locked* active influence is a no-op (returns ``True``),
+        matching Maya's Paint Skin Weights.  ``'add'``/``'multiply'`` return
+        ``False`` so the caller can fall back to the generic array path.
+
+        Args:
+            value:      Weight value to set on the active influence.
+            components: Vertex component strings (``'mesh.vtx[i]'``) or integer
+                        indices.  ``None`` floods the whole mesh.
+            operation:  Only ``'replace'`` is handled.
+            prune:      Skip vertices whose current target weight is below this
+                        threshold, so negligible "garbage" weights are not
+                        relocated onto a sibling (the blue-noise specks on dirty
+                        rigs).  ``0.0`` (default) affects every selected vertex.
+
+        Returns:
+            ``True`` when handled (flood applied or locked-influence no-op),
+            ``False`` when the caller should fall back.
+        """
+        if operation != 'replace':
+            return False
+
+        influence = self._current_map
+        if not influence or influence == 'weightList':
+            return False
+
+        try:
+            return self._lock_aware_write(influence, components, float(value),
+                                          prune=prune)
+        except Exception as e:
+            import traceback
+            logger.debug(
+                f"SkinCluster.flood failed, will fall back: {e}\n"
+                f"{traceback.format_exc()}"
+            )
+            return False
+
+    def _lock_aware_write(self,
+                          influence: str,
+                          vids: Optional[List] = None,
+                          targets=0.0,
+                          prune: float = 0.0) -> bool:
+        """Set *influence* to *targets* on *vids*, redistributing lock-aware.
+
+        Shared core of :meth:`flood` and :meth:`_set_influence_weights_column`:
+        every skinCluster weight write (flood, smooth, mirror, paste, transfer …)
+        routes through here so the freed/borrowed weight is moved **only onto the
+        unlocked sibling influences**, keeping each per-vertex total at 1.0 and
+        leaving every locked influence (``lockInfluenceWeights``) untouched.
+
+        Implementation notes
+        ---------------------
+        * **API 1.0 write.**  API 2.0's ``MFnSkinCluster.setWeights``
+          mis-dispatches the multi-influence ``MIntArray``+``MDoubleArray``
+          overload (see ``dw_skinning.apply_weight_delta``); the API 1.0 overload
+          writes the correct columns.  Influence indices are resolved by NAME
+          into API 1.0's own ``influenceObjects()`` order (the two APIs need not
+          enumerate identically).
+        * **Normalisation off during the write.**  With interactive normalise on
+          (``normalizeWeights=1``) setWeights validates incrementally and may
+          reject the write; our matrix is already normalised, so it is disabled
+          for the whole operation and restored after.
+        * **dgdirty after each write.**  We write with API 1.0 but verify-read
+          with API 2.0; the two function sets keep independent caches, so without
+          dirtying the node the readback (and the viewport) can show stale,
+          pre-write values — which historically looked like an "incomplete first
+          write" that needed applying twice.  ``cmds.dgdirty`` forces the write
+          to commit before we re-read.
+        * **Verify-and-retry.**  A safety net: each pass reads the live weights,
+          recomputes and rewrites, then verifies the target is at *targets* and
+          rows sum to 1.0 (up to 3×).  With the dgdirty commit this should now
+          converge on pass 1 — watch the per-pass debug log to confirm.
+
+        Args:
+            influence: Active influence name (short, long, or namespaced).
+            vids:      Vertex component strings (``'mesh.vtx[i]'``) or integer
+                       indices.  ``None`` affects the whole mesh.
+            targets:   Either a scalar applied to every affected vertex (flood),
+                       or a full-length per-vertex array indexed by absolute
+                       vertex id (smooth / mirror / clipboard).
+            prune:     Skip affected vertices whose CURRENT weight on *influence*
+                       is below this threshold, so negligible "garbage" weights
+                       are not relocated onto a sibling (the blue-noise specks on
+                       dirty rigs).  ``0.0`` (default) affects every vertex.
+
+        Returns:
+            ``True`` when handled (write applied or locked-influence no-op),
+            ``False`` when the caller should fall back to its generic path.
+        """
+        import numpy as np
+        import maya.api.OpenMaya as om
+        import maya.api.OpenMayaAnim as oma
+        import maya.OpenMaya as om1
+        import maya.OpenMayaAnim as oma1
+
+        # ── API 2.0 read side — influenceObjects() is the ordering authority
+        sel = om.MSelectionList()
+        sel.add(self.node_name)
+        skin_fn = oma.MFnSkinCluster(sel.getDependNode(0))
+        sel.add(self.mesh_name)
+        dag = sel.getDagPath(1)
+        dag.extendToShape()
+
+        inf_objs = skin_fn.influenceObjects()
+        n_inf = len(inf_objs)
+        inf_names = [inf_objs[i].partialPathName() for i in range(n_inf)]
+
+        def _leaf(nm: str) -> str:
+            return nm.split('|')[-1].split(':')[-1]
+
+        inf_idx = None
+        for i, nm in enumerate(inf_names):
+            if nm == influence or _leaf(nm) == _leaf(influence):
+                inf_idx = i
+                break
+        if inf_idx is None:
+            logger.warning(
+                f"SkinCluster._lock_aware_write: influence '{influence}' not "
+                f"found among {inf_names[:5]}{'…' if n_inf > 5 else ''}"
+            )
+            return False
+
+        def _read_matrix():
+            w, num = skin_fn.getWeights(dag, om.MObject())
+            nv = len(w) // num if num else 0
+            if nv == 0 or num != n_inf:
+                return None, 0
+            return np.asarray(w, dtype=float).reshape(nv, n_inf), nv
+
+        W0, n_vtx = _read_matrix()
+        if W0 is None:
+            return False
+
+        # Lock state per influence (same order; missing attr → unlocked)
+        locked = np.array([
+            bool(cmds.getAttr(f'{nm}.lockInfluenceWeights'))
+            if cmds.objExists(f'{nm}.lockInfluenceWeights') else False
+            for nm in inf_names
+        ], dtype=bool)
+
+        if locked[inf_idx]:
+            logger.warning(
+                f"SkinCluster._lock_aware_write: influence '{influence}' is "
+                f"locked — nothing to do (unlock it to edit)"
+            )
+            return True
+
+        # Affected vertices
+        if vids is None:
+            vid_arr = np.arange(n_vtx)
+        else:
+            vid_arr = np.array(sorted({
+                int(c.split('[')[1].split(']')[0]) if isinstance(c, str)
+                else int(c)
+                for c in vids
+            }), dtype=int)
+            vid_arr = vid_arr[(vid_arr >= 0) & (vid_arr < n_vtx)]
+            if vid_arr.size == 0:
+                return False
+
+        # Per-vertex target for the active influence: scalar broadcast (flood) or
+        # a full-length array indexed by absolute vertex id (smooth / mirror).
+        if np.isscalar(targets):
+            tgt_full = None
+        else:
+            tgt_full = np.asarray(targets, dtype=float)
+            if tgt_full.size != n_vtx:
+                logger.warning(
+                    f"SkinCluster._lock_aware_write: targets length "
+                    f"{tgt_full.size} != vtx count {n_vtx} on '{self.node_name}'"
+                )
+                return False
+
+        # Prune: ignore verts whose target weight is negligible garbage so we
+        # never relocate sub-threshold weight onto a sibling (blue noise).
+        if prune and prune > 0:
+            vid_arr = vid_arr[W0[vid_arr, inf_idx] >= prune]
+            if vid_arr.size == 0:
+                logger.debug(
+                    f"SkinCluster._lock_aware_write: nothing above prune={prune} "
+                    f"for '{influence}'"
+                )
+                return True
+
+        target_per_vid = (np.full(vid_arr.size, float(targets))
+                          if tgt_full is None else tgt_full[vid_arr])
+
+        absorbers = (~locked).copy()
+        absorbers[inf_idx] = False
+        abs_cols = np.where(absorbers)[0]
+        modified = [inf_idx] + abs_cols.tolist()   # W columns (API-2.0 order)
+
+        # ── API 1.0 write side ──────────────────────────────────────────
+        sel1 = om1.MSelectionList()
+        sel1.add(self.node_name)
+        skin_obj1 = om1.MObject()
+        sel1.getDependNode(0, skin_obj1)
+        skin_fn1 = oma1.MFnSkinCluster(skin_obj1)
+
+        mesh_sel1 = om1.MSelectionList()
+        mesh_sel1.add(self.mesh_name)
+        dag1 = om1.MDagPath()
+        mesh_sel1.getDagPath(0, dag1)
+        dag1.extendToShape()
+
+        comp_fn1 = om1.MFnSingleIndexedComponent()
+        components1 = comp_fn1.create(om1.MFn.kMeshVertComponent)
+        comp_fn1.setCompleteData(n_vtx)
+
+        # Resolve modified columns into API 1.0's own influence order by name.
+        paths1 = om1.MDagPathArray()
+        skin_fn1.influenceObjects(paths1)
+        name_to_idx1 = {paths1[i].partialPathName(): i
+                        for i in range(paths1.length())}
+
+        inf_arr = om1.MIntArray()
+        for c in modified:
+            nm = inf_names[c]
+            idx1 = name_to_idx1.get(nm, name_to_idx1.get(nm.split('|')[-1]))
+            if idx1 is None:
+                raise RuntimeError(
+                    f"_lock_aware_write: influence '{nm}' not found in API 1.0 "
+                    f"order")
+            inf_arr.append(int(idx1))
+
+        def _redistribute(W):
+            """Set target on vid_arr, move the delta onto unlocked siblings,
+            snap each affected row to sum 1.0.  Mutates W."""
+            Wm = W[vid_arr].copy()
+            bdg = (1.0 - Wm[:, locked].sum(axis=1)
+                   if locked.any() else np.ones(Wm.shape[0]))
+            bdg = np.clip(bdg, 0.0, None)
+            tt = np.clip(target_per_vid, 0.0, bdg)
+            Wm[:, inf_idx] = tt
+            rem = bdg - tt
+            if abs_cols.size:
+                cur = Wm[:, abs_cols]
+                cur_sum = cur.sum(axis=1)
+                has = cur_sum > 1e-9
+                prop = np.where(
+                    has[:, None],
+                    cur / np.where(cur_sum[:, None] > 1e-9, cur_sum[:, None], 1.0),
+                    1.0 / abs_cols.size,
+                )
+                Wm[:, abs_cols] = prop * rem[:, None]
+            else:
+                Wm[:, inf_idx] = bdg
+            resid = 1.0 - Wm.sum(axis=1)
+            rws = np.arange(Wm.shape[0])
+            primary = (abs_cols[np.argmax(Wm[:, abs_cols], axis=1)]
+                       if abs_cols.size else np.full(Wm.shape[0], inf_idx))
+            Wm[rws, primary] = np.clip(Wm[rws, primary] + resid, 0.0, None)
+            W[vid_arr] = Wm
+            return W
+
+        def _write(W):
+            vals = W[:, modified].reshape(-1)
+            wt_arr = om1.MDoubleArray(int(vals.size))
+            for i in range(vals.size):
+                wt_arr.set(float(vals[i]), i)
+            skin_fn1.setWeights(dag1, components1, inf_arr, wt_arr, False)
+
+        # Disable interactive normalisation for the whole write/verify loop.
+        norm_attr = f'{self.node_name}.normalizeWeights'
+        prev_norm = None
+        try:
+            prev_norm = cmds.getAttr(norm_attr)
+            cmds.setAttr(norm_attr, 0)
+        except Exception:
+            prev_norm = None
+
+        converged = False
+        tol = 1e-3
+        tgt_ceiling = float(np.max(target_per_vid)) if target_per_vid.size else 0.0
+        try:
+            for attempt in range(3):
+                # Always read the LIVE weights: a prior failed pass may have
+                # left the skin un-normalised, and recomputing from the live
+                # state + rewriting is exactly what "apply twice" does.
+                W, _ = _read_matrix()
+                if W is None:
+                    break
+                _write(_redistribute(W))
+
+                # Force the API 1.0 write to commit before the API 2.0 readback;
+                # without this the verify can read stale pre-write weights.
+                try:
+                    cmds.dgdirty(self.node_name)
+                except Exception:
+                    pass
+
+                Wc, _ = _read_matrix()
+                if Wc is None:
+                    break
+                tgt_max = float(Wc[vid_arr, inf_idx].max())
+                rs = Wc[vid_arr].sum(axis=1)
+                converged = (tgt_max <= tgt_ceiling + tol
+                             and rs.max() <= 1.0 + tol
+                             and rs.min() >= 1.0 - tol)
+                logger.debug(
+                    f"SkinCluster._lock_aware_write pass {attempt + 1}: "
+                    f"tgt_max={tgt_max:.5f}, rows=[{rs.min():.4f}, "
+                    f"{rs.max():.4f}], ok={converged}"
+                )
+                if converged:
+                    break
+        finally:
+            if prev_norm is not None:
+                try:
+                    cmds.setAttr(norm_attr, prev_norm)
+                except Exception:
+                    pass
+
+        if not converged:
+            logger.warning(
+                f"SkinCluster._lock_aware_write: '{influence}' did not converge "
+                f"after retries on '{self.node_name}' — weights may be off"
+            )
+
+        # Recolour the Paint Skin Weights viewport (API write bypasses artisan)
+        try:
+            ctx = self.get_artisan_name()
+            if cmds.currentCtx() == ctx:
+                mel.eval(f'artSkinInflListChanged {ctx}')
+        except Exception:
+            pass
+
+        logger.debug(
+            f"SkinCluster._lock_aware_write: '{influence}' on {vid_arr.size} "
+            f"vtx → {abs_cols.size} unlocked sibling(s), converged={converged}, "
+            f"prune={prune} on '{self.node_name}'"
+        )
+        return True
+
 # registry the node to lsNode
 _node_registry.register_type('skinCluster', SkinCluster)
+
+# This module provides the full SkinCluster implementation (per-influence
+# get/set weights, use_map, flood, …).  make_deformer() resolves classes through
+# dw_deformer_class._DEFORMER_CLASSES, which still maps 'skinCluster' to the
+# lightweight stub defined in that module — claim the slot so make_deformer()
+# (and resolve_weight_sources / Slimfast) returns this implementation.  Safe on
+# reload: re-running this module body re-applies the binding.
+import dw_maya.dw_deformers.dw_deformer_class as _deformer_class
+_deformer_class._DEFORMER_CLASSES['skinCluster'] = SkinCluster

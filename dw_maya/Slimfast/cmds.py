@@ -58,6 +58,12 @@ class SlimfastController:
         # whatever is selected in Maya at Apply-time.
         self._mask_vtx_ids: Optional[List[int]] = None
 
+        # skinCluster flood prune threshold — skip vertices whose current weight
+        # on the active influence is below this, so negligible "garbage" weights
+        # are not relocated onto an unlocked sibling.  0.0 = off (default).
+        # Set from the SkinPanel "Prune below" field via set_prune().
+        self._prune: float = 0.0
+
         # Artisan clamp state — kept in sync with set_artisan_clamp so that
         # bulk numpy operations (flood, smooth) can apply the same limits.
         self._clamp_mode: str = 'none'   # 'none' | 'lower' | 'upper' | 'both'
@@ -147,6 +153,16 @@ class SlimfastController:
         except Exception:
             node_type = '?'
         return f"[{node_type}] {source.node_name}"
+
+    def set_prune(self, value: float) -> None:
+        """Set the skinCluster flood prune threshold (0.0 = off).
+
+        Verts whose current weight on the active influence is below *value* are
+        skipped by :meth:`set_weight`'s flood, so negligible micro-weights are
+        not relocated onto an unlocked sibling.  Pushed from the SkinPanel
+        "Prune below" field; only affects the skinCluster flood path.
+        """
+        self._prune = max(0.0, float(value))
 
     def _require_active(self) -> bool:
         if self._active is None or self._active_map is None:
@@ -325,15 +341,33 @@ class SlimfastController:
             sel = [i for i in sel_all if "." in i]
         else:
             sel = sel_obj
+
+        vtx: List[str] = []
         if sel:
             vtx = cmds.polyListComponentConversion(sel, toVertex=True)
             vtx = cmds.ls(vtx, fl=True) or []
-            if vtx:
-                indices = extract_id(vtx)
-                apply_operation(self._active, 'flood', value=value, op=op,
-                                mask=indices, **self._get_clamp_kwargs())
-                logger.debug(f"set_weight — applied {op} on {len(indices)} vertices")
+
+        # skinCluster 'replace' flood → use Maya's own lock-aware normalisation
+        # via cmds.skinPercent, restricted to the selected vertices (or the whole
+        # mesh when nothing is selected).  This pushes a flooded-to-zero weight
+        # back onto the unlocked parent the way painting by hand does, which the
+        # generic setWeights(normalize=True) array path cannot.  Falls back below
+        # for add/multiply, non-skin sources, or any failure.
+        flood = getattr(self._active, 'flood', None)
+        if op == 'replace' and flood is not None:
+            if flood(value, components=(vtx or None), prune=self._prune):
+                logger.debug(
+                    f"set_weight — skinCluster flood ({value}) on "
+                    f"{len(vtx) if vtx else 'all'} vertices, prune={self._prune}"
+                )
                 return
+
+        if vtx:
+            indices = extract_id(vtx)
+            apply_operation(self._active, 'flood', value=value, op=op,
+                            mask=indices, **self._get_clamp_kwargs())
+            logger.debug(f"set_weight — applied {op} on {len(indices)} vertices")
+            return
         apply_operation(self._active, 'flood', value=value, op=op,
                         **self._get_clamp_kwargs())
         logger.debug(f"set_weight — applied {op} on all vertices")

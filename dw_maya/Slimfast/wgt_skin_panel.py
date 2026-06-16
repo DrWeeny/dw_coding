@@ -347,6 +347,7 @@ class SkinPanel(DeformerPanelBase):
         self._node_name:  str       = ''
         self._influences: List[str] = []
         self._source                = None
+        self._ctrl                  = None   # set in on_source_changed
 
         self._model = JointInfluenceModel()
         self._proxy = QtCore.QSortFilterProxyModel()
@@ -392,10 +393,28 @@ class SkinPanel(DeformerPanelBase):
         self._view.setMaximumHeight(15 * _ROW_HEIGHT)
         lay.addWidget(self._view)
 
-        # Bottom row — hint + refresh button
+        # Bottom row — prune field + hint + refresh button
         bot = QtWidgets.QHBoxLayout()
         bot.setSpacing(3)
         bot.setContentsMargins(0, 0, 0, 0)
+
+        prune_lbl = QtWidgets.QLabel('Prune below')
+        prune_lbl.setStyleSheet('color: #888888; font-size: 10px;')
+        bot.addWidget(prune_lbl)
+
+        self._prune_spin = QtWidgets.QDoubleSpinBox()
+        self._prune_spin.setRange(0.0, 1.0)
+        self._prune_spin.setDecimals(3)
+        self._prune_spin.setSingleStep(0.005)
+        self._prune_spin.setValue(0.0)
+        self._prune_spin.setFixedWidth(64)
+        self._prune_spin.setToolTip(
+            'Flood (Set) skips verts whose current weight on the active '
+            'influence is below this, so tiny garbage weights are not moved '
+            'onto an unlocked sibling.\n0.0 = off.'
+        )
+        bot.addWidget(self._prune_spin)
+
         hint = QtWidgets.QLabel('Right-click to lock / unlock')
         hint.setStyleSheet('color: #555555; font-size: 10px;')
         bot.addWidget(hint, stretch=1)
@@ -410,6 +429,7 @@ class SkinPanel(DeformerPanelBase):
         self._view.clicked.connect(self._on_item_clicked)
         self._model.lock_changed.connect(self._on_lock_changed)
         self._refresh_btn.clicked.connect(self._on_refresh_locks)
+        self._prune_spin.valueChanged.connect(self._on_prune_changed)
 
         return container
 
@@ -429,6 +449,11 @@ class SkinPanel(DeformerPanelBase):
         filter text are preserved.
         """
         self._source = source
+        self._ctrl = ctrl
+        # Keep the controller's prune threshold in sync with this panel's field
+        # whenever a skin source becomes active.
+        if ctrl is not None:
+            ctrl.set_prune(self._prune_spin.value())
         if source is None:
             self._clear()
             return
@@ -659,6 +684,12 @@ class SkinPanel(DeformerPanelBase):
                 locked = False
             item.setData(locked, _ROLE_LOCKED)   # item path — no lock_changed
         logger.debug(f"SkinPanel: refreshed lock states for '{self._node_name}'")
+
+    @Slot(float)
+    def _on_prune_changed(self, value: float) -> None:
+        """Push the prune threshold to the controller (flood blue-noise guard)."""
+        if self._ctrl is not None:
+            self._ctrl.set_prune(value)
 
     def on_enter(self) -> None:
         """Re-read lock states when the user returns to Slimfast."""
