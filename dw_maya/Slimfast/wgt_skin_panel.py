@@ -736,5 +736,5 @@ register_deformer_panel(
     panel_class = SkinPanel,
     ctrl_mode   = 'deformer',
     node_types  = ['skinCluster'],
-    order       = 11,
+    order       = 100,
 )
