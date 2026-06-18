@@ -45,7 +45,12 @@ class MayaNode(ObjPointer):
         >>> node[1].node  # Access shape
 
     Notes:
-        - Index 0 returns transform, 1 returns shape by default
+        - Index 0 returns the transform, 1 the first shape, and N>=2 the
+          N-th shape (a transform may carry several shapes — common in rig /
+          groom setups).
+        - ``.sh`` always returns the *first* shape (warns once when the
+          transform has more than one; use :meth:`shapes` / :meth:`list_shapes`
+          or ``node[2]``, ``node[3]``… to reach the others).
         - Attributes are accessed directly using Python attribute syntax
         - Shape attributes take priority when duplicated with transform
     """
@@ -74,10 +79,12 @@ class MayaNode(ObjPointer):
             self.loadNode(preset, blend_value, namespace)
 
     def __getitem__(self, index: int):
-        """Access transform (0) or shape (1) nodes.
+        """Access the transform (0), first shape (1), or N-th shape (>=2).
 
         Args:
-            index: 0 for transform, 1 for shape
+            index: 0 for transform, 1 for the first shape, N for the N-th
+                shape (1-based over the shape list, so ``node[2]`` is the
+                second shape).
 
         Returns:
             Self with updated node index
@@ -86,6 +93,8 @@ class MayaNode(ObjPointer):
             >>> node = MayaNode('pCube1')
             >>> transform = node[0].node
             >>> shape = node[1].node
+            >>> # transform carrying several shapes (rig / groom):
+            >>> second_shape = node[2].node
         """
         return self.set_node(index)
 
@@ -176,7 +185,8 @@ class MayaNode(ObjPointer):
         """Update current node index (transform/shape selection).
 
         Args:
-            index: 0 for transform, 1 for shape
+            index: 0 for transform, 1 for the first shape, N for the N-th
+                shape (1-based over the shape list).
 
         Returns:
             Self for chaining
@@ -186,12 +196,26 @@ class MayaNode(ObjPointer):
 
     @property
     def node(self) -> str:
-        """Returns the current node (transform or shape)."""
+        """Returns the current node (transform or the selected shape).
+
+        ``item == 0`` → transform, ``item == 1`` → first shape, and
+        ``item >= 2`` → the N-th shape (1-based over :meth:`shapes`).  An
+        out-of-range index falls back to the first shape (or transform).
+        """
         id = self.__dict__['item']
         if id == 0:
             return self.tr or self.sh
-        else:
+        if id == 1:
             return self.sh or self.tr
+        # id >= 2 → request the (id-1)-th shape (node[1] is the first shape).
+        _shapes = self.shapes()
+        shape_idx = id - 1
+        if 0 <= shape_idx < len(_shapes):
+            return _shapes[shape_idx]
+        logger.warning(
+            f"Shape index {id} out of range on '{self.tr}' "
+            f"({len(_shapes)} shape(s)); falling back to the first shape.")
+        return self.sh or self.tr
 
     @property
     def nodeType(self) -> str:
@@ -218,7 +242,49 @@ class MayaNode(ObjPointer):
                 return long[0] if long else node
             return node
         _sh = cmds.listRelatives(node, type='shape', ni=True, fullPath=True)
-        return _sh[0] if _sh else self.tr
+        if not _sh:
+            return self.tr
+        # A transform can own several shapes (rig / groom). ``.sh`` keeps its
+        # historical meaning — the first shape — but warns once so callers know
+        # to reach for shapes()/list_shapes() or node[2], node[3]…
+        if len(_sh) > 1 and not self.__dict__.get('_multi_shape_warned'):
+            self.__dict__['_multi_shape_warned'] = True
+            logger.warning(
+                f"'{node}' has {len(_sh)} shapes; '.sh' returns the first "
+                f"('{_sh[0].split('|')[-1]}'). Use .shapes()/.list_shapes() "
+                f"or node[2..{len(_sh)}] to reach the others.")
+        return _sh[0]
+
+    def shapes(self, intermediate: bool = False) -> List[str]:
+        """Return every shape under this node's transform.
+
+        Resolves the transform first (via :attr:`tr`), so the result is the
+        same regardless of whether the wrapper currently points at the
+        transform or one of the shapes.  ``shapes()[0]`` matches :attr:`sh`
+        and ``shapes()[N-1]`` matches ``node[N].node``.
+
+        Args:
+            intermediate: When ``True``, include intermediate shapes
+                (orig / construction history shapes). Defaults to ``False``.
+
+        Returns:
+            list[str]: Full DAG paths of the shapes, in Maya order (empty when
+            the node has no shape).
+
+        Example:
+            >>> node = MayaNode('hairSystem_grp')   # transform with N shapes
+            >>> node.shapes()
+            ['|hairSystem_grp|curveShape1', '|hairSystem_grp|curveShape2', ...]
+        """
+        tr = self.tr
+        if not tr:
+            return []
+        return cmds.listRelatives(tr, type='shape',
+                                  noIntermediate=not intermediate,
+                                  fullPath=True) or []
+
+    #: Alias for :meth:`shapes` (Maya-style snake_case name).
+    list_shapes = shapes
 
     @property
     def tr(self) -> str:
