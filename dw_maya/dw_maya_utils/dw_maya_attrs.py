@@ -52,12 +52,8 @@ Author: DrWeeny
 Version: 1.0.0
 """
 
-# Correction de l'import de Literal pour compatibilité Python 3.7
-try:
-    from typing import Literal
-except ImportError:
-    from typing_extensions import Literal
 from typing import Union, List, Any, Optional, Dict
+from dw_maya.dw_compat import Literal
 from maya import cmds, mel
 from dw_maya.dw_maya_utils.dw_maya_data import flags
 from dw_maya.dw_maya_utils.dw_maya_components import get_next_free_multi_index

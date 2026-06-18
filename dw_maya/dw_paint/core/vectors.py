@@ -1,10 +1,7 @@
 from maya import cmds
 import numpy as np
-try:
-    from typing import List, Optional, Union, Dict, Tuple, Literal
-except ImportError:
-    from typing import List, Optional, Union, Dict, Tuple
-    from typing_extensions import Literal
+from typing import List, Optional, Union, Dict, Tuple
+from dw_maya.dw_compat import Literal
 from enum import Enum
 from maya.api import OpenMaya as om
 from dw_logger import get_logger

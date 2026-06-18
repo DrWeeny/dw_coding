@@ -106,8 +106,10 @@ def test_tr_sh_resolution():
         cube_tr = nodes[0]
         mn = MayaNode(cube_tr)
         _assert(mn[0].node == cube_tr, f"Expected transform '{cube_tr}', got '{mn[0].node}'")
+        # .sh resolves to a full DAG path on purpose (unambiguous); compare leaf names.
         expected_sh = cmds.listRelatives(cube_tr, shapes=True, ni=True)[0]
-        _assert(mn[1].node == expected_sh, f"Expected shape '{expected_sh}', got '{mn[1].node}'")
+        got_sh = mn[1].node.split('|')[-1]
+        _assert(got_sh == expected_sh, f"Expected shape '{expected_sh}', got '{got_sh}'")
 
 
 def test_shortname_attr_access():
@@ -325,6 +327,56 @@ def test_tr_curve_multi_shape():
                 cmds.delete(n)
 
 
+def test_multi_shape_indexing():
+    """Transform with two shapes: node[1]=first, node[2]=second, shapes() lists both."""
+    crv1 = crv2 = None
+    try:
+        crv1 = cmds.curve(d=1, p=[(0, 0, 0), (1, 0, 0)], name="dw_idx_crv1")
+        crv2 = cmds.curve(d=1, p=[(0, 0, 0), (0, 1, 0)], name="dw_idx_crv2")
+        sh2 = cmds.listRelatives(crv2, shapes=True)[0]
+        cmds.parent(sh2, crv1, add=True, shape=True)
+        cmds.delete(crv2)
+        crv2 = None
+
+        expected = cmds.listRelatives(crv1, shapes=True, ni=True, fullPath=True) or []
+        _assert(len(expected) == 2, f"setup: expected 2 shapes, got {expected}")
+
+        mn = MayaNode(crv1)
+
+        # shapes() / list_shapes() return every shape, in Maya order.
+        shapes = mn.shapes()
+        _assert(shapes == expected, f"shapes() = {shapes}, expected {expected}")
+        _assert(mn.list_shapes() == expected, "list_shapes() must alias shapes()")
+
+        # node[1] = first shape (== .sh), node[2] = second shape.
+        first = mn[1].node.split('|')[-1]
+        second = mn[2].node.split('|')[-1]
+        _assert(first == expected[0].split('|')[-1],
+                f"node[1] = '{first}', expected '{expected[0]}'")
+        _assert(second == expected[1].split('|')[-1],
+                f"node[2] = '{second}', expected '{expected[1]}'")
+        _assert(first != second, "node[1] and node[2] must differ")
+
+        # .sh stays the first shape regardless of index history.
+        _assert(mn.sh.split('|')[-1] == expected[0].split('|')[-1],
+                f".sh = '{mn.sh}', expected first shape '{expected[0]}'")
+    finally:
+        for n in [crv1, crv2]:
+            if n and cmds.objExists(n):
+                cmds.delete(n)
+
+
+def test_multi_shape_index_out_of_range():
+    """An out-of-range shape index falls back to the first shape (no crash)."""
+    with _tmp_nodes(lambda: _make_cube("dw_oor_cube")) as nodes:
+        mn = MayaNode(nodes[0])
+        first_sh = cmds.listRelatives(nodes[0], shapes=True, ni=True, fullPath=True)[0]
+        # only one shape exists; node[5] must not raise, falls back to first shape
+        result = mn[5].node
+        _assert(result.split('|')[-1] == first_sh.split('|')[-1],
+                f"out-of-range index should fall back to first shape, got '{result}'")
+
+
 def test_tr_joint_under_shaped_parent_regression():
     """Regression: joint.tr must NOT walk up to a shaped ancestor.
 
@@ -444,6 +496,8 @@ _ALL_TESTS = [
     ("joint tr — child under parent joint",               test_tr_joint_in_hierarchy),
     ("group tr — empty transform (no shape)",             test_tr_group_no_shape),
     ("curve tr/sh — multi-shape transform",               test_tr_curve_multi_shape),
+    ("multi-shape indexing (node[1]/node[2]/shapes())",   test_multi_shape_indexing),
+    ("multi-shape index out of range fallback",           test_multi_shape_index_out_of_range),
     ("joint tr — regression: shaped ancestor (EXO_DYN)", test_tr_joint_under_shaped_parent_regression),
     ("MAttr compound indexing",            test_mattr_compound_indexing),
     ("MAttr >> connection",                test_mattr_rshift_connection),

@@ -1,9 +1,6 @@
 from typing import List, Optional, Tuple, Union
 
-try:
-    from typing import Literal
-except ImportError:
-    from typing_extensions import Literal
+from dw_maya.dw_compat import Literal
 
 import numpy as np
 from maya import cmds

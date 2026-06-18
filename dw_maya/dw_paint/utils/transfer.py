@@ -29,10 +29,7 @@ from typing import List, Optional, Union
 
 import numpy as np
 
-try:
-    from typing import Literal
-except ImportError:
-    from typing_extensions import Literal  # Python 3.7
+from dw_maya.dw_compat import Literal
 
 from dw_maya.dw_paint.utils.falloff import FalloffCurve
 

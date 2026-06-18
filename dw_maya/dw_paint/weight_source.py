@@ -35,10 +35,7 @@ from __future__ import annotations
 
 from typing import Dict, List, Optional
 
-try:
-    from typing import Literal
-except ImportError:
-    from typing_extensions import Literal
+from dw_maya.dw_compat import Literal
 
 from maya import cmds, mel
 

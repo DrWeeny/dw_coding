@@ -1,10 +1,7 @@
 # utils/validation.py
 from typing import Optional, Union, List, Tuple, Any
 
-try:
-    from typing import Literal
-except ImportError:
-    from typing_extensions import Literal
+from dw_maya.dw_compat import Literal
 
 import re
 from maya import cmds

@@ -1,12 +1,8 @@
 from maya import cmds, mel
 import re
 from dw_maya.dw_decorators import acceptString
-# Correction de l'import de Literal pour compatibilité Python 3.7
-try:
-    from typing import Literal
-except ImportError:
-    from typing_extensions import Literal
 from typing import Dict, List, Union, Optional, Tuple
+from dw_maya.dw_compat import Literal
 from dw_logger import get_logger
 
 logger = get_logger()

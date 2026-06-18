@@ -113,12 +113,30 @@ automatically.
 |---|---|
 | `cube.node` | Shape by default (`item = 1`) |
 | `cube[0].node` | Force transform (`item = 0`) |
-| `cube[1].node` | Force shape (`item = 1`) |
+| `cube[1].node` | Force shape — the first one (`item = 1`) |
+| `cube[2].node` | Force the **second** shape (`item = 2`), `cube[3]` the third… |
 | `cube.tr` | Always the transform string |
-| `cube.sh` | Always the shape string |
+| `cube.sh` | Always the **first** shape string |
+| `cube.shapes()` / `cube.list_shapes()` | All shapes as a list (full DAG paths) |
 
 For nodes that have **no transform** (deformers, DG nodes) `tr` and `sh`
 return the same value.
+
+### Multiple shapes under one transform
+
+A transform can carry **several shapes** — common in rigs and groom setups
+(many curve shapes under one transform, blend targets, etc.). The indexing is
+1-based over the shape list: `node[1]` is the first shape, `node[2]` the
+second, and so on; an out-of-range index falls back to the first shape.
+
+```python
+node = MayaNode('hairSystem_grp')   # transform with several shapes
+node.shapes()        # ['|hairSystem_grp|crvShape1', '|hairSystem_grp|crvShape2', ...]
+node[2].node         # the second shape
+node.sh              # still the FIRST shape — but warns once when >1 exist,
+                     # pointing you at shapes() / node[2..N]
+node.shapes(intermediate=True)   # include orig / construction-history shapes
+```
 
 ---
 

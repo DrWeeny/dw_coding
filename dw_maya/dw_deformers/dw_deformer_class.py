@@ -35,11 +35,8 @@ Author:  DrWeeny
 
 from __future__ import annotations
 
-try:
-    from typing import Literal
-except ImportError:
-    from typing_extensions import Literal
 from typing import Dict, List, Optional, Tuple, Union
+from dw_maya.dw_compat import Literal
 
 from maya import cmds, mel
 import functools

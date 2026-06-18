@@ -1,10 +1,7 @@
 # utils/falloff.py
 from typing import Union, List, Optional, Callable, Tuple
 
-try:
-    from typing import Literal
-except ImportError:
-    from typing_extensions import Literal
+from dw_maya.dw_compat import Literal
 
 import numpy as np
 from functools import lru_cache
