@@ -173,10 +173,39 @@ AttrType = Literal[
     'short2', 'short3']
 
 
+def infer_attr_type(value) -> AttrType:
+    """Infer a Maya attribute type from a Python value.
+
+    Used by :func:`add_attr` when no explicit ``attr_type`` is given so a
+    float stays a ``double`` instead of being truncated by a ``'long'``
+    default.
+
+    Note:
+        ``bool`` is checked before ``int`` because ``bool`` is a subclass of
+        ``int`` in Python.
+
+    Args:
+        value: The value the attribute will hold.
+
+    Returns:
+        str: Maya attribute type, defaulting to ``'long'`` when ``value`` is
+        ``None`` or of an unrecognized type.
+    """
+    if isinstance(value, bool):
+        return 'bool'
+    if isinstance(value, int):
+        return 'long'
+    if isinstance(value, float):
+        return 'double'
+    if isinstance(value, str):
+        return 'string'
+    return 'long'
+
+
 def add_attr(node: NodeName,
              long_name: AttrName,
              value=None,
-             attr_type: AttrType ='long',
+             attr_type: Optional[AttrType] = None,
              **kwargs) -> AttrPath:
     """
     Add or set attribute on Maya node.
@@ -185,7 +214,9 @@ def add_attr(node: NodeName,
         node: Target node name
         long_name: Attribute long name
         value: Default value
-        attr_type: Attribute data type
+        attr_type: Attribute data type. When ``None`` it is inferred from
+            ``value`` via :func:`infer_attr_type` (float -> double,
+            int -> long, bool -> bool, str -> string; long otherwise).
 
     Kwargs:
         shortName/sn (str): Attribute short name
@@ -212,6 +243,10 @@ def add_attr(node: NodeName,
     """
 
     attr_path = f'{node}.{long_name}'
+
+    # Infer the Maya type from the value when the caller didn't specify one.
+    if attr_type is None:
+        attr_type = infer_attr_type(value)
 
     channelbox_flag = flags(kwargs, None, 'channelbox', 'chb')
 
@@ -267,13 +302,25 @@ def add_attr(node: NodeName,
         else:
             attr_data["attributeType"] = attr_type
 
-        # Handle default value
-        if value is not None and attr_type != "string":
+        # Handle default value. Only numeric scalars are valid for the
+        # defaultValue flag; strings/lists/etc. are applied via setAttr after
+        # creation (below), so guard on the value type rather than attr_type.
+        if attr_type != "string" and isinstance(value, (int, float)) and not isinstance(value, bool):
             attr_data["defaultValue"] = value
 
         # Create the attribute
         try:
             cmds.addAttr(node, longName=long_name, **attr_data)
+
+            # Apply the initial value. For numerics defaultValue already seeds
+            # the current value, but strings (and enums) need an explicit
+            # setAttr since defaultValue is skipped/unsupported for them.
+            if value is not None and attr_type not in ("message",):
+                if attr_type == "string":
+                    cmds.setAttr(attr_path, value, type='string')
+                elif attr_type != "enum":
+                    set_value = value if isinstance(value, (list, tuple)) else [value]
+                    cmds.setAttr(attr_path, *set_value)
 
             # Handle channelBox for non-keyable attrs
             if not attr_data.get('keyable', True) and channelbox_flag:
@@ -289,18 +336,23 @@ def add_attr(node: NodeName,
 
     # Set value on existing attribute
     else:
-        try:
-            if attr_type == "string":
-                cmds.setAttr(attr_path, value, type='string')
-            else:
-                if not isinstance(value, (list, tuple)):
-                    value = [value]
-                cmds.setAttr(attr_path, *value)
+        if value is not None:
+            try:
+                # Trust the *existing* attribute's data type, not the requested
+                # attr_type: a leftover attr of a different type (e.g. a stale
+                # 'long' named like a string attr) would otherwise raise
+                # "does not accept data of type 'string'".
+                existing_type = cmds.getAttr(attr_path, type=True)
+                if existing_type == "string":
+                    cmds.setAttr(attr_path, value, type='string')
+                else:
+                    set_value = value if isinstance(value, (list, tuple)) else [value]
+                    cmds.setAttr(attr_path, *set_value)
 
-        except Exception as e:
-            raise RuntimeError(
-                f"Failed to set value on {attr_path}: {str(e)}"
-            )
+            except Exception as e:
+                raise RuntimeError(
+                    f"Failed to set value on {attr_path}: {str(e)}"
+                )
 
     if channelbox_flag is not None:
         if not cmds.getAttr(attr_path, lock=True):

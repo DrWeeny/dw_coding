@@ -1659,6 +1659,7 @@ class SlimfastWidget(QtWidgets.QWidget):
                 zip(node_labels, map_lists, types)):
 
             node_name = label.split('] ', 1)[-1] if '] ' in label else label
+            node_name = node_name.split(":")[-1]
             color = self._SOURCE_COLORS.get(node_type, '#cccccc')
 
             # Separator before first nucleus entry

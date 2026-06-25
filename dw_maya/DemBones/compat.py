@@ -1,0 +1,48 @@
+"""
+compat.py - PySide2 / PySide6 compatibility layer for the DemBones tool.
+
+Single source of truth for API differences between the two versions. All
+DemBones files import Qt from here rather than directly, mirroring
+DynForge/forge_cmds/compat.py and DynEval/sim_cmds/compat.py.
+
+Known differences handled
+-------------------------
+QShortcut   QtWidgets (PySide2)  ->  QtGui (PySide6)
+QAction     QtWidgets (PySide2)  ->  QtGui (PySide6)
+exec_()     PySide2 convention   ->  exec() in PySide6
+
+Usage
+-----
+    from dw_maya.DemBones.compat import (
+        QtCore, QtGui, QtWidgets, Qt, Signal, Slot,
+        wrapInstance, QShortcut, QAction, qt_exec, PYSIDE_VERSION,
+    )
+"""
+
+try:
+    from PySide6 import QtCore, QtGui, QtWidgets
+    from PySide6.QtCore import Qt, Signal, Slot
+    from shiboken6 import wrapInstance
+
+    QShortcut = QtGui.QShortcut
+    QAction   = QtGui.QAction
+
+    def qt_exec(obj, *args, **kwargs):
+        """Call exec() - PySide6 dropped the trailing underscore."""
+        return obj.exec(*args, **kwargs)
+
+    PYSIDE_VERSION = 6
+
+except ImportError:
+    from PySide2 import QtCore, QtGui, QtWidgets
+    from PySide2.QtCore import Qt, Signal, Slot
+    from shiboken2 import wrapInstance
+
+    QShortcut = QtWidgets.QShortcut
+    QAction   = QtWidgets.QAction
+
+    def qt_exec(obj, *args, **kwargs):
+        """Call exec_() - PySide2 convention."""
+        return obj.exec_(*args, **kwargs)
+
+    PYSIDE_VERSION = 2

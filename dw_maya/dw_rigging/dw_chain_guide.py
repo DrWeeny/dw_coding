@@ -418,21 +418,17 @@ def distribute_joints(curve_name: str,
         pos     = curve_fn.getPointAtParam(param, om2.MSpace.kWorld)
         positions.append(pos)
 
-    # -- Create the joint hierarchy ---------------------------------------
-    joints: list[str] = []
-    cmds.select(clear=True)
+    return place_joint_chain(positions, chain_name=chain_name, up_axis=up_axis)
 
-    for i, pos in enumerate(positions):
-        # Select the previous joint -> new joint becomes its child
-        if joints:
-            cmds.select(joints[-1])
-        jnt = cmds.joint(
-            name=f"{chain_name}_jnt_{i:02d}",
-            position=(pos.x, pos.y, pos.z),
-        )
-        joints.append(jnt)
 
-    # -- Orient the chain -------------------------------------------------
+def _orient_chain(joints:  list[str],
+                  up_axis: str = "y",) -> None:
+    """
+    Orient a joint chain in place: X down the bone, secondary axis = up_axis,
+    and zero the tip's joint orient. Positions are untouched.
+    """
+    if not joints:
+        return
     sec_axis = _UP_REMAP.get(up_axis.lower(), "yup")
     cmds.joint(
         joints[0],
@@ -442,12 +438,80 @@ def distribute_joints(curve_name: str,
         children=True,
         zeroScaleOrient=True,
     )
-    # The last joint inherits the parent's orientation: zero out its orients
     for attr in ("jointOrientX", "jointOrientY", "jointOrientZ"):
         cmds.setAttr(f"{joints[-1]}.{attr}", 0.0)
 
+
+def place_joint_chain(positions:  list[om2.MPoint],
+                      chain_name: str = "chain",
+                      up_axis:    str = "y",) -> list[str]:
+    """
+    Create one joint per position, exactly at it, as an oriented chain. The root
+    carries the _PIN suffix; index padding is 1. Returns [root, ..., tip].
+    """
+    joints: list[str] = []
+    cmds.select(clear=True)
+    for i, pos in enumerate(positions):
+        if joints:
+            cmds.select(joints[-1])   # new joint becomes the previous one's child
+        suffix = "_PIN" if i == 0 else ""
+        jnt = cmds.joint(
+            name=f"{chain_name}_jnt_{i}{suffix}",
+            position=(pos.x, pos.y, pos.z),
+        )
+        joints.append(jnt)
+    _orient_chain(joints, up_axis)
     cmds.select(clear=True)
     return joints
+
+
+def chain_from_joints(joint_nodes: list[str],
+                      chain_name:  str = "chain",
+                      up_axis:     str = "y",) -> list[str]:
+    """
+    Turn already-placed joints (any parenting) into an oriented chain IN PLACE,
+    reusing the exact nodes the artist positioned: detach, re-parent root->tip,
+    rename (_PIN root, padding 1) and orient. Positions are preserved.
+
+    `joint_nodes` must already be in the desired root->tip order. Returns the
+    renamed nodes in that same order.
+    """
+    ordered = list(joint_nodes)
+    if not ordered:
+        return []
+    for jnt in ordered:
+        if cmds.listRelatives(jnt, parent=True):
+            cmds.parent(jnt, world=True)
+    for i in range(1, len(ordered)):
+        ordered[i] = cmds.parent(ordered[i], ordered[i - 1])[0]
+    renamed: list[str] = []
+    for i, jnt in enumerate(ordered):
+        suffix = "_PIN" if i == 0 else ""
+        renamed.append(cmds.rename(jnt, f"{chain_name}_jnt_{i}{suffix}"))
+    _orient_chain(renamed, up_axis)
+    cmds.select(clear=True)
+    return renamed
+
+
+def build_curve_through_positions(positions: list[om2.MPoint],
+                                  name:      str = "chainGuide_crv",
+                                  degree:    int = 3,) -> str:
+    """
+    Create a NURBS curve that passes EXACTLY through every position, using
+    edit-point construction (an EP curve interpolates its points at any degree,
+    unlike a CV curve whose interior CVs only pull on the shape). Used for the
+    data-only curve in exact mode.
+    """
+    pts = [(p.x, p.y, p.z) for p in positions]
+    n = len(pts)
+    if n < 2:
+        raise ValueError(
+            f"build_curve_through_positions: {n} point(s), at least 2 required."
+        )
+    d = min(degree, n - 1)   # degree cannot exceed nEditPoints - 1
+    crv = cmds.curve(editPoint=pts, degree=d)
+    crv = cmds.rename(crv, name)
+    return crv
 
 
 # -----------------------------------------------------------------------------
