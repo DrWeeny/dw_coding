@@ -368,25 +368,35 @@ class MayaNode(ObjPointer):
     def addAttr(self,
                 long_name: str,
                 value=None,
-                attr_type='long',
+                attr_type: Optional[str] = None,
                 **kwargs) -> 'MAttr':
         """Add a new attribute to the node.
 
+        When ``attr_type`` is left as ``None`` the Maya type is inferred from
+        ``value`` by :func:`dw_maya.dw_maya_utils.add_attr` /
+        :func:`infer_attr_type`: ``float`` -> ``double``, ``int`` -> ``long``,
+        ``bool`` -> ``bool``, ``str`` -> ``string`` (falling back to ``long``
+        when ``value`` is ``None``). Pass ``attr_type`` explicitly to override
+        the inference or for types that can't be inferred (e.g. ``enum``).
+
         Args:
             long_name: Name for the new attribute
-            value: Initial value
-            attr_type: Maya attribute type
+            value: Initial value (drives type inference when ``attr_type`` is None)
+            attr_type: Maya attribute type; inferred from ``value`` when None
             **kwargs: Additional Maya attribute flags
 
         Returns:
             MAttr wrapper for the new attribute
 
         Example:
-            >>> node.addAttr('myAttr', 1.0, 'double')
+            >>> node.addAttr('weightsSmooth', 0.0001)   # -> double
+            >>> node.addAttr('iterations', 5)           # -> long
+            >>> node.addAttr('label', 'hello')          # -> string
+            >>> node.addAttr('myAttr', 1.0, 'double')   # explicit override
         """
         try:
             result = dwu.add_attr(
-                self._node,
+                self.node,
                 long_name=long_name,
                 value=value,
                 attr_type=attr_type,

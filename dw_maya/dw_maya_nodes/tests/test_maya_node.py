@@ -473,6 +473,99 @@ def test_mattr_bool_nonzero():
 
 
 # ---------------------------------------------------------------------------
+# ── addAttr Tests (type inference + value setting) ──────────────────────────
+# ---------------------------------------------------------------------------
+
+def test_addattr_infer_float():
+    """addAttr with a float value infers 'double' and keeps the value."""
+    with _tmp_nodes(lambda: _make_cube("dw_addf_cube")) as nodes:
+        mn = MayaNode(nodes[0])[0]  # target the transform
+        node = mn.node
+        result = mn.addAttr("dwFloat", 0.0001)
+        _assert(isinstance(result, MAttr), f"addAttr should return MAttr, got {type(result)}")
+        attr_type = cmds.getAttr(f"{node}.dwFloat", type=True)
+        _assert(attr_type == "double", f"Expected 'double', got '{attr_type}'")
+        val = cmds.getAttr(f"{node}.dwFloat")
+        _assert(abs(val - 0.0001) < 1e-9, f"Expected 0.0001, got {val}")
+
+
+def test_addattr_infer_int():
+    """addAttr with an int value infers 'long'."""
+    with _tmp_nodes(lambda: _make_cube("dw_addi_cube")) as nodes:
+        mn = MayaNode(nodes[0])[0]
+        node = mn.node
+        mn.addAttr("dwInt", 5)
+        attr_type = cmds.getAttr(f"{node}.dwInt", type=True)
+        _assert(attr_type == "long", f"Expected 'long', got '{attr_type}'")
+        _assert(cmds.getAttr(f"{node}.dwInt") == 5,
+                f"Expected 5, got {cmds.getAttr(f'{node}.dwInt')}")
+
+
+def test_addattr_infer_bool():
+    """addAttr with a bool value infers 'bool' (checked before int)."""
+    with _tmp_nodes(lambda: _make_cube("dw_addb_cube")) as nodes:
+        mn = MayaNode(nodes[0])[0]
+        node = mn.node
+        mn.addAttr("dwBool", True)
+        attr_type = cmds.getAttr(f"{node}.dwBool", type=True)
+        _assert(attr_type == "bool", f"Expected 'bool', got '{attr_type}'")
+        _assert(cmds.getAttr(f"{node}.dwBool") in (True, 1),
+                f"Expected True, got {cmds.getAttr(f'{node}.dwBool')}")
+
+
+def test_addattr_infer_string():
+    """addAttr with a str value infers 'string' and stores the value.
+
+    Regression for the create-branch dropping string values (the value was
+    only ever passed as defaultValue, which is skipped for strings).
+    """
+    with _tmp_nodes(lambda: _make_cube("dw_adds_cube")) as nodes:
+        mn = MayaNode(nodes[0])[0]
+        node = mn.node
+        mn.addAttr("dwLabel", "hello")
+        attr_type = cmds.getAttr(f"{node}.dwLabel", type=True)
+        _assert(attr_type == "string", f"Expected 'string', got '{attr_type}'")
+        _assert(cmds.getAttr(f"{node}.dwLabel") == "hello",
+                f"Expected 'hello', got {cmds.getAttr(f'{node}.dwLabel')!r}")
+
+
+def test_addattr_explicit_type_override():
+    """An explicit attr_type wins over inference (int value -> double attr)."""
+    with _tmp_nodes(lambda: _make_cube("dw_addx_cube")) as nodes:
+        mn = MayaNode(nodes[0])[0]
+        node = mn.node
+        mn.addAttr("dwForced", 1, "double")
+        attr_type = cmds.getAttr(f"{node}.dwForced", type=True)
+        _assert(attr_type == "double", f"Expected 'double', got '{attr_type}'")
+
+
+def test_addattr_existing_string_reset():
+    """Re-adding an existing string attr updates the value via the actual type.
+
+    Regression for the existing-attr branch trusting the requested attr_type
+    instead of the attribute's real type.
+    """
+    with _tmp_nodes(lambda: _make_cube("dw_adds2_cube")) as nodes:
+        mn = MayaNode(nodes[0])[0]
+        node = mn.node
+        mn.addAttr("dwLabel", "hello")
+        mn.addAttr("dwLabel", "world")  # attr already exists -> else branch
+        _assert(cmds.getAttr(f"{node}.dwLabel") == "world",
+                f"Expected 'world', got {cmds.getAttr(f'{node}.dwLabel')!r}")
+
+
+def test_addattr_existing_numeric_reset():
+    """Re-adding an existing numeric attr updates its value."""
+    with _tmp_nodes(lambda: _make_cube("dw_addn2_cube")) as nodes:
+        mn = MayaNode(nodes[0])[0]
+        node = mn.node
+        mn.addAttr("dwNum", 1.0)
+        mn.addAttr("dwNum", 2.5)
+        val = cmds.getAttr(f"{node}.dwNum")
+        _assert(abs(val - 2.5) < 1e-6, f"Expected 2.5, got {val}")
+
+
+# ---------------------------------------------------------------------------
 # Runner
 # ---------------------------------------------------------------------------
 
@@ -504,6 +597,14 @@ _ALL_TESTS = [
     ("MAttr == operator",                  test_mattr_eq_operator),
     ("MAttr bool (zero = False)",          test_mattr_bool_zero),
     ("MAttr bool (nonzero = True)",        test_mattr_bool_nonzero),
+    # --- addAttr type inference + value setting ---
+    ("addAttr infer float -> double",      test_addattr_infer_float),
+    ("addAttr infer int -> long",          test_addattr_infer_int),
+    ("addAttr infer bool -> bool",         test_addattr_infer_bool),
+    ("addAttr infer str -> string",        test_addattr_infer_string),
+    ("addAttr explicit type override",     test_addattr_explicit_type_override),
+    ("addAttr re-set existing string",     test_addattr_existing_string_reset),
+    ("addAttr re-set existing numeric",    test_addattr_existing_numeric_reset),
 ]
 
 
