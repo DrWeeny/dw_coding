@@ -25,7 +25,7 @@ from __future__ import annotations
 
 import os
 
-from dw_maya.DemBones.compat import QtCore, QtGui, QtWidgets, wrapInstance
+from dw_maya.DemBones.compat import QtCore, QtGui, QtWidgets, wrapInstance, QAction, qt_exec
 from dw_maya.DemBones.wgt_source import SourcePanel
 from dw_maya.DemBones.wgt_params import ParamsPanel
 from dw_maya.DemBones.wgt_generations import GenerationsPanel
@@ -57,37 +57,48 @@ class DemBonesUI(QtWidgets.QMainWindow):
     # -- Setup ------------------------------------------------------------
 
     def _build_ui(self) -> None:
+        self._build_menu()
+
         central = QtWidgets.QWidget()
         self.setCentralWidget(central)
         layout = QtWidgets.QVBoxLayout(central)
 
+        # Top: source (left) + params (right).
+        top = QtWidgets.QSplitter(QtCore.Qt.Horizontal)
         self.source_panel = SourcePanel()
-        layout.addWidget(self.source_panel)
-
-        mid = QtWidgets.QSplitter()
         self.params_panel = ParamsPanel()
-        mid.addWidget(self.params_panel)
+        top.addWidget(self.source_panel)
+        top.addWidget(self.params_panel)
+        top.setStretchFactor(0, 1)
+        top.setStretchFactor(1, 0)
+        layout.addWidget(top)
 
-        solve_box = QtWidgets.QWidget()
-        sv = QtWidgets.QVBoxLayout(solve_box)
-        sv.setContentsMargins(0, 0, 0, 0)
-        row = QtWidgets.QHBoxLayout()
+        # Solve row: buttons, busy bar, rmse, log toggle.
+        solve_row = QtWidgets.QHBoxLayout()
         self.solve_btn = QtWidgets.QPushButton("Solve")
         self.cancel_btn = QtWidgets.QPushButton("Cancel")
         self.cancel_btn.setEnabled(False)
+        self.progress = QtWidgets.QProgressBar()
+        self.progress.setRange(0, 0)            # indeterminate / busy
+        self.progress.setTextVisible(False)
+        self.progress.setVisible(False)
         self.rmse_label = QtWidgets.QLabel("rmse: --")
-        row.addWidget(self.solve_btn)
-        row.addWidget(self.cancel_btn)
-        row.addStretch(1)
-        row.addWidget(self.rmse_label)
-        sv.addLayout(row)
+        self.show_log_chk = QtWidgets.QCheckBox("show log")
+        self.show_log_chk.setToolTip(
+            "Show the DemBones stdout/stderr log. When off, a busy bar is shown "
+            "while solving instead.")
+        solve_row.addWidget(self.solve_btn)
+        solve_row.addWidget(self.cancel_btn)
+        solve_row.addWidget(self.progress, 1)
+        solve_row.addWidget(self.rmse_label)
+        solve_row.addWidget(self.show_log_chk)
+        layout.addLayout(solve_row)
+
         self.log_view = QtWidgets.QPlainTextEdit()
         self.log_view.setReadOnly(True)
-        sv.addWidget(self.log_view, 1)
-        mid.addWidget(solve_box)
-        mid.setStretchFactor(0, 0)
-        mid.setStretchFactor(1, 1)
-        layout.addWidget(mid, 1)
+        self.log_view.setMinimumHeight(120)
+        self.log_view.setVisible(False)
+        layout.addWidget(self.log_view, 1)
 
         self.generations_panel = GenerationsPanel()
         self.generations_panel.set_output_dir(self._out_dir)
@@ -104,9 +115,43 @@ class DemBonesUI(QtWidgets.QMainWindow):
         out_row.addWidget(self.open_dir_btn)
         layout.addLayout(out_row)
 
+    def _build_menu(self) -> None:
+        """Tools menu: locate the DemBones executable."""
+        menu = self.menuBar().addMenu("Tools")
+        locate_action = QAction("Locate DemBones executable...", self)
+        locate_action.setToolTip(
+            "Point the tool at a DemBones[.exe] binary; the choice is "
+            "remembered across Maya sessions.")
+        locate_action.triggered.connect(self._on_locate_exe)
+        menu.addAction(locate_action)
+
+    def _on_locate_exe(self) -> bool:
+        """Open a file picker and persist the chosen DemBones binary.
+
+        Returns:
+            True if a valid executable was selected and saved.
+        """
+        if os.name == "nt":
+            filt = "DemBones (DemBones.exe);;Executables (*.exe);;All files (*)"
+        else:
+            filt = "DemBones (DemBones);;All files (*)"
+        start_dir = os.path.dirname(dem_cmds.get_exe_path() or "") or os.path.expanduser("~")
+        path, _ = QtWidgets.QFileDialog.getOpenFileName(
+            self, "Locate DemBones executable", start_dir, filt)
+        if not path:
+            return False
+        if not os.path.isfile(path):
+            QtWidgets.QMessageBox.warning(
+                self, "DemBones", f"Not a file:\n{path}")
+            return False
+        dem_cmds.set_saved_exe(path)
+        logger.info(f"DemBones exe set to: {path}")
+        return True
+
     def _connect(self) -> None:
         self.solve_btn.clicked.connect(self._on_solve)
         self.cancel_btn.clicked.connect(self._runner.cancel)
+        self.show_log_chk.toggled.connect(self._update_busy_display)
         self.open_dir_btn.clicked.connect(self._on_open_dir)
         self._runner.log.connect(self._on_log)
         self._runner.finished.connect(self._on_solve_finished)
@@ -147,11 +192,22 @@ class DemBonesUI(QtWidgets.QMainWindow):
 
         exe = dem_cmds.get_exe_path()
         if not exe:
-            QtWidgets.QMessageBox.critical(
-                self, "DemBones",
-                "DemBones executable not bundled.\nDrop it under "
-                "DemBones/bin/<OS>/ (e.g. bin/Windows/DemBones.exe).")
-            return
+            box = QtWidgets.QMessageBox(self)
+            box.setIcon(QtWidgets.QMessageBox.Warning)
+            box.setWindowTitle("DemBones")
+            box.setText("DemBones executable not found.")
+            box.setInformativeText(
+                "Locate it now, or provide it via the DEMBONES_EXE env var, "
+                "the system PATH, or DemBones/bin/<OS>/.\n\n"
+                f"Download: {dem_cmds.DEMBONES_DOWNLOAD_URL}")
+            locate = box.addButton("Locate...", QtWidgets.QMessageBox.AcceptRole)
+            box.addButton(QtWidgets.QMessageBox.Cancel)
+            qt_exec(box)
+            if box.clickedButton() is not locate or not self._on_locate_exe():
+                return
+            exe = dem_cmds.get_exe_path()
+            if not exe:
+                return
 
         params = self.params_panel.get_params()
         index = dem_cmds.next_generation_index(self._out_dir)
@@ -186,6 +242,15 @@ class DemBonesUI(QtWidgets.QMainWindow):
         self.solve_btn.setEnabled(False)
         self.cancel_btn.setEnabled(True)
         self._runner.start(exe, args)
+        self._update_busy_display()
+
+    def _update_busy_display(self) -> None:
+        """Log replaces the busy bar: show the log when asked, else a busy bar
+        while a solve is running."""
+        running = self._runner.is_running()
+        show_log = self.show_log_chk.isChecked()
+        self.log_view.setVisible(show_log)
+        self.progress.setVisible(running and not show_log)
 
     def _on_open_dir(self) -> None:
         QtGui.QDesktopServices.openUrl(
@@ -198,6 +263,7 @@ class DemBonesUI(QtWidgets.QMainWindow):
     def _on_solve_finished(self, code: int) -> None:
         self.solve_btn.setEnabled(True)
         self.cancel_btn.setEnabled(False)
+        self._update_busy_display()
 
         if code != 0 or self._pending is None:
             self.rmse_label.setText("rmse: failed")

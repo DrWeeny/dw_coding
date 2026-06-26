@@ -32,7 +32,7 @@ from __future__ import annotations
 
 from maya import cmds
 
-from dw_maya.DemBones.compat import QtWidgets, Signal
+from dw_maya.DemBones.compat import QtCore, QtWidgets, Signal
 from dw_maya.DemBones import dem_cmds
 from dw_logger import get_logger
 
@@ -60,12 +60,16 @@ class SourcePanel(QtWidgets.QWidget):
     def _build_ui(self) -> None:
         box = QtWidgets.QGroupBox("Source")
         form = QtWidgets.QFormLayout(box)
+        form.setContentsMargins(8, 6, 8, 6)
+        form.setVerticalSpacing(3)
+        form.setHorizontalSpacing(6)
+        form.setLabelAlignment(QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter)
 
         # Source mesh (abc-driven) + pick + auto-create toggle
         src_row = QtWidgets.QHBoxLayout()
         self.source_field = QtWidgets.QLineEdit()
         self.source_field.setReadOnly(True)
-        self.source_pick_btn = QtWidgets.QPushButton("Pick selected")
+        self.source_pick_btn = QtWidgets.QPushButton("Pick")
         self.create_chk = QtWidgets.QCheckBox("create rest on pick")
         self.create_chk.setChecked(True)
         self.create_chk.setToolTip(
@@ -74,19 +78,19 @@ class SourcePanel(QtWidgets.QWidget):
         src_row.addWidget(self.source_field, 1)
         src_row.addWidget(self.source_pick_btn)
         src_row.addWidget(self.create_chk)
-        form.addRow("Source mesh (abc)", self._wrap(src_row))
+        form.addRow("Src mesh (abc)", self._wrap(src_row))
 
         # Target mesh (rest) + pick
         tgt_row = QtWidgets.QHBoxLayout()
         self.target_field = QtWidgets.QLineEdit()
         self.target_field.setReadOnly(True)
-        self.target_pick_btn = QtWidgets.QPushButton("Pick selected")
+        self.target_pick_btn = QtWidgets.QPushButton("Pick")
         tgt_row.addWidget(self.target_field, 1)
         tgt_row.addWidget(self.target_pick_btn)
-        form.addRow("Target mesh (rest)", self._wrap(tgt_row))
+        form.addRow("Target mesh", self._wrap(tgt_row))
 
         self.vtx_label = QtWidgets.QLabel("-")
-        form.addRow("Vertices", self.vtx_label)
+        form.addRow("Is Valid", self.vtx_label)
 
         # ABC path + browse
         abc_row = QtWidgets.QHBoxLayout()
@@ -128,6 +132,8 @@ class SourcePanel(QtWidgets.QWidget):
 
     @staticmethod
     def _wrap(layout) -> QtWidgets.QWidget:
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(4)
         w = QtWidgets.QWidget()
         w.setLayout(layout)
         return w

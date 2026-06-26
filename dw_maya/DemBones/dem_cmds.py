@@ -24,6 +24,7 @@ import re
 import sys
 import json
 import glob
+import shutil
 import tempfile
 from typing import Dict, List, Optional, Tuple
 
@@ -39,25 +40,93 @@ logger = get_logger()
 # EXE RESOLUTION
 # ============================================================================
 
-def get_exe_path() -> Optional[str]:
-    """Resolve the bundled DemBones executable for the current platform.
+# Where to get the precompiled binaries when none is found. DemBones is an
+# Electronic Arts project under BSD-3 - the binaries are not redistributed with
+# this repo, so the artist points the tool at their own copy (PATH or env var).
+DEMBONES_DOWNLOAD_URL = "https://github.com/electronicarts/dem-bones/releases"
 
-    Looks under ``<package>/bin/<OS>/DemBones[.exe]``.
+# Maya optionVar that stores a user-located exe path (set via "Locate DemBones"
+# in the UI). Persists across Maya sessions, per user.
+_EXE_PREF_KEY = "dw_dembones_exe"
 
-    Returns:
-        str path to the executable, or ``None`` if it isn't bundled.
-    """
+
+def get_saved_exe() -> Optional[str]:
+    """Return the user-located exe path saved in the Maya prefs, if any."""
+    try:
+        if cmds.optionVar(exists=_EXE_PREF_KEY):
+            path = cmds.optionVar(query=_EXE_PREF_KEY)
+            if path and os.path.isfile(path):
+                return path
+    except Exception as e:
+        logger.warning(f"Could not read DemBones exe pref: {e}")
+    return None
+
+
+def set_saved_exe(path: str) -> None:
+    """Persist a user-located exe path to the Maya prefs."""
+    try:
+        cmds.optionVar(stringValue=(_EXE_PREF_KEY, path))
+    except Exception as e:
+        logger.error(f"Could not save DemBones exe pref: {e}")
+
+
+def _exe_name() -> str:
+    """Platform executable file name."""
+    return "DemBones.exe" if sys.platform.startswith("win") else "DemBones"
+
+
+def _bundled_exe_path() -> str:
+    """Expected path of a binary dropped under ``<package>/bin/<OS>/``."""
     here = os.path.dirname(os.path.abspath(__file__))
     if sys.platform.startswith("win"):
-        candidate = os.path.join(here, "bin", "Windows", "DemBones.exe")
+        sub = "Windows"
     elif sys.platform.startswith("linux"):
-        candidate = os.path.join(here, "bin", "Linux", "DemBones")
+        sub = "Linux"
     else:
-        candidate = os.path.join(here, "bin", "macOS", "DemBones")
+        sub = "macOS"
+    return os.path.join(here, "bin", sub, _exe_name())
 
+
+def get_exe_path() -> Optional[str]:
+    """Resolve the DemBones executable for the current platform.
+
+    Resolution order, first hit wins:
+        1. ``DEMBONES_EXE`` env var - an explicit path (pipeline / tool deploy).
+        2. A path the artist located via the UI (saved in Maya prefs).
+        3. The system ``PATH`` (artist installed DemBones globally).
+        4. A binary dropped under ``<package>/bin/<OS>/DemBones[.exe]``.
+
+    The binaries themselves are not committed (BSD-3, large, platform specific);
+    see :data:`DEMBONES_DOWNLOAD_URL`.
+
+    Returns:
+        str path to the executable, or ``None`` if it can't be found.
+    """
+    # 1. Explicit override (pipeline / tool deploy).
+    override = os.environ.get("DEMBONES_EXE")
+    if override and os.path.isfile(override):
+        return override
+    if override:
+        logger.warning(f"DEMBONES_EXE is set but not a file: {override}")
+
+    # 2. User-located path saved in the Maya prefs.
+    saved = get_saved_exe()
+    if saved:
+        return saved
+
+    # 3. On PATH.
+    on_path = shutil.which(_exe_name())
+    if on_path:
+        return on_path
+
+    # 4. Bundled alongside the tool.
+    candidate = _bundled_exe_path()
     if os.path.isfile(candidate):
         return candidate
-    logger.warning(f"DemBones exe not found at expected path: {candidate}")
+
+    logger.warning(
+        f"DemBones exe not found (env DEMBONES_EXE, saved pref, PATH, or "
+        f"{candidate}). Download from {DEMBONES_DOWNLOAD_URL}")
     return None
 
 
