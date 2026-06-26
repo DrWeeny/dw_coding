@@ -78,10 +78,18 @@ class DemBonesUI(QtWidgets.QMainWindow):
         self.solve_btn = QtWidgets.QPushButton("Solve")
         self.cancel_btn = QtWidgets.QPushButton("Cancel")
         self.cancel_btn.setEnabled(False)
+        # A self-driven marquee: a determinate bar whose value loops left->right
+        # on a timer. We avoid Qt's native indeterminate mode (setRange(0, 0))
+        # because Maya's stylesheet can render it as a static block - which looks
+        # frozen. This always animates, so it clearly reads as "still working".
         self.progress = QtWidgets.QProgressBar()
-        self.progress.setRange(0, 0)            # indeterminate / busy
+        self.progress.setRange(0, 100)
+        self.progress.setValue(0)
         self.progress.setTextVisible(False)
         self.progress.setVisible(False)
+        self._busy_timer = QtCore.QTimer(self)
+        self._busy_timer.setInterval(30)
+        self._busy_timer.timeout.connect(self._tick_busy)
         self.rmse_label = QtWidgets.QLabel("rmse: --")
         self.show_log_chk = QtWidgets.QCheckBox("show log")
         self.show_log_chk.setToolTip(
@@ -250,7 +258,19 @@ class DemBonesUI(QtWidgets.QMainWindow):
         running = self._runner.is_running()
         show_log = self.show_log_chk.isChecked()
         self.log_view.setVisible(show_log)
-        self.progress.setVisible(running and not show_log)
+        busy = running and not show_log
+        self.progress.setVisible(busy)
+        if busy:
+            if not self._busy_timer.isActive():
+                self._busy_timer.start()
+        else:
+            self._busy_timer.stop()
+            self.progress.setValue(0)
+
+    def _tick_busy(self) -> None:
+        """Loop the marquee value left->right; reset at the end."""
+        value = self.progress.value() + 3
+        self.progress.setValue(0 if value > self.progress.maximum() else value)
 
     def _on_open_dir(self) -> None:
         QtGui.QDesktopServices.openUrl(

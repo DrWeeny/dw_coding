@@ -47,6 +47,7 @@ class SourcePanel(QtWidgets.QWidget):
     """Source (abc) + target (rest) meshes, abc path, range, use-rig inputs."""
 
     use_rig_changed = Signal(bool)
+    target_mesh_changed = Signal(str)
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
@@ -144,8 +145,10 @@ class SourcePanel(QtWidgets.QWidget):
         self.browse_btn.clicked.connect(self._on_browse)
         self.auto_btn.clicked.connect(self._on_auto_range)
         self.use_rig_chk.toggled.connect(self._on_use_rig)
+        self.target_field.editingFinished.connect(self._emit_target_changed)
 
-    # -- Public getters ---------------------------------------------------
+
+        # -- Public getters ---------------------------------------------------
 
     def source_mesh(self) -> str:
         return self.source_field.text()
@@ -166,6 +169,9 @@ class SourcePanel(QtWidgets.QWidget):
         return self._topo_valid
 
     # -- Slots ------------------------------------------------------------
+
+    def _emit_target_changed(self) -> None:
+        self.target_mesh_changed.emit(self.target_field.text())
 
     def _on_pick_source(self) -> None:
         sel = cmds.ls(selection=True, long=True) or []

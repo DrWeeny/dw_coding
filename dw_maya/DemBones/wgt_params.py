@@ -39,6 +39,23 @@ class ParamsPanel(QtWidgets.QWidget):
         v.setContentsMargins(8, 6, 8, 6)
         v.setSpacing(4)
 
+        # One-line warning shown only with "Use existing rig"; the full
+        # custom-joints explanation lives in its tooltip (hover to read).
+        self.rig_note = QtWidgets.QLabel(
+            "Warning: Use existing rig changes the params - hover for details.")
+        self.rig_note.setToolTip(
+            "Use existing rig: solving against your supplied joints.\n"
+            "- nBones is ignored - the bone count comes from your skeleton.\n"
+            "- Weights are still solved (nWeightsIters > 0); your skin is the "
+            "seed, not the final weights.\n"
+            "- bindUpdate = 0 keeps your joint placement.\n"
+            "Tip: a high nIters is rarely needed here - your placement already "
+            "does the heavy lifting.")
+        self.rig_note.setWordWrap(False)
+        self.rig_note.setStyleSheet("QLabel { color: #d89b3a; }")
+        self.rig_note.setVisible(False)
+        v.addWidget(self.rig_note)
+
         # -- Common params (always visible) -------------------------------
         common = QtWidgets.QGridLayout()
         common.setHorizontalSpacing(8)
@@ -207,6 +224,7 @@ class ParamsPanel(QtWidgets.QWidget):
     def set_use_rig(self, on: bool) -> None:
         # In rig mode the bone count is dictated by the supplied skeleton.
         self.n_bones.setEnabled(not bool(on))
+        self.rig_note.setVisible(bool(on))
 
     # -- Public API -------------------------------------------------------
 
