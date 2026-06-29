@@ -41,6 +41,7 @@ from .wgt_signals import SlimfastSignals
 from .cmds import SlimfastController
 from .wgt_section import CollapsibleSection
 from . import wgt_deformer_panel
+from . import type_colors
 from dw_utils import data_hub
 import dw_maya.dw_paint
 import dw_maya.dw_pyqt_utils.dw_btn_storage
@@ -250,6 +251,17 @@ class SlimfastWidget(QtWidgets.QWidget):
 
         view_menu.addSeparator()
 
+        # --- Weight type colours editor ---
+        self._type_colors_action = QtWidgets.QAction('Weight type colours…', self)
+        self._type_colors_action.setToolTip(
+            'Edit the colour used per weight-source type, shared with the '
+            'Maya Map Transfer tool.'
+        )
+        self._type_colors_action.triggered.connect(self._on_edit_type_colors)
+        view_menu.addAction(self._type_colors_action)
+
+        view_menu.addSeparator()
+
         # --- Visible modes submenu ---
         modes_menu = view_menu.addMenu('Visible modes')
         self._mode_visibility_actions = {}
@@ -286,6 +298,22 @@ class SlimfastWidget(QtWidgets.QWidget):
         """Open the Maya Map Transfer companion window."""
         from dw_maya.Slimfast import wgt_maya_transfer
         self._map_transfer_win = wgt_maya_transfer.launch()
+
+    @Slot()
+    def _on_edit_type_colors(self) -> None:
+        """Open the shared weight-type colour editor (re-tints open tools)."""
+        from dw_maya.Slimfast import type_colors, wgt_maya_transfer
+
+        def _refresh():
+            win = wgt_maya_transfer.MayaMapTransferWidget._instance
+            if win is not None:
+                try:
+                    win.refresh_colors()
+                except Exception:
+                    pass
+
+        self._type_colors_dlg = type_colors.TypeColorDialog(self, on_change=_refresh)
+        self._type_colors_dlg.show()
 
     def _build_advanced_section(self) -> CollapsibleSection:
         """Build the collapsible 'Advanced ops' section (vector / radial weights)."""
@@ -1676,7 +1704,7 @@ class SlimfastWidget(QtWidgets.QWidget):
 
             node_name = label.split('] ', 1)[-1] if '] ' in label else label
             node_name = node_name.split(":")[-1]
-            color = self._SOURCE_COLORS.get(node_type, '#cccccc')
+            color = type_colors.get_hex_for_node_type(node_type)
 
             # Separator before first nucleus entry
             if node_type in nucleus_types and not separator_inserted and has_deformer:

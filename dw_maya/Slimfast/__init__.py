@@ -30,6 +30,7 @@ def _reload():
     import dw_maya.Slimfast.wgt_signals
     import dw_maya.Slimfast.wgt_section
     import dw_maya.Slimfast.cmds
+    import dw_maya.Slimfast.type_colors
     import dw_maya.Slimfast.transfer_cmds
     import dw_maya.Slimfast.wgt_deformer_panel
     import dw_maya.Slimfast.main_ui
@@ -39,6 +40,7 @@ def _reload():
     importlib.reload(dw_maya.Slimfast.wgt_signals)
     importlib.reload(dw_maya.Slimfast.wgt_section)
     importlib.reload(dw_maya.Slimfast.cmds)
+    importlib.reload(dw_maya.Slimfast.type_colors)
     importlib.reload(dw_maya.Slimfast.transfer_cmds)
     importlib.reload(dw_maya.Slimfast.wgt_deformer_panel)
     importlib.reload(dw_maya.Slimfast.wgt_skin_panel)

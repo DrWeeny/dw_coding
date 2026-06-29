@@ -40,29 +40,12 @@ except ImportError:
     from shiboken2 import wrapInstance
 
 import dw_maya.Slimfast.transfer_cmds as transfer_cmds
+import dw_maya.Slimfast.type_colors as type_colors
 from dw_logger import get_logger
 
 logger = get_logger()
 
 _ROLE_DATA = Qt.UserRole + 1
-
-# Settings location for the per-type colour cache.
-_SETTINGS_ORG = "DrWeeny"
-_SETTINGS_APP = "MayaMapTransfer"
-_COLOR_GROUP = "type_colors"
-
-# Nice presets for the common WeightSource subclasses; any unknown type gets a
-# deterministic colour generated from its name. All are persisted in QSettings
-# so a type keeps the same colour across sessions (and can be hand-edited).
-_TYPE_COLOR_SEED = {
-    "NClothMap": "#4ecdc4",
-    "VertexColorAlpha": "#cc88dd",
-    "Cluster": "#cccccc",
-    "BlendShape": "#e8a838",
-    "SkinCluster": "#a0c8ff",
-    "SoftMod": "#bbbbbb",
-    "Wire": "#bbbbbb",
-}
 
 
 def _entry_type(entry: dict) -> str:
@@ -70,28 +53,9 @@ def _entry_type(entry: dict) -> str:
     return entry.get("type_name") or entry.get("node_type") or "Unknown"
 
 
-def _generate_color(type_name: str) -> str:
-    """Deterministic pleasant colour for a type name (stable across runs)."""
-    import hashlib
-    digest = int(hashlib.md5(type_name.encode("utf-8")).hexdigest(), 16)
-    hue = digest % 360
-    return QtGui.QColor.fromHsv(hue, 130, 220).name()
-
-
-def _type_color(type_name: str) -> "QtGui.QColor":
-    """Return the cached colour for *type_name*, creating one on first use."""
-    settings = QtCore.QSettings(_SETTINGS_ORG, _SETTINGS_APP)
-    key = f"{_COLOR_GROUP}/{type_name}"
-    hex_str = settings.value(key, None)
-    if not hex_str:
-        hex_str = _TYPE_COLOR_SEED.get(type_name) or _generate_color(type_name)
-        settings.setValue(key, hex_str)
-    return QtGui.QColor(hex_str)
-
-
 def _color_for(entry: dict) -> "QtGui.QColor":
     """Return the row colour for a map entry, keyed by its source type name."""
-    return _type_color(_entry_type(entry))
+    return type_colors.get_color(_entry_type(entry))
 
 
 def _maya_main_window() -> QtWidgets.QWidget:
@@ -344,6 +308,18 @@ class MayaMapTransferWidget(QtWidgets.QWidget):
         self._rebuild_match_tree()
         self._set_status(f"Target set to '{mesh.split('|')[-1]}'.")
 
+    def refresh_colors(self) -> None:
+        """Re-tint both trees and the filter bar after a colour change.
+
+        Called by the Pref-menu colour editor so an open window updates live,
+        without losing the current stored-mesh selection.
+        """
+        active = self._active_index
+        self._rebuild_store_tree()      # resets _active_index to -1
+        self._active_index = active
+        self._rebuild_filter_bar()
+        self._rebuild_match_tree()
+
     def _rebuild_filter_bar(self) -> None:
         """Rebuild the type filter checkboxes from the target's map types."""
         # Drop old widgets.
@@ -363,7 +339,7 @@ class MayaMapTransferWidget(QtWidgets.QWidget):
             self._type_filters.setdefault(type_name, True)
             check = QtWidgets.QCheckBox(type_name)
             check.setChecked(self._type_filters[type_name])
-            check.setStyleSheet(f"color: {_type_color(type_name).name()};")
+            check.setStyleSheet(f"color: {type_colors.get_color(type_name).name()};")
             check.toggled.connect(partial(self._on_filter_toggled, type_name))
             self._filter_bar.addWidget(check)
             self._filter_checks[type_name] = check
