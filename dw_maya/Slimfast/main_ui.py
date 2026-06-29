@@ -269,7 +269,23 @@ class SlimfastWidget(QtWidgets.QWidget):
         act_new_alpha.triggered.connect(self._on_create_alpha_map)
         create_menu.addAction(act_new_alpha)
 
+        # --- Data menu ---
+        data_menu = menu_bar.addMenu('Data')
+        act_map_transfer = QtWidgets.QAction('Maya map transfer', self)
+        act_map_transfer.setToolTip(
+            'Store an object\'s weight maps and re-apply them on another '
+            'object, in this or another Maya session.'
+        )
+        act_map_transfer.triggered.connect(self._on_open_map_transfer)
+        data_menu.addAction(act_map_transfer)
+
         return menu_bar
+
+    @Slot()
+    def _on_open_map_transfer(self) -> None:
+        """Open the Maya Map Transfer companion window."""
+        from dw_maya.Slimfast import wgt_maya_transfer
+        self._map_transfer_win = wgt_maya_transfer.launch()
 
     def _build_advanced_section(self) -> CollapsibleSection:
         """Build the collapsible 'Advanced ops' section (vector / radial weights)."""
