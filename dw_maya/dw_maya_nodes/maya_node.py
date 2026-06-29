@@ -241,7 +241,9 @@ class MayaNode(ObjPointer):
                 long = cmds.ls(node, long=True)
                 return long[0] if long else node
             return node
-        _sh = cmds.listRelatives(node, type='shape', ni=True, fullPath=True)
+        # Use shapes() so intermediate (orig) shapes are reliably excluded —
+        # Maya's ni flag alone leaks them on referenced / namespaced nodes.
+        _sh = self.shapes()
         if not _sh:
             return self.tr
         # A transform can own several shapes (rig / groom). ``.sh`` keeps its
@@ -279,9 +281,21 @@ class MayaNode(ObjPointer):
         tr = self.tr
         if not tr:
             return []
-        return cmds.listRelatives(tr, type='shape',
-                                  noIntermediate=not intermediate,
-                                  fullPath=True) or []
+        all_shapes = cmds.listRelatives(tr, type='shape', fullPath=True) or []
+        if intermediate:
+            return all_shapes
+        # Maya's noIntermediate / ni flag is unreliable on referenced or
+        # namespaced nodes (it can still return orig shapes), so filter the
+        # intermediate shapes explicitly on the intermediateObject attribute.
+        result = []
+        for shape in all_shapes:
+            try:
+                if cmds.getAttr(f'{shape}.intermediateObject'):
+                    continue
+            except Exception:
+                pass
+            result.append(shape)
+        return result
 
     #: Alias for :meth:`shapes` (Maya-style snake_case name).
     list_shapes = shapes

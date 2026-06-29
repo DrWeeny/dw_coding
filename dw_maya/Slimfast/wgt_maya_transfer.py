@@ -25,25 +25,68 @@ Author:
 from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
+from functools import partial
 
 from maya import cmds
 import maya.OpenMayaUI as omui
 
 try:
-    from PySide6 import QtCore, QtWidgets
+    from PySide6 import QtCore, QtGui, QtWidgets
     from PySide6.QtCore import Qt
     from shiboken6 import wrapInstance
 except ImportError:
-    from PySide2 import QtCore, QtWidgets
+    from PySide2 import QtCore, QtGui, QtWidgets
     from PySide2.QtCore import Qt
     from shiboken2 import wrapInstance
 
 import dw_maya.Slimfast.transfer_cmds as transfer_cmds
 from dw_logger import get_logger
 
+# Shared backend palette (single source of truth in the package __init__).
+try:
+    from dw_maya.Slimfast import _SOURCE_COLORS
+except Exception:
+    _SOURCE_COLORS = {}
+
 logger = get_logger()
 
 _ROLE_DATA = Qt.UserRole + 1
+_DEFAULT_COLOR = "#dddddd"
+
+# Fallback palette key when a source's node type is not itself a backend key
+# (e.g. a vtxColor source's node is a mesh/transform).
+_CATEGORY_PALETTE_KEY = {
+    "nucleus": "nCloth",
+    "deformer": "cluster",
+    "vtxColor": "vtxColor",
+}
+
+# Backend categories shown as type filters on the match panel (order matters).
+_FILTER_CATEGORIES = [
+    ("nucleus", "Nucleus"),
+    ("deformer", "Deformer"),
+    ("vtxColor", "Vtx color"),
+]
+
+
+def _category_color(category: str) -> Optional[str]:
+    """Return the palette hex for a backend category, or None."""
+    return _SOURCE_COLORS.get(_CATEGORY_PALETTE_KEY.get(category))
+
+
+def _color_for(entry: dict) -> "QtGui.QColor":
+    """Return the row colour for a map entry from the shared backend palette.
+
+    Resolves by specific node type first, then falls back to the source's
+    backend category, then to a neutral default.
+    """
+    node_type = entry.get("node_type")
+    if node_type in _SOURCE_COLORS:
+        return QtGui.QColor(_SOURCE_COLORS[node_type])
+    cat_key = _CATEGORY_PALETTE_KEY.get(entry.get("category"))
+    if cat_key in _SOURCE_COLORS:
+        return QtGui.QColor(_SOURCE_COLORS[cat_key])
+    return QtGui.QColor(_DEFAULT_COLOR)
 
 
 def _maya_main_window() -> QtWidgets.QWidget:
@@ -70,6 +113,10 @@ class MayaMapTransferWidget(QtWidgets.QWidget):
         self._target_mesh: Optional[str] = None
         # Index of the stored mesh currently driving the match tree
         self._active_index: int = -1
+        # Backend-category visibility filters (all on by default)
+        self._type_filters: Dict[str, bool] = {
+            cat: True for cat, _ in _FILTER_CATEGORIES
+        }
 
         self._build_ui()
         self._connect_signals()
@@ -139,6 +186,22 @@ class MayaMapTransferWidget(QtWidgets.QWidget):
         self._target_label.setStyleSheet("color: #a0c8ff; font-weight: bold;")
         tgt_row.addWidget(self._target_label, stretch=1)
         lay.addLayout(tgt_row)
+
+        # Per-type filters: untick a category to drop those maps entirely.
+        filt_row = QtWidgets.QHBoxLayout()
+        filt_row.addWidget(QtWidgets.QLabel("Show:"))
+        self._filter_checks: Dict[str, QtWidgets.QCheckBox] = {}
+        for cat, label in _FILTER_CATEGORIES:
+            check = QtWidgets.QCheckBox(label)
+            check.setChecked(True)
+            color = _category_color(cat)
+            if color:
+                check.setStyleSheet(f"color: {color};")
+            check.toggled.connect(partial(self._on_filter_toggled, cat))
+            filt_row.addWidget(check)
+            self._filter_checks[cat] = check
+        filt_row.addStretch()
+        lay.addLayout(filt_row)
 
         self._match_tree = QtWidgets.QTreeWidget()
         self._match_tree.setHeaderLabels(["On", "Source map", "Target map"])
@@ -246,6 +309,7 @@ class MayaMapTransferWidget(QtWidgets.QWidget):
             for entry in snap["maps"]:
                 child = QtWidgets.QTreeWidgetItem([entry["key"]])
                 child.setToolTip(0, f"{entry['node_name']}.{entry['map_name']} ({entry['node_type']})")
+                child.setForeground(0, _color_for(entry))
                 top.addChild(child)
             top.setExpanded(True)
         # Selection changed implicitly -> refresh match tree
@@ -291,9 +355,12 @@ class MayaMapTransferWidget(QtWidgets.QWidget):
 
         target_keys = [t["key"] for t in self._target_maps]
         for entry in self._storage[self._active_index]["maps"]:
+            if not self._type_filters.get(entry.get("category"), True):
+                continue
             item = QtWidgets.QTreeWidgetItem(["", entry["key"], ""])
             item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
             item.setData(0, _ROLE_DATA, entry)
+            item.setForeground(1, _color_for(entry))
 
             combo = QtWidgets.QComboBox(self._match_tree)
             combo.addItem("-", None)
@@ -311,6 +378,11 @@ class MayaMapTransferWidget(QtWidgets.QWidget):
             combo.currentIndexChanged.connect(
                 lambda _idx, it=item: self._on_combo_changed(it)
             )
+
+    def _on_filter_toggled(self, category: str, checked: bool) -> None:
+        """Show or hide all maps of a backend category in the match tree."""
+        self._type_filters[category] = checked
+        self._rebuild_match_tree()
 
     def _on_combo_changed(self, item: QtWidgets.QTreeWidgetItem) -> None:
         """Auto-enable a row when a real target map gets picked for it."""

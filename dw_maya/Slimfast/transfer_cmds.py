@@ -48,6 +48,10 @@ SCHEMA_VERSION = 1
 # name, so the deformer node itself is the matching identity instead.
 _IMPLICIT_MAP_NAMES = ("weightList", "baseWeights", "weights")
 
+# Node types skipped on resolve. skinCluster needs per-influence handling that
+# does not fit the single-map transfer model, so it is left out for now.
+_SKIP_NODE_TYPES = ("skinCluster",)
+
 
 # ---------------------------------------------------------------------------
 # Scene helpers
@@ -115,40 +119,51 @@ def get_world_positions(mesh: str) -> List[List[float]]:
     return [[round(p.x, 5), round(p.y, 5), round(p.z, 5)] for p in pts]
 
 
+def strip_namespace(name: str) -> str:
+    """Return *name* without dag path or namespace (``char:cl|x`` -> ``x``)."""
+    return name.split("|")[-1].split(":")[-1]
+
+
 def map_identity(node_name: str, node_type: str, map_name: str) -> str:
     """Return the name used to match a source map to a target map.
 
     Nucleus maps are already uniquely named (thickness, bend, ...). Implicit
     deformer maps (``weightList``) are identified by their deformer node, so a
-    cluster and a blendShape on the same mesh stay distinct.
+    cluster and a blendShape on the same mesh stay distinct. Namespaces are
+    stripped so a map matches across scenes referenced under different names.
     """
-    short = node_name.split("|")[-1]
     if node_type in ("nCloth", "nRigid"):
         return map_name
     if map_name in _IMPLICIT_MAP_NAMES:
-        return short
-    return map_name
+        return strip_namespace(node_name)
+    return strip_namespace(map_name)
+
+
+def source_category(src: "Any", node_type: str) -> str:
+    """Classify a WeightSource by backend: nucleus / vtxColor / deformer."""
+    if node_type in ("nCloth", "nRigid"):
+        return "nucleus"
+    if type(src).__name__ == "VertexColorAlpha":
+        return "vtxColor"
+    return "deformer"
 
 
 # ---------------------------------------------------------------------------
 # Snapshot (offline payload) / live target resolution
 # ---------------------------------------------------------------------------
 
-def _resolve_sources(mesh: str) -> List["Any"]:
-    """Resolve every WeightSource on *mesh*, per backend.
-
-    Each backend (deformer / nucleus / vtxColor) is resolved independently so
-    a failure in one (e.g. a mesh with no deformer history) does not hide the
-    maps exposed by the others.
-    """
+def _resolve_sources(mesh: str) -> list:
+    """Resolve every WeightSource on *mesh*, dropping skipped node types."""
     from dw_maya.dw_paint.weight_source import resolve_weight_sources
 
-    sources: List["Any"] = []
-    for mode in ("deformer", "nucleus", "vtxColor"):
+    sources: list = []
+    for src in resolve_weight_sources(mesh):
         try:
-            sources.extend(resolve_weight_sources(mesh, mode=mode))
-        except Exception as e:
-            logger.warning(f"resolve_weight_sources({mode}) failed on '{mesh}': {e}")
+            if cmds.nodeType(src.node_name) in _SKIP_NODE_TYPES:
+                continue
+        except Exception:
+            pass
+        sources.append(src)
     return sources
 
 
@@ -178,6 +193,7 @@ def snapshot_mesh(mesh: str) -> Dict[str, Any]:
             logger.warning(f"snapshot_mesh: available_maps failed on '{node_name}': {e}")
             continue
 
+        category = source_category(src, node_type)
         for map_name in available:
             try:
                 src.use_map(map_name)
@@ -186,8 +202,9 @@ def snapshot_mesh(mesh: str) -> Dict[str, Any]:
                 logger.warning(f"snapshot_mesh: read '{node_name}.{map_name}' failed: {e}")
                 continue
             maps.append({
-                "node_name": node_name.split("|")[-1],
+                "node_name": strip_namespace(node_name),
                 "node_type": node_type,
+                "category": category,
                 "map_name": map_name,
                 "key": map_identity(node_name, node_type, map_name),
                 "weights": [round(float(w), 6) for w in weights],
@@ -220,11 +237,13 @@ def list_target_maps(mesh: str) -> List[Dict[str, Any]]:
         except Exception as e:
             logger.warning(f"list_target_maps: available_maps failed on '{node_name}': {e}")
             continue
+        category = source_category(src, node_type)
         for map_name in available:
             out.append({
                 "source": src,
                 "node_name": node_name,
                 "node_type": node_type,
+                "category": category,
                 "map_name": map_name,
                 "key": map_identity(node_name, node_type, map_name),
             })
