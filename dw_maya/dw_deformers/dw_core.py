@@ -566,7 +566,8 @@ def listDeformers(node:str, _type:str=None) -> list:
         return []
     from ..dw_maya_utils import lsTr
     mesh = lsTr(node, dag=True, type="mesh")
-    deformers = [h for h in cmds.listHistory(mesh, pruneDagObjects=True) if is_deformer(h)]
+    history = cmds.listHistory(mesh, pruneDagObjects=True) or []
+    deformers = [h for h in history if is_deformer(h)]
     return [d for d in deformers if cmds.nodeType(d) == _type] if _type else deformers
 
 @acceptString('object_list')
