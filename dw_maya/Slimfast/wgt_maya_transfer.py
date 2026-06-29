@@ -54,8 +54,20 @@ def _entry_type(entry: dict) -> str:
 
 
 def _color_for(entry: dict) -> "QtGui.QColor":
-    """Return the row colour for a map entry, keyed by its source type name."""
-    return type_colors.get_color(_entry_type(entry))
+    """Return the row colour for a map entry.
+
+    Prefers the WeightSource class name (``type_name``). Older entries that
+    only carry a Maya ``node_type`` are routed through the node-type bridge, so
+    their colour matches the Slimfast combo instead of keying off the raw node
+    type string (which would bypass the mapping).
+    """
+    type_name = entry.get("type_name")
+    if type_name:
+        return type_colors.get_color(type_name)
+    node_type = entry.get("node_type")
+    if node_type:
+        return type_colors.get_color_for_node_type(node_type)
+    return type_colors.get_color("Unknown")
 
 
 def _maya_main_window() -> QtWidgets.QWidget:
