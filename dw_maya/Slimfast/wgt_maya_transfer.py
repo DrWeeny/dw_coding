@@ -53,6 +53,21 @@ def _entry_type(entry: dict) -> str:
     return entry.get("type_name") or entry.get("node_type") or "Unknown"
 
 
+def _backfill_type_names(meshes: list) -> None:
+    """Fill missing ``type_name`` on entries loaded from older save files.
+
+    Pre-``type_name`` storages only carry ``node_type``; deriving the class
+    name from the node-type bridge makes their colours and type filters match
+    a freshly resolved target (and the Slimfast combo).
+    """
+    for snap in meshes:
+        for entry in snap.get("maps", []):
+            if not entry.get("type_name"):
+                node_type = entry.get("node_type")
+                if node_type:
+                    entry["type_name"] = type_colors.type_for_node_type(node_type)
+
+
 def _color_for(entry: dict) -> "QtGui.QColor":
     """Return the row colour for a map entry.
 
@@ -521,7 +536,9 @@ class MayaMapTransferWidget(QtWidgets.QWidget):
         if data is None:
             self._warn(f"'{path}' is not a valid map storage file.")
             return
-        self._storage = list(data.get("meshes", []))
+        meshes = list(data.get("meshes", []))
+        _backfill_type_names(meshes)
+        self._storage = meshes
         self._rebuild_store_tree()
         self._set_status(f"Loaded {len(self._storage)} mesh(es) from {path}.")
 

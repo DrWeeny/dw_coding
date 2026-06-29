@@ -21,7 +21,6 @@ Author:
 
 from __future__ import annotations
 
-import hashlib
 from functools import partial
 from typing import Callable, Dict, Optional
 
@@ -34,21 +33,40 @@ _ORG = "DrWeeny"
 _APP = "SlimfastWidget"
 _GROUP = "type_colors"
 
-# Nice presets for the common WeightSource subclasses. Anything not listed gets
-# a deterministic colour from generate_color().
+# Bumped whenever _SEED changes; a mismatch wipes the cached colours once so the
+# new scheme takes effect without the user having to hit "Reset all".
+_PALETTE_VERSION = 2
+_VERSION_KEY = "type_colors_version"
+
+# Default colour for any type not in the scheme (mesh / unknown).
+_DEFAULT_HEX = "#ffffff"
+
+# Curated palette, keyed by the colour-type returned by the Map Transfer tool
+# (the WeightSource subclass name). Deformers share a family of orange shades.
+# nCloth and nRigid are one class (NClothMap) today, so they share one colour;
+# registering separate classes later would let them diverge for free.
 _SEED = {
-    "NClothMap": "#4ecdc4",
-    "VertexColorAlpha": "#cc88dd",
-    "Cluster": "#cccccc",
-    "BlendShape": "#e8a838",
-    "SkinCluster": "#a0c8ff",
-    "SoftMod": "#bbbbbb",
-    "Wire": "#bbbbbb",
+    # nucleus (cloth + rigid until a split is registered)
+    "NClothMap":        "#5cc46a",   # green
+    # skinning
+    "SkinCluster":      "#d9534f",   # red
+    # deformers -> shades of orange
+    "Deformer":         "#e0913f",
+    "Cluster":          "#e8954a",
+    "BlendShape":       "#e0a020",
+    "SoftMod":          "#f0a860",
+    "Wire":             "#d07a30",
+    "DeltaMush":        "#f2b86b",
+    "Tension":          "#c2702a",
+    # vertex colour
+    "VertexColorAlpha": "#b884d0",   # mauve
+    # geometry
+    "mesh":             "#ffffff",   # white
 }
 
-# Maya node type -> WeightSource subclass name, so node-type callers (Slimfast's
-# source combo) colour consistently with the type(x).__name__ scheme used by
-# the Map Transfer tool. Unmapped node types fall back to their own name.
+# Maya node type -> colour-type key, so node-type callers (Slimfast's source
+# combo) colour consistently with the Map Transfer tool. Both nucleus node
+# types map to the single NClothMap class; unmapped types fall back to self.
 _NODE_TYPE_TO_TYPE = {
     "nCloth": "NClothMap",
     "nRigid": "NClothMap",
@@ -77,23 +95,35 @@ def get_hex_for_node_type(node_type: str) -> str:
     return get_hex(type_for_node_type(node_type))
 
 
+_version_checked = False
+
+
 def _settings() -> "QtCore.QSettings":
     return QtCore.QSettings(_ORG, _APP)
 
 
-def generate_color(type_name: str) -> str:
-    """Deterministic pleasant colour for a type name (stable across runs)."""
-    digest = int(hashlib.md5(type_name.encode("utf-8")).hexdigest(), 16)
-    return QtGui.QColor.fromHsv(digest % 360, 130, 220).name()
+def _ensure_palette_version() -> None:
+    """Wipe the cached colours once when the seed palette version changes."""
+    global _version_checked
+    if _version_checked:
+        return
+    _version_checked = True
+    settings = _settings()
+    if settings.value(_VERSION_KEY, 0, type=int) != _PALETTE_VERSION:
+        settings.beginGroup(_GROUP)
+        settings.remove("")
+        settings.endGroup()
+        settings.setValue(_VERSION_KEY, _PALETTE_VERSION)
 
 
 def get_hex(type_name: str) -> str:
     """Return the cached hex colour for *type_name*, creating one on first use."""
+    _ensure_palette_version()
     settings = _settings()
     key = f"{_GROUP}/{type_name}"
     value = settings.value(key, None)
     if not value:
-        value = _SEED.get(type_name) or generate_color(type_name)
+        value = _SEED.get(type_name, _DEFAULT_HEX)
         settings.setValue(key, value)
     return value
 
