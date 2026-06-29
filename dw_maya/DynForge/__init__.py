@@ -33,6 +33,7 @@ def _reload():
     import dw_maya.dw_rigging.dw_chain_guide
     import dw_maya.DynForge.forge_cmds.compat
     import dw_maya.DynForge.forge_cmds.icons
+    import dw_maya.DynForge.forge_cmds.skin_ops
     import dw_maya.DynForge.hub_keys
     import dw_maya.DynForge.wgt_base
     import dw_maya.DynForge.guide_registry
@@ -42,12 +43,14 @@ def _reload():
     import dw_maya.DynForge.wgt_attr_editor
     import dw_maya.DynForge.wgt_guide_list
     import dw_maya.DynForge.wgt_load_dialog
+    import dw_maya.DynForge.wgt_skin_panel
     import dw_maya.DynForge.main_ui
 
     for module in (
         dw_maya.dw_rigging.dw_chain_guide,
         dw_maya.DynForge.forge_cmds.compat,
         dw_maya.DynForge.forge_cmds.icons,
+        dw_maya.DynForge.forge_cmds.skin_ops,
         dw_maya.DynForge.hub_keys,
         dw_maya.DynForge.wgt_base,
         dw_maya.DynForge.guide_registry,
@@ -57,6 +60,7 @@ def _reload():
         dw_maya.DynForge.wgt_attr_editor,
         dw_maya.DynForge.wgt_guide_list,
         dw_maya.DynForge.wgt_load_dialog,
+        dw_maya.DynForge.wgt_skin_panel,
         dw_maya.DynForge.main_ui,
     ):
         importlib.reload(module)

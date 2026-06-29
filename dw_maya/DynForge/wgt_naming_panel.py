@@ -72,7 +72,7 @@ class NamingPanel(DynForgeWidgetBase):
             parts.append(prefix)
         if side:
             parts.append(side)
-        parts.append(f"{index:02d}")
+        parts.append(f"{index}")   # padding 1 (no leading zeros)
         parts.append(name)
         return "_".join(parts)
 

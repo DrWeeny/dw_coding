@@ -93,6 +93,13 @@ class GuideAttrEditor(DynForgeWidgetBase):
         self._n_joints.setValue(10)
         form.addRow("Joints", self._n_joints)
 
+        # Locator flow only: one joint per guide point, placed exactly on it.
+        self._exact = QtWidgets.QCheckBox("Exact number of guide points")
+        self._exact.setToolTip(
+            "Locator flow: build one joint per guide point, exactly on it. "
+            "The joint count follows the points and the curve becomes data-only.")
+        form.addRow("", self._exact)
+
         self._up_axis = QtWidgets.QComboBox()
         self._up_axis.addItems(_UP_AXES)
         form.addRow("Up axis", self._up_axis)
@@ -156,6 +163,7 @@ class GuideAttrEditor(DynForgeWidgetBase):
         self._up_axis.currentIndexChanged.connect(self._apply_to_guide)
         self._flip.toggled.connect(self._apply_to_guide)
         self._cv_count.valueChanged.connect(self._apply_to_guide)
+        self._exact.toggled.connect(self._on_exact_toggled)
         self._point_type.currentIndexChanged.connect(self._on_point_type_changed)
 
         self._up_btn.clicked.connect(partial(self._move_selected, -1))
@@ -187,6 +195,7 @@ class GuideAttrEditor(DynForgeWidgetBase):
         self._flip.setChecked(False)   # flip is a per-fix correction, never default-on
         self._set_point_type(defaults.get("point_type", "locator"))
         self._cv_count.setValue(defaults.get("cv_count", 6))   # after joints (joints auto-syncs it)
+        self._exact.setChecked(bool(defaults.get("exact_points", False)))
 
     def load_guide(self,
                    guide,) -> None:
@@ -207,6 +216,7 @@ class GuideAttrEditor(DynForgeWidgetBase):
         # Set CVs last: changing joints above auto-syncs it, so restore the
         # guide's own value afterwards.
         self._cv_count.setValue(getattr(guide, "cv_count", 6))
+        self._exact.setChecked(bool(getattr(guide, "exact_points", False)))
 
         self._guide = guide
         self._refresh_locator_list()
@@ -244,7 +254,23 @@ class GuideAttrEditor(DynForgeWidgetBase):
             self.params_edited.emit(self._guide)
 
     def _update_locator_visibility(self) -> None:
-        self._loc_box.setVisible(self._rb_loc.isChecked())
+        is_locator = self._rb_loc.isChecked()
+        self._loc_box.setVisible(is_locator)
+        self._exact.setEnabled(is_locator)   # exact mode only applies to locators
+        self._update_exact_enabled()
+
+    def _update_exact_enabled(self) -> None:
+        """In exact mode the count follows the points, so lock Joints and CVs."""
+        exact = self._exact.isChecked() and self._rb_loc.isChecked()
+        self._n_joints.setEnabled(not exact)
+        self._cv_count.setEnabled(not exact)
+
+    def _on_exact_toggled(self,
+                          *args,) -> None:
+        self._update_exact_enabled()
+        if self._guide is not None and hasattr(self._guide, "set_build_params"):
+            self._guide.set_build_params(exact_points=self._exact.isChecked())
+            self.params_edited.emit(self._guide)
 
     def _on_point_type_changed(self,
                                *args,) -> None:

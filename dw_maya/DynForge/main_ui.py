@@ -31,6 +31,7 @@ from dw_maya.DynForge.wgt_naming_panel import NamingPanel
 from dw_maya.DynForge.wgt_attr_editor import GuideAttrEditor
 from dw_maya.DynForge.wgt_guide_list import GuideListPanel
 from dw_maya.DynForge.wgt_load_dialog import LoadDialog
+from dw_maya.DynForge.wgt_skin_panel import SkinPanel
 from dw_maya.DynForge import guide_registry
 from dw_logger import get_logger
 
@@ -82,12 +83,102 @@ class DynForgeUI(DynForgeMainWindow):
         self.attr_editor.apply_defaults(self._defaults)
         self.attr_editor.load_guide(None)   # placeholder until something is selected
         self.tabs.addTab(self.attr_editor, "Attributes")
-        self.tabs.addTab(self._make_skinning_placeholder(), "Skinning")
+        self.skin_panel = SkinPanel(self.hub)
+        self.skin_panel.load_guide(None)
+        self.tabs.addTab(self.skin_panel, "Skinning")
         splitter.addWidget(self.tabs)
 
         splitter.setStretchFactor(0, 1)
         splitter.setStretchFactor(1, 1)
         layout.addWidget(splitter, stretch=1)
+
+        # Final commit: move the joints into the proper rig hierarchy (and later
+        # apply the skinning automation). Placeholder for now.
+        install_row = QtWidgets.QHBoxLayout()
+        install_row.addStretch(1)
+        self.install_btn = QtWidgets.QPushButton("Install guides")
+        self.install_btn.setToolTip(
+            "Move the built chains into the proper rig hierarchy (and apply the "
+            "skinning automation). Not implemented yet.")
+        install_row.addWidget(self.install_btn)
+        layout.addLayout(install_row)
+        self.install_btn.clicked.connect(self._on_install)
+
+    def _on_install(self) -> None:
+        """
+        Install every fully-configured guide: back up each skinCluster (first
+        time), transfer the donor weight onto the chains (spatial cascade) and
+        parent the _PIN. Re-installing a skin prompts vanilla vs keep.
+        """
+        guides = [g for g in self.list_panel.all_guides()
+                  if hasattr(g, "is_installable") and g.is_installable()]
+        if not guides:
+            QtWidgets.QMessageBox.information(
+                self, "DynForge",
+                "Nothing to install.\n\nBuild a chain, then on the Skinning tab "
+                "register a mesh, create a gizmo and pick donor bone(s).")
+            return
+
+        by_skin: dict = {}
+        for guide in guides:
+            by_skin.setdefault(guide.skin_cluster, []).append(guide)
+
+        installed = 0
+        for skin, group in by_skin.items():
+            rep = group[0]
+            targets = group
+            if rep.has_skin_backup():
+                choice = self._ask_reinstall(skin)
+                if choice == "cancel":
+                    continue
+                if choice == "vanilla":
+                    try:
+                        rep.restore_skin()
+                    except Exception as e:
+                        logger.error(f"DynForge: restore before install failed: {e}")
+                        QtWidgets.QMessageBox.warning(self, "DynForge", f"Restore failed:\n{e}")
+                        continue
+                else:   # keep: only the chains not already installed
+                    targets = [g for g in group if not g.is_installed()]
+            else:
+                try:
+                    rep.backup_skin()
+                except Exception as e:
+                    logger.error(f"DynForge: backup failed: {e}")
+                    QtWidgets.QMessageBox.warning(self, "DynForge", f"Backup failed:\n{e}")
+                    continue
+
+            for guide in targets:
+                try:
+                    guide.install()
+                    installed += 1
+                    self.skin_panel.reload_if_current(guide)
+                except Exception as e:
+                    logger.error(f"DynForge: install failed for {guide.name!r}: {e}")
+                    traceback.print_exc()
+                    QtWidgets.QMessageBox.warning(self, "DynForge", f"Install failed for {guide.name}:\n{e}")
+
+        QtWidgets.QMessageBox.information(self, "DynForge", f"Installed {installed} chain(s).")
+
+    def _ask_reinstall(self,
+                       skin: str,) -> str:
+        """Prompt for a skin that was already installed; return vanilla/keep/cancel."""
+        box = QtWidgets.QMessageBox(self)
+        box.setWindowTitle("DynForge")
+        box.setText(f"{skin.split('|')[-1]} already has a DynForge install.")
+        box.setInformativeText(
+            "Vanilla: restore the original skin, then apply all chains fresh.\n"
+            "Keep: keep the installed skinning and only add new chains.")
+        vanilla = box.addButton("Vanilla", QtWidgets.QMessageBox.AcceptRole)
+        keep    = box.addButton("Keep", QtWidgets.QMessageBox.ActionRole)
+        box.addButton("Cancel", QtWidgets.QMessageBox.RejectRole)
+        qt_exec(box)
+        clicked = box.clickedButton()
+        if clicked is vanilla:
+            return "vanilla"
+        if clicked is keep:
+            return "keep"
+        return "cancel"
 
     def _build_menu(self) -> None:
         menu = self.menuBar().addMenu("System")
@@ -95,15 +186,6 @@ class DynForgeUI(DynForgeMainWindow):
         act_load = menu.addAction("Load...")
         act_save.triggered.connect(self._on_save_json)
         act_load.triggered.connect(self._on_load)
-
-    def _make_skinning_placeholder(self) -> QtWidgets.QWidget:
-        page = QtWidgets.QWidget()
-        page_layout = QtWidgets.QVBoxLayout(page)
-        label = QtWidgets.QLabel("Skinning transfer - coming soon.")
-        label.setAlignment(Qt.AlignCenter)
-        page_layout.addWidget(label)
-        page_layout.addStretch(1)
-        return page
 
     def _connect(self) -> None:
         self.list_panel.add_requested.connect(self._on_add)
@@ -136,11 +218,13 @@ class DynForgeUI(DynForgeMainWindow):
             "n_locators": as_int("n_locators", 4),
             "point_type": str(s.value("point_type", "locator")),
             "cv_count":   as_int("cv_count", 6),
+            "exact_points": str(s.value("exact_points", "false")).lower() in ("1", "true", "yes"),
         }
 
     def _save_defaults(self) -> None:
         """Persist the current build defaults to QSettings (flip is intentionally not saved)."""
-        for key in ("mode", "n_joints", "up_axis", "degree", "n_locators", "point_type", "cv_count"):
+        for key in ("mode", "n_joints", "up_axis", "degree", "n_locators",
+                    "point_type", "cv_count", "exact_points"):
             self._settings.setValue(key, self._defaults[key])
 
     # -- Handlers ---------------------------------------------------------
@@ -175,6 +259,7 @@ class DynForgeUI(DynForgeMainWindow):
             "n_locators": getattr(guide, "n_locators", self._defaults["n_locators"]),
             "point_type": getattr(guide, "point_type", self._defaults["point_type"]),
             "cv_count":   getattr(guide, "cv_count", self._defaults["cv_count"]),
+            "exact_points": getattr(guide, "exact_points", self._defaults["exact_points"]),
         })
         # flip is deliberately left out of the persisted defaults.
         # Mode may have changed -> refresh the row badge.
@@ -222,6 +307,7 @@ class DynForgeUI(DynForgeMainWindow):
     def _on_selection_changed(self,
                               guide,) -> None:
         self.attr_editor.load_guide(guide)
+        self.skin_panel.load_guide(guide)
 
     # -- Save / load / pick ----------------------------------------------
 

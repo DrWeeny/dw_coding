@@ -874,7 +874,7 @@ class SkinCluster(Deformer):
 
         logger.debug(
             f"SkinCluster._lock_aware_write: '{influence}' on {vid_arr.size} "
-            f"vtx → {abs_cols.size} unlocked sibling(s), converged={converged}, "
+            f"vtx -> {abs_cols.size} unlocked sibling(s), converged={converged}, "
             f"prune={prune} on '{self.node_name}'"
         )
         return True
