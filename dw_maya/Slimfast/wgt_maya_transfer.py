@@ -204,7 +204,7 @@ class MayaMapTransferWidget(QtWidgets.QWidget):
         lay.addLayout(filt_row)
 
         self._match_tree = QtWidgets.QTreeWidget()
-        self._match_tree.setHeaderLabels(["On", "Source map", "Target map"])
+        self._match_tree.setHeaderLabels(["On", "Target map", "From source"])
         self._match_tree.setRootIsDecorated(False)
         header = self._match_tree.header()
         header.resizeSection(0, 36)
@@ -349,28 +349,39 @@ class MayaMapTransferWidget(QtWidgets.QWidget):
         self._set_status(f"Target set to '{mesh.split('|')[-1]}'.")
 
     def _rebuild_match_tree(self) -> None:
+        """One row per *target* map; the combo picks the stored source to use.
+
+        Target-driven so every map on the target object is listed - including
+        ones absent from the saved storage, which simply default to '-' (skip)
+        until the user assigns a relevant source map.
+        """
         self._match_tree.clear()
-        if self._active_index < 0 or self._active_index >= len(self._storage):
+        if not self._target_maps:
             return
 
-        target_keys = [t["key"] for t in self._target_maps]
-        for entry in self._storage[self._active_index]["maps"]:
-            if not self._type_filters.get(entry.get("category"), True):
+        if 0 <= self._active_index < len(self._storage):
+            source_maps = self._storage[self._active_index]["maps"]
+        else:
+            source_maps = []
+        source_keys = [s["key"] for s in source_maps]
+
+        for tgt in self._target_maps:
+            if not self._type_filters.get(tgt.get("category"), True):
                 continue
-            item = QtWidgets.QTreeWidgetItem(["", entry["key"], ""])
+            item = QtWidgets.QTreeWidgetItem(["", tgt["key"], ""])
             item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
-            item.setData(0, _ROLE_DATA, entry)
-            item.setForeground(1, _color_for(entry))
+            item.setData(0, _ROLE_DATA, tgt)
+            item.setForeground(1, _color_for(tgt))
 
             combo = QtWidgets.QComboBox(self._match_tree)
             combo.addItem("-", None)
-            for t in self._target_maps:
-                combo.addItem(t["key"], t)
+            for src in source_maps:
+                combo.addItem(src["key"], src)
 
-            # Auto-match by identical map name.
-            matched = entry["key"] in target_keys
+            # Auto-match the source whose name equals this target map's name.
+            matched = tgt["key"] in source_keys
             if matched:
-                combo.setCurrentIndex(target_keys.index(entry["key"]) + 1)
+                combo.setCurrentIndex(source_keys.index(tgt["key"]) + 1)
             item.setCheckState(0, Qt.Checked if matched else Qt.Unchecked)
 
             self._match_tree.addTopLevelItem(item)
@@ -385,10 +396,12 @@ class MayaMapTransferWidget(QtWidgets.QWidget):
         self._rebuild_match_tree()
 
     def _on_combo_changed(self, item: QtWidgets.QTreeWidgetItem) -> None:
-        """Auto-enable a row when a real target map gets picked for it."""
+        """Auto-enable a row when a real source map gets picked for it."""
         combo = self._match_tree.itemWidget(item, 2)
-        if combo is not None and combo.currentData() is not None:
-            item.setCheckState(0, Qt.Checked)
+        if combo is None:
+            return
+        # No source selected -> nothing to transfer, untick the row.
+        item.setCheckState(0, Qt.Checked if combo.currentData() is not None else Qt.Unchecked)
 
     # ------------------------------------------------------------------
     # Apply
@@ -434,16 +447,16 @@ class MayaMapTransferWidget(QtWidgets.QWidget):
                     skipped += 1
                     continue
                 combo = self._match_tree.itemWidget(item, 2)
-                target = combo.currentData() if combo else None
-                if target is None:
+                source = combo.currentData() if combo else None
+                if source is None:
                     skipped += 1
                     continue
 
-                entry = item.data(0, _ROLE_DATA)
+                target = item.data(0, _ROLE_DATA)
                 try:
                     if is_transfer:
                         transfer_cmds.transfer_weights(
-                            entry["weights"],
+                            source["weights"],
                             snap["vtx_positions"],
                             target["source"],
                             target_map=target["map_name"],
@@ -453,15 +466,15 @@ class MayaMapTransferWidget(QtWidgets.QWidget):
                         )
                     else:
                         transfer_cmds.copy_weights(
-                            entry["weights"],
+                            source["weights"],
                             target["source"],
                             target_map=target["map_name"],
                             mask=mask,
                         )
                     done += 1
                 except Exception as e:
-                    errors.append(f"{entry['key']} -> {target['key']}: {e}")
-                    logger.error(f"map transfer failed: {entry['key']} -> {target['key']}: {e}")
+                    errors.append(f"{source['key']} -> {target['key']}: {e}")
+                    logger.error(f"map transfer failed: {source['key']} -> {target['key']}: {e}")
         finally:
             cmds.undoInfo(closeChunk=True)
 
