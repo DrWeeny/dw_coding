@@ -42,51 +42,56 @@ except ImportError:
 import dw_maya.Slimfast.transfer_cmds as transfer_cmds
 from dw_logger import get_logger
 
-# Shared backend palette (single source of truth in the package __init__).
-try:
-    from dw_maya.Slimfast import _SOURCE_COLORS
-except Exception:
-    _SOURCE_COLORS = {}
-
 logger = get_logger()
 
 _ROLE_DATA = Qt.UserRole + 1
-_DEFAULT_COLOR = "#dddddd"
 
-# Fallback palette key when a source's node type is not itself a backend key
-# (e.g. a vtxColor source's node is a mesh/transform).
-_CATEGORY_PALETTE_KEY = {
-    "nucleus": "nCloth",
-    "deformer": "cluster",
-    "vtxColor": "vtxColor",
+# Settings location for the per-type colour cache.
+_SETTINGS_ORG = "DrWeeny"
+_SETTINGS_APP = "MayaMapTransfer"
+_COLOR_GROUP = "type_colors"
+
+# Nice presets for the common WeightSource subclasses; any unknown type gets a
+# deterministic colour generated from its name. All are persisted in QSettings
+# so a type keeps the same colour across sessions (and can be hand-edited).
+_TYPE_COLOR_SEED = {
+    "NClothMap": "#4ecdc4",
+    "VertexColorAlpha": "#cc88dd",
+    "Cluster": "#cccccc",
+    "BlendShape": "#e8a838",
+    "SkinCluster": "#a0c8ff",
+    "SoftMod": "#bbbbbb",
+    "Wire": "#bbbbbb",
 }
 
-# Backend categories shown as type filters on the match panel (order matters).
-_FILTER_CATEGORIES = [
-    ("nucleus", "Nucleus"),
-    ("deformer", "Deformer"),
-    ("vtxColor", "Vtx color"),
-]
+
+def _entry_type(entry: dict) -> str:
+    """Return a map entry's grouping type, robust to older saved files."""
+    return entry.get("type_name") or entry.get("node_type") or "Unknown"
 
 
-def _category_color(category: str) -> Optional[str]:
-    """Return the palette hex for a backend category, or None."""
-    return _SOURCE_COLORS.get(_CATEGORY_PALETTE_KEY.get(category))
+def _generate_color(type_name: str) -> str:
+    """Deterministic pleasant colour for a type name (stable across runs)."""
+    import hashlib
+    digest = int(hashlib.md5(type_name.encode("utf-8")).hexdigest(), 16)
+    hue = digest % 360
+    return QtGui.QColor.fromHsv(hue, 130, 220).name()
+
+
+def _type_color(type_name: str) -> "QtGui.QColor":
+    """Return the cached colour for *type_name*, creating one on first use."""
+    settings = QtCore.QSettings(_SETTINGS_ORG, _SETTINGS_APP)
+    key = f"{_COLOR_GROUP}/{type_name}"
+    hex_str = settings.value(key, None)
+    if not hex_str:
+        hex_str = _TYPE_COLOR_SEED.get(type_name) or _generate_color(type_name)
+        settings.setValue(key, hex_str)
+    return QtGui.QColor(hex_str)
 
 
 def _color_for(entry: dict) -> "QtGui.QColor":
-    """Return the row colour for a map entry from the shared backend palette.
-
-    Resolves by specific node type first, then falls back to the source's
-    backend category, then to a neutral default.
-    """
-    node_type = entry.get("node_type")
-    if node_type in _SOURCE_COLORS:
-        return QtGui.QColor(_SOURCE_COLORS[node_type])
-    cat_key = _CATEGORY_PALETTE_KEY.get(entry.get("category"))
-    if cat_key in _SOURCE_COLORS:
-        return QtGui.QColor(_SOURCE_COLORS[cat_key])
-    return QtGui.QColor(_DEFAULT_COLOR)
+    """Return the row colour for a map entry, keyed by its source type name."""
+    return _type_color(_entry_type(entry))
 
 
 def _maya_main_window() -> QtWidgets.QWidget:
@@ -113,10 +118,9 @@ class MayaMapTransferWidget(QtWidgets.QWidget):
         self._target_mesh: Optional[str] = None
         # Index of the stored mesh currently driving the match tree
         self._active_index: int = -1
-        # Backend-category visibility filters (all on by default)
-        self._type_filters: Dict[str, bool] = {
-            cat: True for cat, _ in _FILTER_CATEGORIES
-        }
+        # Per-type visibility filters, built dynamically from resolved types
+        # (type_name -> shown). New types default to shown.
+        self._type_filters: Dict[str, bool] = {}
 
         self._build_ui()
         self._connect_signals()
@@ -187,21 +191,12 @@ class MayaMapTransferWidget(QtWidgets.QWidget):
         tgt_row.addWidget(self._target_label, stretch=1)
         lay.addLayout(tgt_row)
 
-        # Per-type filters: untick a category to drop those maps entirely.
-        filt_row = QtWidgets.QHBoxLayout()
-        filt_row.addWidget(QtWidgets.QLabel("Show:"))
+        # Per-type filters, rebuilt from whatever types the target exposes.
+        # Untick a type to drop those maps entirely.
+        self._filter_bar = QtWidgets.QHBoxLayout()
+        self._filter_bar.setContentsMargins(0, 0, 0, 0)
         self._filter_checks: Dict[str, QtWidgets.QCheckBox] = {}
-        for cat, label in _FILTER_CATEGORIES:
-            check = QtWidgets.QCheckBox(label)
-            check.setChecked(True)
-            color = _category_color(cat)
-            if color:
-                check.setStyleSheet(f"color: {color};")
-            check.toggled.connect(partial(self._on_filter_toggled, cat))
-            filt_row.addWidget(check)
-            self._filter_checks[cat] = check
-        filt_row.addStretch()
-        lay.addLayout(filt_row)
+        lay.addLayout(self._filter_bar)
 
         self._match_tree = QtWidgets.QTreeWidget()
         self._match_tree.setHeaderLabels(["On", "Target map", "From source"])
@@ -345,8 +340,34 @@ class MayaMapTransferWidget(QtWidgets.QWidget):
         self._target_label.setText(
             f"{mesh.split('|')[-1]}  ({len(self._target_maps)} maps)"
         )
+        self._rebuild_filter_bar()
         self._rebuild_match_tree()
         self._set_status(f"Target set to '{mesh.split('|')[-1]}'.")
+
+    def _rebuild_filter_bar(self) -> None:
+        """Rebuild the type filter checkboxes from the target's map types."""
+        # Drop old widgets.
+        while self._filter_bar.count():
+            child = self._filter_bar.takeAt(0)
+            widget = child.widget()
+            if widget is not None:
+                widget.deleteLater()
+        self._filter_checks.clear()
+
+        types = sorted({_entry_type(t) for t in self._target_maps})
+        if not types:
+            return
+
+        self._filter_bar.addWidget(QtWidgets.QLabel("Show:"))
+        for type_name in types:
+            self._type_filters.setdefault(type_name, True)
+            check = QtWidgets.QCheckBox(type_name)
+            check.setChecked(self._type_filters[type_name])
+            check.setStyleSheet(f"color: {_type_color(type_name).name()};")
+            check.toggled.connect(partial(self._on_filter_toggled, type_name))
+            self._filter_bar.addWidget(check)
+            self._filter_checks[type_name] = check
+        self._filter_bar.addStretch()
 
     def _rebuild_match_tree(self) -> None:
         """One row per *target* map; the combo picks the stored source to use.
@@ -366,7 +387,7 @@ class MayaMapTransferWidget(QtWidgets.QWidget):
         source_keys = [s["key"] for s in source_maps]
 
         for tgt in self._target_maps:
-            if not self._type_filters.get(tgt.get("category"), True):
+            if not self._type_filters.get(_entry_type(tgt), True):
                 continue
             item = QtWidgets.QTreeWidgetItem(["", tgt["key"], ""])
             item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
@@ -390,9 +411,9 @@ class MayaMapTransferWidget(QtWidgets.QWidget):
                 lambda _idx, it=item: self._on_combo_changed(it)
             )
 
-    def _on_filter_toggled(self, category: str, checked: bool) -> None:
-        """Show or hide all maps of a backend category in the match tree."""
-        self._type_filters[category] = checked
+    def _on_filter_toggled(self, type_name: str, checked: bool) -> None:
+        """Show or hide all maps of one source type in the match tree."""
+        self._type_filters[type_name] = checked
         self._rebuild_match_tree()
 
     def _on_combo_changed(self, item: QtWidgets.QTreeWidgetItem) -> None:

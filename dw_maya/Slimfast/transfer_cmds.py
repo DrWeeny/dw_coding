@@ -139,13 +139,13 @@ def map_identity(node_name: str, node_type: str, map_name: str) -> str:
     return strip_namespace(map_name)
 
 
-def source_category(src: "Any", node_type: str) -> str:
-    """Classify a WeightSource by backend: nucleus / vtxColor / deformer."""
-    if node_type in ("nCloth", "nRigid"):
-        return "nucleus"
-    if type(src).__name__ == "VertexColorAlpha":
-        return "vtxColor"
-    return "deformer"
+def source_type(src: "Any") -> str:
+    """Return the WeightSource subclass name used to group / colour maps.
+
+    Dynamic on purpose: any new backend registered in dw_paint shows up as its
+    own type without this module needing to know about it.
+    """
+    return type(src).__name__
 
 
 # ---------------------------------------------------------------------------
@@ -193,7 +193,7 @@ def snapshot_mesh(mesh: str) -> Dict[str, Any]:
             logger.warning(f"snapshot_mesh: available_maps failed on '{node_name}': {e}")
             continue
 
-        category = source_category(src, node_type)
+        type_name = source_type(src)
         for map_name in available:
             try:
                 src.use_map(map_name)
@@ -204,7 +204,7 @@ def snapshot_mesh(mesh: str) -> Dict[str, Any]:
             maps.append({
                 "node_name": strip_namespace(node_name),
                 "node_type": node_type,
-                "category": category,
+                "type_name": type_name,
                 "map_name": map_name,
                 "key": map_identity(node_name, node_type, map_name),
                 "weights": [round(float(w), 6) for w in weights],
@@ -237,13 +237,13 @@ def list_target_maps(mesh: str) -> List[Dict[str, Any]]:
         except Exception as e:
             logger.warning(f"list_target_maps: available_maps failed on '{node_name}': {e}")
             continue
-        category = source_category(src, node_type)
+        type_name = source_type(src)
         for map_name in available:
             out.append({
                 "source": src,
                 "node_name": node_name,
                 "node_type": node_type,
-                "category": category,
+                "type_name": type_name,
                 "map_name": map_name,
                 "key": map_identity(node_name, node_type, map_name),
             })
