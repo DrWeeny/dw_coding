@@ -64,6 +64,17 @@ Version: 1.0.0
 from .dw_folder import get_folder, make_dir
 from .dw_json import save_json, load_json, merge_json, update_json
 from .dw_preset import createAttrPreset, blendAttrDic
+from .preset_components import (PresetContext, PresetComponent,
+                                AttributeComponent, ConnectionComponent,
+                                GeometryComponent, AnimationComponent,
+                                apply_attr, apply_anim_curve, flatten_animation,
+                                node_from_preset, load_preset_file,
+                                PRESET_FORMAT, PRESET_VERSION)
 
 __all__ = ['get_folder', 'make_dir', 'save_json', 'load_json',
-           'merge_json', 'update_json', 'createAttrPreset', 'blendAttrDic']
+           'merge_json', 'update_json', 'createAttrPreset', 'blendAttrDic',
+           'PresetContext', 'PresetComponent', 'AttributeComponent',
+           'ConnectionComponent', 'GeometryComponent', 'AnimationComponent',
+           'apply_attr', 'apply_anim_curve', 'flatten_animation',
+           'node_from_preset', 'load_preset_file',
+           'PRESET_FORMAT', 'PRESET_VERSION']

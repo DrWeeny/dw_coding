@@ -3,12 +3,40 @@ import dw_maya.dw_maya_nodes as dwnn
 import dw_maya.dw_maya_utils as dwu
 from dw_maya.dw_decorators import acceptString, viewportOff
 import dw_maya.dw_presets_io as dwpreset
+import dw_maya.dw_presets_io.preset_components as pcomp
 import dw_maya
 from dw_logger import get_logger
 
 from dw_maya.dw_node_registry import register_type
 
 logger = get_logger()
+
+
+class NConstraintNetworkComponent(pcomp.PresetComponent):
+    """Capture / rebuild the bespoke dynamicConstraint network.
+
+    Unlike the generic ConnectionComponent (a flat plug-pair list), an
+    nConstraint carries a structured nucleus <-> nComponent <-> constraint <->
+    nBase graph plus per-component maps. Capture defers to :attr:`nConstraint.network`;
+    apply defers to :meth:`nConstraint._apply_network`, so the intricate,
+    already-validated build logic stays in one place and just plugs into the
+    component pipeline.
+    """
+
+    key = "network"
+    enabled_by_default = True
+
+    def capture(self, node, ctx):
+        try:
+            return node.network
+        except Exception as e:
+            logger.warning(f"NConstraintNetworkComponent: capture failed on "
+                           f"'{node.node}': {e}")
+            return None
+
+    def apply(self, node, data, ctx):
+        node._apply_network(data, namespace=ctx.target_ns)
+
 
 class nConstraint(dwnn.MayaNode):
     """This class represents a dynamic constraint (nConstraint) in Maya.
@@ -21,6 +49,11 @@ class nConstraint(dwnn.MayaNode):
         mn.nucleus
         mn.network
     """
+
+    #: Attributes + the bespoke network. The generic ConnectionComponent is
+    #: intentionally omitted: the network component owns all of this node's
+    #: wiring, so including it would double-capture the nucleus/nComponent links.
+    preset_components = (pcomp.AttributeComponent(), NConstraintNetworkComponent())
 
     def __init__(self, name: str, preset: dict = None, blendValue: float = 1.0):
         """Initialize the nConstraint with a node name, preset, and blend value.
@@ -136,28 +169,51 @@ class nConstraint(dwnn.MayaNode):
                        node_preset:dict=None,
                        target_node_name:str=None,
                        namespace:str=None):
-        # look first if the dictionnary entry exists
-        network_key = f"{src_node_name}_network"
-        if not node_preset.get(network_key, None):
+        """Legacy entry point: extract the network slice and delegate.
+
+        Kept so the old preset format (network nested under
+        ``<name>_network``) keeps rebuilding. New presets call
+        :meth:`_apply_network` directly via NConstraintNetworkComponent.
+        """
+        network = (node_preset or {}).get(f"{src_node_name}_network")
+        if not network:
             return
+        self._apply_network(network, namespace, target=target_node_name)
+
+    def _apply_network(self,
+                       network:dict,
+                       namespace:str=None,
+                       target:str=None):
+        """Rebuild the constraint network from a network dict.
+
+        Reconnects the dynamicConstraint to its nucleus, recreates/reconnects
+        nComponents, restores their attributes, rewires nBase inputs and maps.
+        Requires the cloth/hair/nucleus targets to already exist in the scene.
+
+        Args:
+            network: The network dict (as produced by :attr:`network`).
+            namespace: Namespace the targets live in (``:`` / ``''`` for root).
+            target: The constraint node to wire (defaults to this shape).
+        """
+        target = target or self.sh
 
         # Validate the cloth/hair/nucleus elements exist
-        nBase = [f'{namespace}:{i.split(".")[-1]}'.replace('::', ':') for i in node_preset[network_key]['nBases']]
+        nBase = [f'{namespace}:{i.split(".")[-1]}'.replace('::', ':') for i in network['nBases']]
         if not all(cmds.objExists(j) for j in nBase):
             invalid_input = ', '.join(nBase)
             logger.warning(
-                f'Cannot create dynamicConstraint node "{target_node_name}" due to missing elements: {invalid_input}')
+                f'Cannot create dynamicConstraint node "{target}" due to missing elements: {invalid_input}')
             return
 
         # Connect to nucleus using the shape node
-        nucleus = [f'{namespace}:{n}' if namespace not in [':', ''] else n for n in node_preset[network_key]['nBases'] if
+        nucleus = [f'{namespace}:{n}' if namespace not in [':', ''] else n for n in network['nBases'] if
                    cmds.nodeType(n) == 'nucleus'][0]
         # connect to nucleus next available slots : multi = 2
-        for out_attr, in_attr in zip(dwu.get_type_io(target_node_name), dwu.get_type_io(nucleus, io=0, multi=2)):
+        for out_attr, in_attr in zip(dwu.get_type_io(target), dwu.get_type_io(nucleus, io=0, multi=2)):
             cmds.connectAttr(out_attr, in_attr, f=True)
 
         # Look for nComponents :
-        component_connections_list = node_preset[network_key].get('nComponent', None)
+        component_connections_list = network.get('nComponent', None)
         # if there are nothing, do nothing
         if not component_connections_list:
             return
@@ -182,7 +238,7 @@ class nConstraint(dwnn.MayaNode):
 
             # Set attributes
             component_key = f'nComponent_{idx}'
-            component_attr_dic = node_preset[network_key].get(component_key, None)
+            component_attr_dic = network.get(component_key, None)
             if component_attr_dic:
                 src_component = list(component_attr_dic.keys())[0]
                 dwpreset.dw_preset.blend_attr_dic(src_component, cf.tr, component_attr_dic)
@@ -197,13 +253,13 @@ class nConstraint(dwnn.MayaNode):
 
 
             # Connect nBase to nComponent
-            nbase_dic_connections = node_preset[network_key].get(f'nComponent_{idx}_nbase', None)
+            nbase_dic_connections = network.get(f'nComponent_{idx}_nbase', None)
             nmesh_out = nbase_dic_connections[0]
             cmds.connectAttr(f'{namespace}:{nmesh_out}', f'{cf.tr}.objectId', f=True)
 
             # Create and connect maps
             map_key = f'nComponent_{idx}_maps'
-            map_dic = node_preset[network_key].get(map_key, None)
+            map_dic = network.get(map_key, None)
             if map_key in map_dic:
                 for x, np in enumerate(map_dic):
                     if map_dic[np]:

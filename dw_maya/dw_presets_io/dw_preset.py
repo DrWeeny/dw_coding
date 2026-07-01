@@ -451,34 +451,6 @@ def blendAttr(srcNode=str, targetNode=None, attr=str, preset=dict, blendValue=1)
             setAttrDirectly(targetAttr, value, attrType, attr)
 
 
-def blendNumericAttr(targetAttr, value, attrType, blendValue):
-    """
-    Blends and sets the numeric attributes (float, int, bool, etc.).
-
-    Args:
-        targetAttr (str): The attribute to set.
-        value (int, float, long): The value to blend with.
-        attrType (str): The type of the attribute.
-        blendValue (float): The blend factor.
-    """
-    currentValue = cmds.getAttr(targetAttr)
-
-    if attrType == 'enum':
-        # Blend enum type (binary choice based on blendValue)
-        value = currentValue if blendValue < 0.5 else value
-        cmds.setAttr(targetAttr, value)
-
-    elif attrType in ["bool", "short", "long", "byte", "char"]:
-        # Blend integer-like values
-        blendedValue = int(value * blendValue + currentValue * (1 - blendValue))
-        cmds.setAttr(targetAttr, blendedValue)
-
-    elif attrType in ["float", "floatLinear", "double", "doubleLinear", "doubleAngle", "time"]:
-        # Blend float-like values
-        blendedValue = value * blendValue + currentValue * (1 - blendValue)
-        cmds.setAttr(targetAttr, blendedValue)
-
-
 def setAttrDirectly(targetAttr, value, attrType, attrName):
     """
     Directly sets the attribute value without blending.

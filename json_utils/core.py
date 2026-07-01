@@ -85,11 +85,17 @@ def load_json(path: str, encoding="utf-8") -> dict:
     try:
         with open(path, "r", encoding=encoding) as f:
             return json.load(f)
+    except FileNotFoundError:
+        # A missing file is an expected, callable-checked case (callers guard
+        # with `if not data`), so keep it quiet - not an error.
+        logger.debug(f"[load_json] File not found: {path}")
+        return {}
     except UnicodeDecodeError:
         if encoding == "utf-8":
             return load_json(path, encoding="cp932")
         raise
     except Exception as e:
+        # Real problems (corrupt / unparseable JSON, permissions) stay loud.
         logger.error(f"[load_json] Failed to load {path}: {e}")
         return {}
 

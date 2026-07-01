@@ -22,6 +22,7 @@ from . import ObjPointer, MAttr
 from dw_maya.dw_constants.node_re_mappings import SHAPE_PATTERN
 import dw_maya.dw_maya_utils as dwu
 import dw_maya.dw_presets_io
+import dw_maya.dw_presets_io.preset_components as pcomp
 from dw_logger import get_logger
 
 logger = get_logger()
@@ -54,6 +55,11 @@ class MayaNode(ObjPointer):
         - Attributes are accessed directly using Python attribute syntax
         - Shape attributes take priority when duplicated with transform
     """
+
+    #: Ordered preset components this class owns. Used in createPreset
+    preset_components = (pcomp.AttributeComponent(), # store attributes
+                         pcomp.ConnectionComponent(), # save connections
+                         pcomp.AnimationComponent()) # save animation curves
 
     def __init__(self, name: str,
                  preset: Optional[Dict] = None,
@@ -583,6 +589,141 @@ class MayaNode(ObjPointer):
         except Exception as e:
             logger.error(f"Failed to create preset: {e}")
             raise
+
+    # ------------------------------------------------------------------ #
+    # Preset with Component-based preset                                 #
+    # ------------------------------------------------------------------ #
+
+    def presetIdentity(self) -> str:
+        """Return the logical, namespace-stripped identity used as preset key.
+
+        The transform name when this is a DAG node, otherwise the node's own
+        name (shape-less / DG nodes).
+        """
+        base = self.tr or self.sh or self.node
+        return base.split('|')[-1].split(':')[-1]
+
+    def _iter_components(self,
+                         only: Optional[list] = None,
+                         skip: Optional[list] = None):
+        """Yield the components selected for this pass.
+
+        ``only`` restricts to the given component keys (and overrides
+        ``enabled_by_default``, so opt-in components like animation can be
+        included explicitly). ``skip`` removes keys. With neither, every
+        default-on component runs.
+        """
+        for comp in self.preset_components:
+            if only is not None:
+                if comp.key not in only:
+                    continue
+            elif not comp.enabled_by_default:
+                continue
+            if skip and comp.key in skip:
+                continue
+            yield comp
+
+    def _pre_capture(self, body: dict) -> None:
+        """Hook called before components capture. Override to inject data."""
+
+    def _post_capture(self, body: dict) -> None:
+        """Hook called after components capture. Override to post-process."""
+
+    def createPreset(self,
+                     only: Optional[list] = None,
+                     skip: Optional[list] = None,
+                     ctx: Optional['pcomp.PresetContext'] = None) -> dict:
+        """Capture this node into a ``{identity: body}`` preset entry.
+
+        Each selected component contributes one slice keyed by ``comp.key``
+        (``attributes``, ``connections``, ...). See :meth:`_iter_components`
+        for ``only`` / ``skip``.
+
+        Returns:
+            dict: ``{presetIdentity(): {"nodeType": ..., <component slices>}}``.
+        """
+        ctx = ctx or pcomp.PresetContext()
+        body = {"nodeType": self.nodeType}
+        self._pre_capture(body)
+        for comp in self._iter_components(only, skip):
+            try:
+                data = comp.capture(self, ctx)
+            except Exception as e:
+                logger.warning(f"createPreset: component '{comp.key}' failed on "
+                               f"'{self.node}': {e}")
+                continue
+            if data is not None:
+                body[comp.key] = data
+        self._post_capture(body)
+        return {self.presetIdentity(): body}
+
+    def _select_body(self, nodes: dict) -> dict:
+        """Pick the entry in ``nodes`` that matches this node.
+
+        Matches by identity, falls back to the sole entry when there is only
+        one, else returns an empty dict.
+        """
+        identity = self.presetIdentity()
+        if identity in nodes:
+            return nodes[identity]
+        if len(nodes) == 1:
+            return next(iter(nodes.values()))
+        return {}
+
+    def applyPreset(self,
+                    preset: dict,
+                    ctx: Optional['pcomp.PresetContext'] = None,
+                    only: Optional[list] = None,
+                    skip: Optional[list] = None) -> None:
+        """Apply a preset onto this node, component by component.
+
+        Args:
+            preset: Either a full envelope (``{"format", "nodes": {...}}``) or a
+                bare ``{identity: body}`` mapping.
+            ctx: Apply context (namespace / blend / create). Default blend 1.0.
+            only / skip: Component-key filters (see :meth:`_iter_components`).
+        """
+        ctx = ctx or pcomp.PresetContext()
+        nodes = preset.get("nodes", preset) if isinstance(preset, dict) else {}
+        body = self._select_body(nodes)
+        if not body:
+            logger.warning(f"applyPreset: no matching entry for '{self.node}'")
+            return
+        for comp in self._iter_components(only, skip):
+            if comp.key in body:
+                try:
+                    comp.apply(self, body[comp.key], ctx)
+                except Exception as e:
+                    logger.warning(f"applyPreset: component '{comp.key}' failed "
+                                   f"on '{self.node}': {e}")
+
+    def savePreset(self,
+                   path: str,
+                   only: Optional[list] = None,
+                   skip: Optional[list] = None,
+                   defer: bool = False) -> bool:
+        """Save this node to ``path`` as a versioned ``dw_preset`` envelope."""
+        data = {"format": pcomp.PRESET_FORMAT,
+                "version": pcomp.PRESET_VERSION,
+                "nodes": self.createPreset(only=only, skip=skip)}
+        logger.info(f"Saving preset to {path}")
+        return dw_maya.dw_presets_io.save_json(path, data, defer=defer)
+
+    def loadPreset(self,
+                   path: str,
+                   blend: float = 1.0,
+                   target_ns: str = ":",
+                   only: Optional[list] = None,
+                   skip: Optional[list] = None) -> None:
+        """Load a ``dw_preset`` file and apply it onto this node."""
+        data = dw_maya.dw_presets_io.load_json(path)
+        if not data:
+            return
+        if data.get("format") != pcomp.PRESET_FORMAT:
+            logger.warning(f"loadPreset: '{path}' is not a {pcomp.PRESET_FORMAT} file.")
+            return
+        ctx = pcomp.PresetContext(target_ns=target_ns, blend=blend)
+        self.applyPreset(data, ctx, only=only, skip=skip)
 
     def listHistory(self, **kwargs) -> list:
         """List node history with optional filtering.

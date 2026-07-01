@@ -53,3 +53,32 @@ def resolve(node: str) -> Type:
             return cls
 
     return MayaNode
+
+
+def resolve_type(node_type: str) -> Type:
+    """Resolve a class from a node-type *string* (no live node required).
+
+    The type-driven twin of :func:`resolve`, used to rebuild nodes from a saved
+    preset. Mirrors steps 1-2 (exact match -> inherited walk) using
+    ``cmds.nodeType(..., isTypeName=True)``; condition-based rules are skipped
+    since they need a live node to inspect.
+    """
+    from dw_maya.dw_maya_nodes import MayaNode
+
+    if not node_type:
+        return MayaNode
+
+    # 1. exact match
+    if node_type in _NODE_CLASSES:
+        return _NODE_CLASSES[node_type]
+
+    # 2. walk the inheritance chain of the type name
+    try:
+        inherited = cmds.nodeType(node_type, inherited=True, isTypeName=True) or []
+    except Exception:
+        inherited = []
+    for parent_type in reversed(inherited):  # most specific first
+        if parent_type in _NODE_CLASSES:
+            return _NODE_CLASSES[parent_type]
+
+    return MayaNode

@@ -41,8 +41,10 @@ from dw_logger import get_logger
 
 logger = get_logger()
 
-SCHEMA = "maya_map_transfer"
-SCHEMA_VERSION = 1
+# Document-format marker. Named "format" (not "schema") to match the dw_preset
+# envelope convention and stay clear of the `das` library's schema vocabulary.
+FORMAT = "maya_map_transfer"
+FORMAT_VERSION = 1
 
 # Deformer maps that are implicit (one per geometry) carry no meaningful map
 # name, so the deformer node itself is the matching identity instead.
@@ -362,14 +364,14 @@ def transfer_weights(src_weights: List[float],
 
 def save_storage(path: str, meshes: List[Dict[str, Any]]) -> bool:
     """Write a storage (list of snapshot dicts) to *path*."""
-    data = {"schema": SCHEMA, "version": SCHEMA_VERSION, "meshes": meshes}
+    data = {"format": FORMAT, "version": FORMAT_VERSION, "meshes": meshes}
     return dw_json.save_json(path, data)
 
 
 def load_storage(path: str) -> Optional[Dict[str, Any]]:
-    """Load a storage file, validating its schema. Returns None on mismatch."""
+    """Load a storage file, validating its format. Returns None on mismatch."""
     data = dw_json.load_json(path)
-    if not data or data.get("schema") != SCHEMA:
-        logger.warning(f"load_storage: '{path}' is not a {SCHEMA} file.")
+    if not data or data.get("format") != FORMAT:
+        logger.warning(f"load_storage: '{path}' is not a {FORMAT} file.")
         return None
     return data

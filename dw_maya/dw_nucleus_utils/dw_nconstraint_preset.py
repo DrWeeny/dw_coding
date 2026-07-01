@@ -11,21 +11,26 @@ from .dw_nconstraint_class import nConstraint
 import dw_maya.dw_maya_utils as dwu
 from dw_maya.dw_decorators import acceptString
 import dw_maya.dw_presets_io as dwpreset
+import dw_maya.dw_presets_io.preset_components as pcomp
 
 
 @acceptString('nconstraint')
 def getAllConstraintsPresets(nconstraint=None, namespace=':'):
     """
-    Retrieves attribute presets for all dynamicConstraint nodes in a given namespace.
+    Capture all dynamicConstraint nodes in a namespace as dw_preset entries.
+
+    Uses the component pipeline (``nConstraint.createPreset`` ->
+    AttributeComponent + NConstraintNetworkComponent), so each entry is the
+    v2 ``{identity: {nodeType, attributes, network}}`` shape - ready to drop
+    under an envelope ``nodes`` key.
 
     Args:
-        nconstraint (list or None): List of dynamicConstraint nodes to get presets for.
-                                    If None, it finds all dynamicConstraint nodes in the
-                                    specified namespace.
-        namespace (str): The namespace to filter constraints by. Defaults to the root namespace ':'.
+        nconstraint (list or None): dynamicConstraint nodes to capture. If None,
+                                    every constraint in the namespace is found.
+        namespace (str): Namespace to filter constraints by (``:`` for root).
 
     Returns:
-        dict: A dictionary containing all attribute presets for the specified dynamicConstraint nodes.
+        dict: ``{identity: body}`` entries for the matched constraints.
     """
     def filter_constraints(constraints, namespace):
         filtered_constraints = []
@@ -43,72 +48,67 @@ def getAllConstraintsPresets(nconstraint=None, namespace=':'):
         all_constraints = cmds.ls(type='dynamicConstraint')
         nconstraint = filter_constraints(all_constraints, namespace)
 
-    # Get presets for each constraint
-    presets = {}
+    # Capture each constraint as a v2 preset entry
+    nodes = {}
     for nc_name in nconstraint:
         nc = nConstraint(nc_name)
         if nc.nodeType == 'dynamicConstraint':
-            presets = dwu.merge_two_dicts(presets, nc.attrPreset())
+            nodes.update(nc.createPreset())
 
-    return presets
+    return nodes
 
 
 def createAllConstraintPresets(dataDic, targ_ns=':'):
     """
-    Creates dynamicConstraint nodes from a preset dictionary or JSON file.
+    Rebuild dynamicConstraint nodes from a dw_preset envelope (dict or file).
+
+    Dispatches each entry through ``node_from_preset`` -> the registry resolves
+    ``dynamicConstraint`` to :class:`nConstraint`, whose components recreate the
+    node, its attributes and its network. Requires the cloth/hair/nucleus
+    targets to already exist in the scene.
 
     Args:
-        dataDic (dict or str): Either a dictionary of constraint presets or a path to a JSON file
-                               containing the preset data.
-        targ_ns (str): The target namespace where the dynamicConstraint nodes will be created.
-                       Defaults to the root namespace ':'.
+        dataDic (dict or str): A dw_preset envelope (or path to its JSON file).
+        targ_ns (str): Namespace the rebuilt constraints land in (``:`` = root).
 
     Returns:
-        list: A list of created dynamicConstraint node names.
+        list: Transform names of the created dynamicConstraint nodes.
     """
     if isinstance(dataDic, str):  # Check if it's a file path
-        if pyu.path.isfile(dataDic):
+        if os.path.isfile(dataDic):
             dataDic = dwpreset.load_json(dataDic)
         else:
             raise ValueError('Invalid JSON file path provided.')
 
+    nodes = dataDic.get('nodes', dataDic) if isinstance(dataDic, dict) else {}
+    ctx = pcomp.PresetContext(target_ns=targ_ns, create=True)
+
     output = []
-    for key, value in dataDic.items():
-        if key.endswith('_nodeType') and value == 'dynamicConstraint':
-            node_name = key.rsplit('_', 1)[0]
-            namespace = targ_ns if targ_ns != ':' else ''
-            constraint_name = f"{namespace}:{node_name}" if namespace else node_name
-
-            # Extract the specific preset for this constraint node
-            node_preset = {
-                node_name: dataDic[node_name],
-                f'{node_name}_nodeType': dataDic[f'{node_name}_nodeType']
-            }
-
-            # Use the inherited MayaNode functionality to create and load the node
-            # Pass the preset dict to __init__ which will trigger loadNode() automatically
-            constraint = nConstraint(constraint_name, preset=node_preset, blendValue=1.0)
-            output.append(constraint.tr)
+    for identity, body in nodes.items():
+        if not isinstance(body, dict) or body.get('nodeType') != 'dynamicConstraint':
+            continue
+        node = pcomp.node_from_preset(identity, body, ctx)
+        output.append(node.tr)
 
     return output
 
 
 def saveNConstraintRig(namespace=':', path=str, file=str, nconstraint=None):
     """
-    Saves dynamicConstraint node presets into a JSON file.
+    Save dynamicConstraint presets as a versioned dw_preset envelope.
 
     Args:
-        namespace (str): The namespace to filter constraints by. Defaults to the root namespace ':'.
-        path (str): The directory path where the JSON file will be saved.
-        file (str): The name of the JSON file (without extension).
-        nconstraint (list or None): A list of dynamicConstraint nodes to save. If None, it collects
-                                    all constraints from the specified namespace.
+        namespace (str): Namespace to filter constraints by (``:`` for root).
+        path (str): Directory the JSON file is written to.
+        file (str): JSON file name (extension optional).
+        nconstraint (list or None): Constraints to save; None collects all in the
+                                    namespace.
 
     Returns:
-        str: The full path to the saved JSON file.
+        str: Full path to the saved JSON file.
 
     Raises:
-        IOError: If the specified path does not exist or is not writable.
+        IOError: If the directory does not exist or is not writable.
     """
     # Get constraints based on namespace if not provided
     if not nconstraint:
@@ -117,13 +117,14 @@ def saveNConstraintRig(namespace=':', path=str, file=str, nconstraint=None):
         else:
             nconstraint = None
 
-    # Get presets for the specified constraints
-    constraints_presets = getAllConstraintsPresets(nconstraint=nconstraint, namespace=namespace)
+    # Capture entries and wrap them in a dw_preset envelope
+    nodes = getAllConstraintsPresets(nconstraint=nconstraint, namespace=namespace)
+    envelope = {"format": pcomp.PRESET_FORMAT, "version": pcomp.PRESET_VERSION, "nodes": nodes}
 
     # Ensure valid file path and save JSON
     fullpath = os.path.join(path, f"{file}.json" if '.' not in file else file)
     if os.path.exists(path):
-        dwpreset.save_json(fullpath, constraints_presets)
+        dwpreset.save_json(fullpath, envelope)
         print(f'nConstraint preset saved to {fullpath}')
         return fullpath
     else:
