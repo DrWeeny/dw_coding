@@ -1,0 +1,124 @@
+// ============================================================
+//  wind_simple.vex  -  layered wind velocity field
+//  Run in a Volume Wrangle over a `vel` VDB (writes v@vel),
+//  or any wrangle with @P / @Time available.
+//
+//  Layers:  mean wind + turbulence (big pockets)
+//                     + gusts (rotating/reversible, small pockets)
+// ============================================================
+
+// ---- reusable pocket mask (contrasted, drifting noise -> 0..1) ----
+//   scale    : bigger = smaller pockets
+//   contrast : smaller = harder black/white edges
+//   bias     : <0.5 windier (bigger pockets), >0.5 calmer
+//   drift    : how fast the pockets travel along `dir`
+float pocket(vector p; float scale; float contrast; float bias; float drift; vector dir; float t)
+{
+    float n = noise(p * scale - dir * drift * t);
+    n = fit(n, bias - contrast, bias + contrast, 0.0, 1.0);
+    return smooth(0.0, 1.0, clamp(n, 0.0, 1.0));
+}
+
+// ---- fractal curl noise: sum octaves for fine, break-up detail ----
+//   oct : number of octaves (more = finer detail, but costlier)
+//   lac : lacunarity, frequency step per octave (2.0 doubles each time)
+//   gain: amplitude falloff per octave (0.5 halves each time)
+vector curlfbm(vector p; int oct; float lac; float gain)
+{
+    vector sum = 0;
+    float amp = 1.0, freq = 1.0, norm = 0.0;
+    for (int i = 0; i < oct; i++)
+    {
+        sum  += curlnoise(p * freq) * amp;
+        norm += amp;
+        freq *= lac;
+        amp  *= gain;
+    }
+    return sum / max(norm, 1e-6);
+}
+
+// ================= PARAMS =================
+// -- mean wind --
+vector wind_dir    = chv("wind_dir");        // (0,0,1) mean direction
+float  wind_speed  = chf("wind_speed");      // 5.0     base m/s
+vector field_off   = chv("field_offset");    // (0,0,0) slide / re-seed the whole field
+
+// -- turbulence (big swirls, now fractal for fine break-up) --
+float  turb_scale  = chf("turb_scale");      // 0.4  big-eddy size (smaller = bigger)
+float  turb_amp    = chf("turb_amp");        // 2.0  swirl strength
+float  turb_drift  = chf("turb_drift");      // 5.0  ~= wind_speed for frozen turbulence
+int    turb_oct    = chi("turb_octaves");    // 4    more = finer detail (start 4)
+float  turb_lac    = chf("turb_lacunarity"); // 2.0  freq step per octave
+float  turb_gain   = chf("turb_gain");       // 0.5  amp falloff per octave
+
+// -- fine flutter (high freq, fast in TIME -> small-scale cloth break-up) --
+float  fine_scale  = chf("fine_scale");      // 4.0  high spatial frequency
+float  fine_amp    = chf("fine_amp");        // 0.6  keep small
+float  fine_speed  = chf("fine_speed");      // 3.0  fast temporal change = flutter
+
+// -- big pockets (regional windy / calm zones) --
+float  bp_scale    = chf("bigpocket_scale");    // 0.3
+float  bp_contrast = chf("bigpocket_contrast"); // 0.15
+float  bp_bias     = chf("bigpocket_bias");     // 0.5
+
+// -- gusts (fine, rotating, reversible) --
+float  gust_scale  = chf("gust_scale");      // 1.5  fine detail freq
+float  gust_amp    = chf("gust_amp");        // 3.0  gust strength
+float  gust_drift  = chf("gust_drift");      // 0.7  how fast gusts travel
+float  gust_spin   = chf("gust_spin");       // 0.8  rad/sec: spins gust direction over time
+vector gust_axis   = chv("gust_axis");       // (0,1,0) spin axis
+
+// -- small pockets (little localized gust bursts) --
+float  sp_scale    = chf("smallpocket_scale");    // 3.0  (bigger = smaller bursts)
+float  sp_contrast = chf("smallpocket_contrast"); // 0.10
+float  sp_bias     = chf("smallpocket_bias");     // 0.55
+
+// ================= BUILD =================
+float  t   = @Time;
+vector dir = normalize(wind_dir);
+vector P   = @P + field_off;
+
+// 1) mean wind (unit direction; wind_speed is applied as a MASTER scale
+//    at the very end, so turbulence/gust/fine amps are RATIOS of the mean:
+//    turb_amp 0.5 = turbulence at 50% of the mean wind, etc.)
+vector wind = dir;
+
+// 2) turbulence, fractal (multi-octave) + gated by big pockets
+vector adv  = dir * turb_drift * t;
+vector turb = curlfbm((P - adv) * turb_scale, turb_oct, turb_lac, turb_gain) * turb_amp;
+float  bpk  = pocket(P, bp_scale, bp_contrast, bp_bias, turb_drift * 0.1, dir, t);
+wind += turb * bpk;
+
+// 3) gusts: fine curl (already omnidirectional / can reverse),
+//    actively rotated over time, gated by small pockets
+vector gadv = dir * gust_drift * t;
+vector gust = curlnoise((P - gadv) * gust_scale);
+gust = qrotate(quaternion(gust_spin * t, normalize(gust_axis)), gust);   // spin the gust dir
+float  spk  = pocket(P, sp_scale, sp_contrast, sp_bias, gust_drift, dir, t);
+wind += gust * gust_amp * spk;
+
+// 4) fine flutter: high spatial freq + FAST time evolution (4D-style via
+//    time-offset sampling). This is what actually ripples the cloth surface.
+vector fp = (P - adv) * fine_scale + set(0, 0, t * fine_speed);
+wind += curlnoise(fp) * fine_amp;
+
+// master magnitude: scales mean + all fluctuations together, so pushing
+// wind_speed keeps the LOOK and just makes it stronger/faster.
+wind *= wind_speed;
+
+// ================= OUTPUT =================
+v@vel     = wind;                              // sample THIS in the aero force
+
+// -- viz helpers (don't affect the sim) --
+vector fluct   = wind - dir * wind_speed;      // field minus the mean push
+f@speed        = length(wind);                 // absolute speed
+f@fluct        = length(fluct);                // turbulence+gust magnitude only
+v@bpocket      = bpk;                           // big-pocket mask
+v@spocket      = spk;                           // small-pocket mask
+
+// color the trail by fluctuation, not absolute speed -> stops saturating red.
+// tune `viz_range` to the strongest gust you expect (try turb_amp+gust_amp).
+float viz_range = chf("viz_range");            // e.g. 4.0
+v@Cd = set(clamp(f@fluct / max(viz_range, 1e-6), 0, 1),   // R: how gusty
+           spk,                                            // G: small pockets
+           bpk);                                           // B: big pockets

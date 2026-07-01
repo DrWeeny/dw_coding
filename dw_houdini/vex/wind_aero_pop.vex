@@ -1,0 +1,64 @@
+// ============================================================
+//  Aerodynamic force (Wilson 2014) driven by a wind volume
+//  Wire your wind VDB/volume (vel) into INPUT 1 of this wrangle.
+//  Output -> FORCE (Output #0) of the Vellum forces subnet.
+// ============================================================
+
+// ---- params (click the chf/chi buttons to create) ----
+float Cd   = chf("drag_coeff");    // 0.10
+float Cl   = chf("lift_coeff");    // 0.06   (keep Cl < Cd)
+float rho  = chf("air_density");   // 1.225
+float gain = chf("force_gain");    // 1.0 -> raise until it reacts at your scale
+int   useVol = chi("use_wind_volume"); // 1 = sample input 1, 0 = constant below
+vector windConst = chv("wind_const");  // fallback constant wind if useVol = 0
+
+vector Fsum = 0;
+
+foreach (int pr; pointprims(0, @ptnum))
+{
+    int pts[] = primpoints(0, pr);
+    int np = len(pts);
+    if (np < 3) continue;
+
+    // ---- Newell normal + centroid (handles quads / n-gons) ----
+    vector nrm  = 0;
+    vector vsum = 0;
+    vector cen  = 0;
+    for (int i = 0; i < np; i++)
+    {
+        int a = pts[i], b = pts[(i+1) % np];
+        vector pa = point(0, "P", a);
+        vector pb = point(0, "P", b);
+
+        nrm.x += (pa.y - pb.y) * (pa.z + pb.z);
+        nrm.y += (pa.z - pb.z) * (pa.x + pb.x);
+        nrm.z += (pa.x - pb.x) * (pa.y + pb.y);
+
+        vsum += point(0, "v", a);
+        cen  += pa;
+    }
+    cen /= float(np);
+
+    float area = 0.5 * length(nrm);
+    if (area < 1e-12) continue;
+    vector n = nrm / (2.0 * area);          // unit face normal
+
+    // ---- wind at this face ----
+    vector wind = useVol ? volumesamplev(1, "vel", cen) : windConst;
+
+    // ---- relative velocity (surface w.r.t. air) ----
+    vector v_face = vsum / float(np);
+    vector v_rel  = v_face - wind;
+    float  v2rel  = dot(v_rel, v_rel);
+    if (v2rel < 1e-12) continue;
+
+    if (dot(n, v_rel) < 0) n = -n;          // two-sided: face the flow
+
+    // ---- Wilson aero force ----
+    float  coeff = 0.5 * rho * area;
+    vector f = -coeff * ((Cd - Cl) * dot(v_rel, n) * v_rel + Cl * v2rel * n);
+
+    Fsum += f / float(np);                   // even split to this triangle's verts
+}
+
+v@force += Fsum * gain;
