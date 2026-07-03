@@ -33,6 +33,7 @@ import maya.cmds as cmds
 from dw_logger import get_logger
 from ..dendrology.cache_leaf import CacheInfo, CacheType
 from . import cache_management
+from . import dyn_prefs
 
 logger = get_logger()
 
@@ -77,18 +78,24 @@ class NucleusCacheOps:
     # ──────────────────────────────────────────────────────────────────
 
     @staticmethod
-    def create(item, frame_range: tuple[int, int]) -> CacheInfo | None:
+    def create(item, frame_range: tuple[int, int], replace: bool = False) -> CacheInfo | None:
         """
         Simulate and write a versioned nCache for item.node.
+
+        replace=False (increment, default): writes the next version.
+        replace=True: overwrites the currently attached version (or the
+        latest on disk when none is attached) — its files are deleted and
+        re-created under the same stem. Falls back to increment when no
+        cache exists yet.
 
         Steps
         ─────
         1. Create the versioned dir and dynTmp if they don't exist.
-        2. Disconnect any currently attached cacheFile nodes.
+        2. Disconnect any currently attached cacheFile nodes
+           (+ delete the target version's files in replace mode).
         3. Run create_cache() → raw files land in dynTmp under a Maya-assigned stem.
         4. Move every matching file from dynTmp to the versioned location,
-           renaming with the target stem via Path.with_suffix() so that
-           cloth_v003.xml and cloth_v003.mcx end up alongside each other.
+           renaming by swapping the stem prefix.
         5. Attach the new XML to item.node.
         6. Return a CacheInfo for the newly created cache.
         """
@@ -102,29 +109,41 @@ class NucleusCacheOps:
             work_dir = Path(item.cache_dir(0))              # …/dynTmp
             work_dir.mkdir(parents=True, exist_ok=True)
 
-            # Next-version XML path  e.g. …/cloth/cloth_v003.xml
-            target_xml = Path(item.cache_file(1))
+            # Target XML path: next version, or the replaced version's path
+            replace_target = NucleusCacheOps._replace_target(item) if replace else None
+            if replace_target is not None:
+                target_xml = Path(replace_target.path)
+            else:
+                target_xml = Path(item.cache_file(1))       # e.g. …/cloth/cloth_v003.xml
 
-            # 2. Disconnect
+            # 2. Disconnect (+ wipe the replaced version's files)
             cache_management.delete_caches([node])
+            if replace_target is not None:
+                NucleusCacheOps.delete(item, replace_target)
 
-            # 3. Simulate → dynTmp
+            # 3. Simulate → dynTmp. Distribution comes from the Pref menu:
+            #    'OneFile' or 'OneFilePerFrame' (per-frame = free progress
+            #    inspection while a batch sim is still running).
             cache_names = cache_management.create_cache(
                 [node],
                 str(work_dir),
                 time_range=list(frame_range),
+                distribution=dyn_prefs.get_cache_distribution(),
             )
             if not cache_names:
                 raise RuntimeError("create_cache() returned an empty list")
 
             raw_stem = cache_names[0]   # e.g. "nClothShape1_cache"
 
-            # 4. Move and rename dynTmp files to the versioned location
-            #    cloth_v003.xml, cloth_v003.mcx, …
+            # 4. Move and rename dynTmp files to the versioned location by
+            #    swapping the stem prefix, which preserves the per-frame part:
+            #    cloth_v003.xml, cloth_v003.mcx (OneFile)
+            #    cloth_v003.xml, cloth_v003Frame1.mcx, ... (OneFilePerFrame)
+            target_stem = target_xml.stem
             moved = 0
             for src in work_dir.iterdir():
                 if src.name.startswith(raw_stem):
-                    dst = target_xml.with_suffix(src.suffix)
+                    dst = target_xml.parent / f"{target_stem}{src.name[len(raw_stem):]}"
                     shutil.move(str(src), str(dst))
                     moved += 1
 
@@ -145,6 +164,21 @@ class NucleusCacheOps:
             raise
         finally:
             cmds.waitCursor(state=0)
+
+    @staticmethod
+    def _replace_target(item) -> CacheInfo | None:
+        """Version to overwrite in replace mode: the currently attached one,
+        else the latest on disk, else None (no cache yet -> increment)."""
+        caches = NucleusCacheOps.list_caches(item)
+        if not caches:
+            return None
+        for info in caches:
+            try:
+                if cache_management.cache_is_attached(item.node, info.name):
+                    return info
+            except Exception as e:
+                logger.debug(f"_replace_target: attach check failed: {e}")
+        return max(caches, key=lambda c: c.version)
 
     # ──────────────────────────────────────────────────────────────────
     # ATTACH

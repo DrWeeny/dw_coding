@@ -18,9 +18,12 @@ class DynEvalKeys:
     MAP_SELECTED    = "dyn.map.selected"     # MapInfo | None
     PAINT_REQUESTED = "dyn.paint.request"    # MapInfo  (one-shot, triggers Slimfast)
 
-    COMMENT_SAVED = "dyn.comment.saved"  # str — optionnel, pour feedback
+    COMMENT_SAVED = "dyn.comment.saved"  # str — feedback after a comment write
 
     COMMENT_CURRENT = "dyn.comment.current"
+
+    # Comment tab — cache panel requests focus on the comment editor
+    COMMENT_EDIT_REQUESTED = "dyn.comment.edit_request"  # CacheInfo
 
     # ------------------------------------------------------------------
     # Backward-compat aliases for old widgets not yet migrated.

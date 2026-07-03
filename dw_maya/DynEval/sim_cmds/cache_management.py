@@ -1,5 +1,7 @@
 import os
+import re
 import maya.cmds as cmds
+import maya.mel as mel
 import maya.utils as mu
 
 import dw_maya.dw_maya_utils as dwu
@@ -195,14 +197,20 @@ def create_cache(ncloth_shapes: list, cache_dir: str, time_range: list = None, *
 
 def materialize(mesh: str, cache_path: str) -> str:
     """
-    Creates a duplicate of a given mesh and assigns a specified cache file to it.
+    Fresh-duplicate a mesh at the outliner root and assign a cache to it.
+
+    Uses dw_duplication.freshDuplicate (shape-data copy, no history, lands
+    at world root) and imports the given nCache XML on the duplicate — the
+    duplicate follows the cached sim independently of the source setup, for
+    post-sim sculpting or comparison.
 
     Args:
         mesh (str): The name of the mesh transform node to duplicate.
         cache_path (str): Path to the XML cache file.
 
     Returns:
-        str: The name of the newly created mesh transform with cache applied.
+        str: The name of the newly created mesh transform with cache applied,
+             named sim_v###_<mesh> when a version tag is found in the path.
 
     Raises:
         ValueError: If `mesh` is not a valid mesh node or `cache_path` is not a valid file.
@@ -214,9 +222,28 @@ def materialize(mesh: str, cache_path: str) -> str:
     if not isinstance(cache_path, str) or not os.path.isfile(cache_path):
         raise ValueError(f"Provided cache_path '{cache_path}' is not a valid file path.")
 
-    # Attempt duplication and cache assignment
     try:
-        out = dwdup.dupWCache(mesh, cache_path)
+        dup = dwdup.freshDuplicate(mesh)[0]
+
+        # freshDuplicate creates its transform at world root; enforce it in
+        # case the implementation ever changes.
+        if cmds.listRelatives(dup, parent=True):
+            dup = cmds.parent(dup, world=True)[0]
+
+        cache_posix = cache_path.replace(os.sep, "/")
+        mel.eval(
+            f'doImportCacheFile("{cache_posix}", "xmlcache", {{"{dup}"}}, {{}});'
+        )
+
+        # sim_v003_<mesh> when the file carries a version tag
+        version_match = re.search(r'v\d{3}', os.path.basename(cache_path))
+        base = mesh.split('|')[-1].replace(':', '_')
+        if version_match:
+            name = f"sim_{version_match.group(0)}_{base}"
+        else:
+            name = f"sim_{base}"
+        # cmds.rename auto-uniquifies on a name clash
+        out = cmds.rename(dup, name)
     except Exception as e:
         raise RuntimeError(f"Failed to duplicate and cache mesh '{mesh}': {e}")
 

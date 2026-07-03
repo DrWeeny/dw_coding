@@ -137,6 +137,91 @@ def _get_nucleus_children(solver_node: str) -> list[str]:
 
 
 # ============================================================================
+# RIGID -> CLOTH LINKS
+# ============================================================================
+
+def _get_rigid_links(solver_node: str) -> dict[str, str]:
+    """
+    Map each nRigid to the nCloth it is linked to, for tree nesting.
+
+    Maya has no direct nCloth<->nRigid connection — both plug independently
+    into the nucleus. Two associations, strongest first:
+
+    1. A shared dynamicConstraint (e.g. pointToSurface between cloth
+       vertices and the rigid surface):
+       nBase.nucleusId -> nComponent.objectId -> dynamicConstraint.componentIds[i]
+    2. Fallback for plain colliders (no constraint): when the solver drives
+       exactly one nCloth, every unmapped rigid nests under it — the common
+       character setup (one garment sim + body colliders). With several
+       cloths there is no way to pick, so unmapped rigids stay under the
+       solver.
+
+    build_solver_item ignores links to nodes that are not children of this
+    solver, so no solver filtering is needed for the constraint walk.
+    """
+    links: dict[str, str] = {}
+
+    for constraint in cmds.ls(type='dynamicConstraint') or []:
+        components = cmds.listConnections(
+            f'{constraint}.componentIds',
+            source=True,
+            destination=False,
+        ) or []
+
+        cloths, rigids = [], []
+        for component in set(components):
+            nbases = cmds.listConnections(
+                f'{component}.objectId',
+                source=True,
+                destination=False,
+                shapes=True,
+            ) or []
+            for nbase in nbases:
+                try:
+                    nbase_type = cmds.nodeType(nbase)
+                except Exception:
+                    continue
+                if nbase_type == 'nCloth':
+                    cloths.append(nbase)
+                elif nbase_type == 'nRigid':
+                    rigids.append(nbase)
+
+        for rigid in rigids:
+            key = rigid.split('|')[-1]
+            if cloths and key not in links:
+                links[key] = cloths[0].split('|')[-1]
+                logger.debug(
+                    f"rigid link (constraint {constraint}): "
+                    f"{key} -> {links[key]}"
+                )
+
+    # Fallback: single-cloth solver adopts its unmapped rigids.
+    active = cmds.listConnections(
+        f'{solver_node}.inputActive',
+        source=True,
+        destination=False,
+        shapes=True,
+    ) or []
+    solver_cloths = sorted({n.split('|')[-1] for n in cmds.ls(active, type='nCloth')})
+    if len(solver_cloths) == 1:
+        passive = cmds.listConnections(
+            f'{solver_node}.inputPassive',
+            source=True,
+            destination=False,
+            shapes=True,
+        ) or []
+        for rigid in sorted({n.split('|')[-1] for n in cmds.ls(passive, type='nRigid')}):
+            if rigid not in links:
+                links[rigid] = solver_cloths[0]
+                logger.debug(
+                    f"rigid link (single-cloth fallback): "
+                    f"{rigid} -> {solver_cloths[0]}"
+                )
+
+    return links
+
+
+# ============================================================================
 # REGISTRATION
 # ============================================================================
 
@@ -148,4 +233,5 @@ register(SimSystem(
     make_item      = _make_nucleus_item,
     get_children   = _get_nucleus_children,
     cache_ops      = NucleusCacheOps,
+    get_links      = _get_rigid_links,
 ))

@@ -6,8 +6,9 @@ All DynEval files should import Qt from here rather than directly.
 
 Known differences handled
 ─────────────────────────
-QShortcut   QtWidgets (PySide2)  →  QtGui (PySide6)
-QAction     QtWidgets (PySide2)  →  QtGui (PySide6)
+QShortcut     QtWidgets (PySide2)  →  QtGui (PySide6)
+QAction       QtWidgets (PySide2)  →  QtGui (PySide6)
+QActionGroup  QtWidgets (PySide2)  →  QtGui (PySide6)
 exec_()     PySide2 convention   →  exec() in PySide6
             (exec_() still works in PySide6 but emits DeprecationWarning)
 
@@ -25,8 +26,9 @@ try:
     from shiboken6 import wrapInstance
 
     # Moved to QtGui in PySide6
-    QShortcut = QtGui.QShortcut
-    QAction   = QtGui.QAction
+    QShortcut    = QtGui.QShortcut
+    QAction      = QtGui.QAction
+    QActionGroup = QtGui.QActionGroup
 
     def qt_exec(obj, *args, **kwargs):
         """Call exec() — PySide6 dropped the trailing underscore."""
@@ -40,8 +42,9 @@ except ImportError:
     from shiboken2 import wrapInstance
 
     # Still in QtWidgets in PySide2
-    QShortcut = QtWidgets.QShortcut
-    QAction   = QtWidgets.QAction
+    QShortcut    = QtWidgets.QShortcut
+    QAction      = QtWidgets.QAction
+    QActionGroup = QtWidgets.QActionGroup
 
     def qt_exec(obj, *args, **kwargs):
         """Call exec_() — PySide2 convention."""

@@ -26,12 +26,15 @@ DynEvalMainWindow contract (expected from wgt_base.py):
 
 from __future__ import annotations
 
+import subprocess
+import sys
 from functools import partial
+from pathlib import Path
 from typing import Optional
 
 from dw_maya.DynEval.sim_cmds.compat import (
     QtCore, QtGui, QtWidgets, Qt, Signal, Slot,
-    wrapInstance, QShortcut, qt_exec,
+    wrapInstance, QShortcut, QAction, QActionGroup, qt_exec,
 )
 
 
@@ -56,9 +59,13 @@ except Exception:
     traceback.print_exc()
 
 import dw_maya.DynEval.sim_registry  # noqa: F401
-from dw_maya.DynEval.sim_registry import discover_all, build_solver_item, get_system
+from dw_maya.DynEval.sim_registry import (
+    discover_all, build_solver_item, get_system, all_sim_node_types,
+)
 from dw_maya.DynEval.sim_widget import SimulationTreeView
 from dw_maya.DynEval.sim_widget.wgt_base import DynEvalMainWindow, DynEvalWidgetBase
+from dw_maya.DynEval.sim_widget.wgt_commentary import CommentEditor
+from dw_maya.DynEval.sim_cmds import cache_metadata, dyn_prefs
 logger = get_logger()
 
 
@@ -96,10 +103,49 @@ class DynEvalUI(DynEvalMainWindow):
         self._central = QtWidgets.QWidget(self)
         self.setCentralWidget(self._central)
 
+        self._build_menu()
         self._build_layout()
         self._setup_hub()
         self._sync_frame_range()
         self.build_tree()
+
+    # ------------------------------------------------------------------
+    # Menu bar
+    # ------------------------------------------------------------------
+
+    def _build_menu(self):
+        pref_menu = self.menuBar().addMenu("Pref")
+        dist_menu = pref_menu.addMenu("Cache Distribution")
+
+        # Exclusive checkable pair; the choice persists via optionVar and is
+        # read by NucleusCacheOps.create at cache time (dyn_prefs).
+        current = dyn_prefs.get_cache_distribution()
+        self._dist_group = QActionGroup(self)
+        self._dist_group.setExclusive(True)
+
+        entries = (
+            ("OneFile", "Single File",
+             "One cache file for the whole frame range (default)."),
+            ("OneFilePerFrame", "One File Per Frame",
+             "One file per frame - lets you inspect a batch sim while it is "
+             "still running."),
+        )
+        for value, label, tip in entries:
+            action = QAction(label, self)
+            action.setCheckable(True)
+            action.setChecked(value == current)
+            action.setStatusTip(tip)
+            action.setToolTip(tip)
+            action.triggered.connect(partial(self._set_cache_distribution, value))
+            self._dist_group.addAction(action)
+            dist_menu.addAction(action)
+
+    def _set_cache_distribution(self, value, *_args):
+        try:
+            dyn_prefs.set_cache_distribution(value)
+            logger.info(f"Cache distribution set to {value!r}")
+        except Exception as e:
+            logger.error(f"Could not set cache distribution: {e}")
 
     # ------------------------------------------------------------------
     # Layout
@@ -192,6 +238,29 @@ class SimTreePanel(DynEvalWidgetBase):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(2)
 
+        # Leaf-type filter — one checkbox per registered sim node type
+        # (nCloth / hairSystem / nRigid today), persisted via dyn_prefs.
+        self._type_checks = {}
+        filter_row = QtWidgets.QHBoxLayout()
+        filter_row.setContentsMargins(2, 2, 2, 0)
+        hidden = dyn_prefs.get_hidden_node_types()
+        for sim_type in all_sim_node_types():
+            check = QtWidgets.QCheckBox(sim_type)
+            check.setChecked(sim_type not in hidden)
+            check.toggled.connect(self._on_type_filter_changed)
+            self._type_checks[sim_type] = check
+            filter_row.addWidget(check)
+        filter_row.addStretch()
+
+        self._btn_refresh = QtWidgets.QPushButton("Refresh")
+        self._btn_refresh.setToolTip(
+            "Rebuild the tree from the scene (keeps expansion state)."
+        )
+        self._btn_refresh.clicked.connect(self.refresh_tree)
+        filter_row.addWidget(self._btn_refresh)
+
+        layout.addLayout(filter_row)
+
         self.tree = SimulationTreeView()
         self.tree.setMinimumWidth(260)
         self.tree.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
@@ -223,9 +292,10 @@ class SimTreePanel(DynEvalWidgetBase):
                 self._status.show_message("No simulation nodes found.")
                 return
 
+            visible = self._visible_types()
             for _system_name, solver_nodes in systems.items():
                 for solver_node in solver_nodes:
-                    solver_item = build_solver_item(solver_node)
+                    solver_item = build_solver_item(solver_node, visible_types=visible)
                     if solver_item:
                         self.tree.model().invisibleRootItem().appendRow(solver_item)
 
@@ -241,6 +311,18 @@ class SimTreePanel(DynEvalWidgetBase):
         saved = self._collect_expanded_paths()
         self.build_tree()
         self._restore_expanded_paths(saved)
+
+    # ------------------------------------------------------------------
+    # Leaf-type filter
+    # ------------------------------------------------------------------
+
+    def _visible_types(self) -> set:
+        return {t for t, check in self._type_checks.items() if check.isChecked()}
+
+    def _on_type_filter_changed(self, _checked: bool):
+        hidden = {t for t, check in self._type_checks.items() if not check.isChecked()}
+        dyn_prefs.set_hidden_node_types(hidden)
+        self.refresh_tree()
 
     # ------------------------------------------------------------------
     # Selection
@@ -274,6 +356,8 @@ class SimTreePanel(DynEvalWidgetBase):
             cache_menu.addAction("Create nCache", self._request_cache_create)
 
         elif node_type == "nucleus":
+            menu.addAction("Attach Published Caches", self._attach_published_caches)
+            menu.addSeparator()
             menu.addAction("Refresh", self.refresh_tree)
 
         menu.exec_(self.tree.viewport().mapToGlobal(pos))
@@ -298,6 +382,64 @@ class SimTreePanel(DynEvalWidgetBase):
         item = self.selected_item()
         if item:
             self.publish(DynEvalKeys.CACHE_CREATE_REQUESTED, item)
+
+    def _attach_published_caches(self):
+        """Reattach every published-tagged cache under the selected solver.
+
+        The scene-rebuild workflow: someone reopens/rebuilds the scene,
+        right-clicks the solver, and every sim item whose metadata carries a
+        published version gets that cache attached in one go.
+        """
+        solver_item = self.selected_item()
+        if not solver_item:
+            return
+
+        attached, skipped = [], []
+        for row in range(solver_item.rowCount()):
+            child = solver_item.child(row, 0)
+            node_type = getattr(child, "node_type", None)
+            if node_type not in ("nCloth", "hairSystem"):
+                continue
+
+            version = cache_metadata.get_published(child)
+            if version is None:
+                continue
+
+            system = get_system(node_type)
+            if not system or not system.cache_ops:
+                continue
+
+            match = None
+            for cache_info in system.cache_ops.list_caches(child):
+                if cache_info.version == version:
+                    match = cache_info
+                    break
+
+            label = f"{child.short_name} v{version:03d}"
+            if match is None:
+                skipped.append(label)
+                logger.warning(
+                    f"Attach published: no cache v{version:03d} on disk "
+                    f"for {child.node!r}"
+                )
+                continue
+
+            try:
+                system.cache_ops.attach(child, match)
+                attached.append(label)
+            except Exception as e:
+                skipped.append(label)
+                logger.error(f"Attach published failed for {child.node!r}: {e}")
+
+        if attached:
+            logger.info(f"Attached published caches: {', '.join(attached)}")
+        if skipped:
+            cmds.warning(f"Published caches not attached: {', '.join(skipped)}")
+        if not attached and not skipped:
+            cmds.warning("No published cache tagged under this solver.")
+
+        # Refresh the cache panel highlight for the current selection
+        self.publish(DynEvalKeys.SELECTED_NODE, self.selected_item())
 
     # ------------------------------------------------------------------
     # Undo / redo
@@ -370,10 +512,11 @@ def _item_path(item: QtGui.QStandardItem) -> str:
 
 class SimDetailPanel(DynEvalWidgetBase):
     """
-    Right panel — just a tab container.
+    Right panel — a tab container.
 
-    Each sub-panel subscribes to the hub independently;
-    this class has no logic of its own.
+    Each sub-panel subscribes to the hub independently; the only logic
+    here is tab focus: COMMENT_EDIT_REQUESTED (double-click on a comment
+    cell in the cache panel) raises the Comment tab.
     """
 
     def __init__(self, hub, parent=None):
@@ -383,12 +526,20 @@ class SimDetailPanel(DynEvalWidgetBase):
         layout.setContentsMargins(0, 0, 0, 0)
 
         self.tabs = QtWidgets.QTabWidget()
-        self.cache_tab = CacheVersionPanel(hub)
-        self.maps_tab  = MapListPanel(hub)
+        self.cache_tab   = CacheVersionPanel(hub)
+        self.maps_tab    = MapListPanel(hub)
+        self.comment_tab = CommentEditor(hub)
 
-        self.tabs.addTab(self.cache_tab, "Cache")
-        self.tabs.addTab(self.maps_tab,  "Maps")
+        self.tabs.addTab(self.cache_tab,   "Cache")
+        self.tabs.addTab(self.maps_tab,    "Maps")
+        self.tabs.addTab(self.comment_tab, "Comment")
         layout.addWidget(self.tabs)
+
+        self.subscribe(DynEvalKeys.COMMENT_EDIT_REQUESTED, self._on_comment_edit)
+
+    def _on_comment_edit(self, _old, cache_info):
+        if cache_info is not None:
+            self.tabs.setCurrentWidget(self.comment_tab)
 
 
 # ============================================================================
@@ -400,12 +551,38 @@ class CacheVersionPanel(DynEvalWidgetBase):
     Lists available cache versions for the selected node.
     Provides create / attach / delete actions.
 
+    Row decoration
+    --------------
+    - The currently attached cache is bold on a blue background.
+    - Favorite versions carry a star suffix (composite / blendshape sources).
+    - The published version (the one tagged for publish) is green.
+    Tags live in metadata.json via sim_cmds.cache_metadata.
+
+    Interactions
+    ------------
+    - Double-click on the Comment cell -> raise the Comment tab
+      (COMMENT_EDIT_REQUESTED); any other cell -> attach that version.
+    - Context menu: attach / favorite / publish tag / comment / reveal /
+      delete.
+
     Subscribes to
     -------------
     SELECTED_NODE          repopulates the version list
     FRAME_RANGE            updates the frame-range display
     CACHE_CREATE_REQUESTED triggers cache creation directly
+    COMMENT_SAVED          refreshes the Comment column
     """
+
+    COL_VERSION = 0
+    COL_TYPE = 1
+    COL_DATE = 2
+    COL_FRAMES = 3
+    COL_COMMENT = 4
+
+    ATTACHED_BG = QtGui.QColor(38, 79, 120)
+    FAVORITE_FG = QtGui.QColor(212, 175, 55)
+    PUBLISHED_FG = QtGui.QColor(130, 200, 120)
+    FAVORITE_MARK = "★"   # black star (escape keeps the source ASCII)
 
     def __init__(self, hub, parent=None):
         super().__init__(hub, parent)
@@ -424,10 +601,39 @@ class CacheVersionPanel(DynEvalWidgetBase):
 
         # -- Version list --------------------------------------------------
         self.cache_list = QtWidgets.QTreeWidget()
-        self.cache_list.setHeaderLabels(["Version", "Date", "Frames"])
+        self.cache_list.setHeaderLabels(["Version", "Type", "Date", "Frames", "Comment"])
         self.cache_list.setRootIsDecorated(False)
         self.cache_list.setSelectionMode(QtWidgets.QAbstractItemView.SingleSelection)
+        self.cache_list.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
+        header = self.cache_list.header()
+        header.setStretchLastSection(True)
+        self.cache_list.setColumnWidth(self.COL_VERSION, 70)
+        self.cache_list.setColumnWidth(self.COL_TYPE, 70)
+        self.cache_list.setColumnWidth(self.COL_DATE, 110)
+        self.cache_list.setColumnWidth(self.COL_FRAMES, 80)
         layout.addWidget(self.cache_list)
+
+        # -- Create mode (increment / replace) -------------------------------
+        mode_row = QtWidgets.QHBoxLayout()
+        mode_row.addWidget(QtWidgets.QLabel("On create:"))
+        self._mode_increment = QtWidgets.QRadioButton("Increment")
+        self._mode_increment.setToolTip("Each create writes a new version.")
+        self._mode_replace = QtWidgets.QRadioButton("Replace")
+        self._mode_replace.setToolTip(
+            "Create overwrites the attached version (or the latest when "
+            "none is attached)."
+        )
+        self._mode_group = QtWidgets.QButtonGroup(self)
+        self._mode_group.addButton(self._mode_increment)
+        self._mode_group.addButton(self._mode_replace)
+        if dyn_prefs.get_cache_mode() == "replace":
+            self._mode_replace.setChecked(True)
+        else:
+            self._mode_increment.setChecked(True)
+        mode_row.addWidget(self._mode_increment)
+        mode_row.addWidget(self._mode_replace)
+        mode_row.addStretch()
+        layout.addLayout(mode_row)
 
         # -- Action buttons ------------------------------------------------
         btn_row = QtWidgets.QHBoxLayout()
@@ -445,9 +651,13 @@ class CacheVersionPanel(DynEvalWidgetBase):
         self.subscribe(DynEvalKeys.SELECTED_NODE,          self._on_node_changed)
         self.subscribe(DynEvalKeys.FRAME_RANGE,            self._on_frame_range)
         self.subscribe(DynEvalKeys.CACHE_CREATE_REQUESTED, self._on_create_requested)
+        self.subscribe(DynEvalKeys.COMMENT_SAVED,          self._on_comment_saved)
 
         # -- Widget connections --------------------------------------------
         self.cache_list.currentItemChanged.connect(self._on_version_selected)
+        self.cache_list.itemDoubleClicked.connect(self._on_double_click)
+        self.cache_list.customContextMenuRequested.connect(self._show_context_menu)
+        self._mode_replace.toggled.connect(self._on_cache_mode_changed)
         self._btn_create.clicked.connect(self._create_cache)
         self._btn_attach.clicked.connect(self._attach_selected)
         self._btn_delete.clicked.connect(self._delete_selected)
@@ -472,11 +682,15 @@ class CacheVersionPanel(DynEvalWidgetBase):
             self._current_item = item
             self._create_cache()
 
+    def _on_comment_saved(self, _old, _comment):
+        """A comment was written from the Comment tab — refresh the column."""
+        self._rebuild_list(select_version=self._selected_version())
+
     # ------------------------------------------------------------------
     # Version list
     # ------------------------------------------------------------------
 
-    def _rebuild_list(self):
+    def _rebuild_list(self, select_version: Optional[int] = None):
         self.cache_list.clear()
         if not self._current_item:
             return
@@ -486,18 +700,64 @@ class CacheVersionPanel(DynEvalWidgetBase):
         if not system or not system.cache_ops:
             return
 
+        tags = cache_metadata.get_tags(self._current_item)
+        bold = QtGui.QFont()
+        bold.setBold(True)
+
         for cache_info in system.cache_ops.list_caches(self._current_item):
+            cache_info.is_attached = self._is_attached(cache_info)
+
             frames = (
                 f"{cache_info.start} - {cache_info.end}"
                 if (cache_info.start or cache_info.end) else "-"
             )
+            version_text = f"v{cache_info.version:03d}"
+            if cache_info.version in tags["favorites"]:
+                version_text = f"{version_text} {self.FAVORITE_MARK}"
+
+            comment = tags["comments"].get(str(cache_info.version), "")
+            comment_line = comment.splitlines()[0] if comment else ""
+
             row = QtWidgets.QTreeWidgetItem([
-                f"v{cache_info.version:03d}",
+                version_text,
+                cache_info.cache_type.value,
                 cache_info.date,
                 frames,
+                comment_line,
             ])
             row.setData(0, QtCore.Qt.UserRole, cache_info)
+            if comment:
+                row.setToolTip(self.COL_COMMENT, comment)
+
+            if cache_info.version == tags["published"]:
+                row.setForeground(self.COL_VERSION, QtGui.QBrush(self.PUBLISHED_FG))
+                row.setToolTip(self.COL_VERSION, "Published cache")
+            elif cache_info.version in tags["favorites"]:
+                row.setForeground(self.COL_VERSION, QtGui.QBrush(self.FAVORITE_FG))
+                row.setToolTip(self.COL_VERSION, "Favorite cache")
+
+            if cache_info.is_attached:
+                for col in range(self.cache_list.columnCount()):
+                    row.setBackground(col, QtGui.QBrush(self.ATTACHED_BG))
+                    row.setFont(col, bold)
+
             self.cache_list.addTopLevelItem(row)
+
+            if select_version is not None and cache_info.version == select_version:
+                self.cache_list.setCurrentItem(row)
+
+    def _is_attached(self, cache_info) -> bool:
+        """True when this version is the cache currently driving the node."""
+        try:
+            from .sim_cmds import cache_management
+            return cache_management.cache_is_attached(cache_info.node, cache_info.name)
+        except Exception as e:
+            logger.debug(f"attach check failed for {cache_info.name!r}: {e}")
+            return False
+
+    def _selected_version(self) -> Optional[int]:
+        cache_info = self._selected_cache_info()
+        return cache_info.version if cache_info else None
 
     def _selected_cache_info(self):
         row = self.cache_list.currentItem()
@@ -524,15 +784,26 @@ class CacheVersionPanel(DynEvalWidgetBase):
             logger.warning("_create_cache: no cache_ops for this node type")
             return
         frame_range = self.hub_get(DynEvalKeys.FRAME_RANGE) or (1, 100)
+        replace = self._mode_replace.isChecked()
         try:
-            system.cache_ops.create(self._current_item, frame_range)
+            system.cache_ops.create(self._current_item, frame_range, replace=replace)
             self._rebuild_list()
         except Exception as e:
             logger.error(f"Cache creation failed: {e}")
             cmds.warning(str(e))
 
+    def _on_cache_mode_changed(self, replace_checked: bool):
+        try:
+            dyn_prefs.set_cache_mode("replace" if replace_checked else "increment")
+        except Exception as e:
+            logger.error(f"Could not set cache mode: {e}")
+
     def _attach_selected(self):
         cache_info = self._selected_cache_info()
+        if cache_info:
+            self._attach_cache(cache_info)
+
+    def _attach_cache(self, cache_info):
         if not (cache_info and self._current_item):
             return
         system = get_system(getattr(self._current_item, "node_type", None))
@@ -540,9 +811,111 @@ class CacheVersionPanel(DynEvalWidgetBase):
             return
         try:
             system.cache_ops.attach(self._current_item, cache_info)
+            self._rebuild_list(select_version=cache_info.version)
         except Exception as e:
             logger.error(f"Cache attach failed: {e}")
             cmds.warning(str(e))
+
+    def _on_double_click(self, row, column: int):
+        """Comment cell -> open the Comment tab; any other cell -> attach."""
+        cache_info = row.data(0, QtCore.Qt.UserRole)
+        if cache_info is None:
+            return
+        if column == self.COL_COMMENT:
+            self.publish(DynEvalKeys.CACHE_SELECTED, cache_info)
+            self.publish(DynEvalKeys.COMMENT_EDIT_REQUESTED, cache_info)
+        else:
+            self._attach_cache(cache_info)
+
+    def _toggle_favorite(self, cache_info):
+        cache_metadata.toggle_favorite(self._current_item, cache_info.version)
+        self._rebuild_list(select_version=cache_info.version)
+
+    def _set_published(self, cache_info, state: bool):
+        version = cache_info.version if state else None
+        cache_metadata.set_published(self._current_item, version)
+        self._rebuild_list(select_version=cache_info.version)
+
+    def _materialize_cache(self, cache_info):
+        """Fresh-duplicate the sim mesh at the outliner root and assign
+        the right-clicked cache version to the duplicate."""
+        if not self._current_item:
+            return
+
+        mesh = getattr(self._current_item, "mesh_transform", None)
+        if not mesh or not cmds.objExists(mesh):
+            try:
+                from dw_maya.dw_nucleus_utils.dw_core import get_mesh_from_nucx_node
+                mesh = get_mesh_from_nucx_node(self._current_item.node)
+            except Exception:
+                mesh = None
+        if not mesh or not cmds.objExists(mesh):
+            cmds.warning(
+                f"No mesh resolved for '{self._current_item.node}' - cannot materialize."
+            )
+            return
+
+        try:
+            from .sim_cmds import cache_management
+            result = cache_management.materialize(mesh, str(cache_info.path))
+            cmds.select(result, replace=True)
+            logger.info(f"Materialized {cache_info.name!r} as {result!r}")
+        except Exception as e:
+            logger.error(f"Materialize failed: {e}")
+            cmds.warning(str(e))
+
+    def _edit_comment(self, cache_info):
+        self.publish(DynEvalKeys.CACHE_SELECTED, cache_info)
+        self.publish(DynEvalKeys.COMMENT_EDIT_REQUESTED, cache_info)
+
+    def _reveal_in_explorer(self, cache_info):
+        cache_dir = Path(cache_info.path).parent
+        if not cache_dir.exists():
+            cmds.warning(f"Cache directory does not exist: {cache_dir}")
+            return
+        if sys.platform == "win32":
+            subprocess.Popen(f'explorer "{cache_dir}"')
+        elif sys.platform == "darwin":
+            subprocess.Popen(["open", str(cache_dir)])
+        else:
+            subprocess.Popen(["xdg-open", str(cache_dir)])
+
+    # ------------------------------------------------------------------
+    # Context menu
+    # ------------------------------------------------------------------
+
+    def _show_context_menu(self, pos: QtCore.QPoint):
+        row = self.cache_list.itemAt(pos)
+        if row is None or not self._current_item:
+            return
+        cache_info = row.data(0, QtCore.Qt.UserRole)
+        if cache_info is None:
+            return
+
+        tags = cache_metadata.get_tags(self._current_item)
+        is_fav = cache_info.version in tags["favorites"]
+        is_pub = cache_info.version == tags["published"]
+
+        menu = QtWidgets.QMenu(self)
+        menu.addAction("Attach", partial(self._attach_cache, cache_info))
+        menu.addSeparator()
+        menu.addAction(
+            "Remove Favorite" if is_fav else "Set Favorite",
+            partial(self._toggle_favorite, cache_info),
+        )
+        menu.addAction(
+            "Clear Published" if is_pub else "Set as Published",
+            partial(self._set_published, cache_info, not is_pub),
+        )
+        menu.addSeparator()
+        menu.addAction("Materialize", partial(self._materialize_cache, cache_info))
+        menu.addSeparator()
+        menu.addAction("Edit Comment...", partial(self._edit_comment, cache_info))
+        menu.addAction("Reveal in Explorer", partial(self._reveal_in_explorer, cache_info))
+        menu.addSeparator()
+        menu.addAction("Delete", self._delete_selected)
+
+        menu.exec_(self.cache_list.viewport().mapToGlobal(pos))
 
     def _delete_selected(self):
         cache_info = self._selected_cache_info()

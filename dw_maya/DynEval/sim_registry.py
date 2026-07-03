@@ -44,11 +44,15 @@ class SimSystem:
     ------
     name            human-readable key ('nucleus', 'ziva', …)
     solver_types    Maya node types that act as top-level solvers
-    sim_node_types  Maya node types for sim objects (nCloth, hairSystem, …)
+    sim_node_types  Maya node types for sim objects (nCloth, hairSystem, …);
+                    also drives the leaf-type filter checkboxes in the tree panel
     discover        () -> [solver_node, …]  finds solvers currently in the scene
     make_item       (node) -> QStandardItem | None  creates the right tree item
     get_children    (solver_node) -> [child_node, …]  finds nodes owned by a solver
     cache_ops       class that implements create / attach / delete (filled in later)
+    get_links       optional (solver_node) -> {child: parent_child} — children
+                    mapped here are nested under the other child instead of
+                    the solver (e.g. nRigid under the nCloth it constrains)
     """
     name:           str
     solver_types:   list[str]
@@ -57,6 +61,7 @@ class SimSystem:
     make_item:      Callable[[str], QtGui.QStandardItem | None]
     get_children:   Callable[[str], list[str]]
     cache_ops:      type | None = None
+    get_links:      Callable[[str], dict[str, str]] | None = None
 
 
 # ============================================================================
@@ -86,6 +91,19 @@ def get_system(node_type: str) -> SimSystem | None:
 def get_system_by_name(name: str) -> SimSystem | None:
     """Lookup by system name (e.g. 'nucleus')."""
     return _by_name.get(name)
+
+
+def all_sim_node_types() -> list[str]:
+    """Every leaf node type across registered systems, registration order.
+
+    Drives the tree panel's per-type filter checkboxes.
+    """
+    types: list[str] = []
+    for system in _by_name.values():
+        for node_type in system.sim_node_types:
+            if node_type not in types:
+                types.append(node_type)
+    return types
 
 
 def discover_all() -> dict[str, list[str]]:
@@ -126,12 +144,20 @@ def discover_all() -> dict[str, list[str]]:
 # TREE CONSTRUCTION
 # ============================================================================
 
-def build_solver_item(solver_node: str) -> list[QtGui.QStandardItem] | None:
+def build_solver_item(solver_node: str,
+                      visible_types: set[str] | None = None,
+                      ) -> list[QtGui.QStandardItem] | None:
     """
     Build a fully populated two-column tree row for solver_node.
 
     Column 0  solver tree item, with child rows already appended.
     Column 1  state item  (enabled / disabled data at UserRole + 3).
+
+    visible_types, when given, filters which leaf items appear (matched
+    against each built item's node_type — the tree panel's checkboxes).
+    Children mapped by system.get_links are nested under their linked
+    sibling (e.g. nRigid under its constrained nCloth); a hidden or
+    missing link parent falls back to the solver.
 
     Returns None if the node type has no registered system, or if make_item
     returns None (e.g. node no longer exists).
@@ -164,12 +190,43 @@ def build_solver_item(solver_node: str) -> list[QtGui.QStandardItem] | None:
         logger.warning(f"build_solver_item: get_children failed for {solver_node!r}: {e}")
         children = []
 
+    links: dict[str, str] = {}
+    if system.get_links is not None:
+        try:
+            links = system.get_links(solver_node) or {}
+        except Exception as e:
+            logger.warning(f"build_solver_item: get_links failed for {solver_node!r}: {e}")
+
+    # Build items first so filtering and nesting can use the resolved
+    # item.node / node_type (get_children may hand out transforms).
+    child_items = []
     for child_node in children:
         child_item = system.make_item(child_node)
-        if child_item:
-            solver_item.appendRow(_make_row(child_item))
+        if not child_item:
+            continue
+        if visible_types is not None:
+            if getattr(child_item, "node_type", None) not in visible_types:
+                continue
+        child_items.append(child_item)
+
+    # Nodes may come back short or full-path depending on the query —
+    # compare by short name.
+    by_short = {
+        _short_name(getattr(item, "node", "")): item for item in child_items
+    }
+    for item in child_items:
+        parent_node = links.get(_short_name(getattr(item, "node", "")))
+        parent_item = by_short.get(_short_name(parent_node)) if parent_node else None
+        if parent_item is not None and parent_item is not item:
+            parent_item.appendRow(_make_row(item))
+        else:
+            solver_item.appendRow(_make_row(item))
 
     return _make_row(solver_item)
+
+
+def _short_name(node: str) -> str:
+    return node.split("|")[-1] if node else ""
 
 
 def _make_row(item: QtGui.QStandardItem) -> list[QtGui.QStandardItem]:

@@ -14,12 +14,20 @@ def freshDuplicate(sel=list):
         list: List of duplicated objects.
     """
     valid_types = ['mesh', 'nurbsCurve']
-    shapes = dwu.lsTr(sel, type=valid_types, p=False, ni=True)  # Filter selected valid types
+    # lsTr always returns transforms; resolve each one's live shape explicitly
+    transforms = dwu.lsTr(sel, type=valid_types, ni=True)
     output = []  # To store the resulting duplicated objects
     mass_disconnect = []  # To store connection data for later disconnection
 
-    for shape in shapes:
-        transform = dwu.lsTr(shape)[0]  # Get the transform parent
+    for transform in transforms:
+        relatives = cmds.listRelatives(transform,
+                                       shapes=True,
+                                       noIntermediate=True,
+                                       fullPath=True) or []
+        shapes = [s for s in relatives if cmds.nodeType(s) in valid_types]
+        if not shapes:
+            continue
+        shape = shapes[0]
         node_type = cmds.nodeType(shape)  # Get the node type (mesh/nurbsCurve)
         zip_names = dwu.unique_name(transform)[0]  # Get unique name for new object
 
@@ -35,15 +43,18 @@ def freshDuplicate(sel=list):
 
         # Connect the original shape's output to the new shape's input
         cmds.connectAttr(conn_out, conn_in, force=True)
-        mass_disconnect.append([conn_out, conn_in])  # Store for disconnection
+        mass_disconnect.append([conn_out, conn_in, new_shape])  # Store for disconnection
 
         output.append(new_name)
 
     # Refresh Maya viewport after duplication
     cmds.refresh()
 
-    # Disconnect the attributes after refresh to create a clean duplicate
-    for out_conn, in_conn in mass_disconnect:
+    # Disconnect the attributes after evaluation to create a clean duplicate
+    for out_conn, in_conn, new_shape in mass_disconnect:
+        # Pull the copied shape's output so the data is actually evaluated —
+        # refresh() alone does not evaluate in batch mode (empty duplicate)
+        cmds.dgeval(dwu.get_type_io(new_shape))
         cmds.disconnectAttr(out_conn, in_conn)
 
     # Select the newly created duplicates in the scene

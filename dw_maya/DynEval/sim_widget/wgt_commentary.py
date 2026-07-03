@@ -283,29 +283,9 @@ class CommentEditor(DynEvalWidgetBase):
         try:
             if not self._current_item:
                 return
-
-            # Get metadata path
-            if not hasattr(self._current_item, 'metadata'):
-                return
-
-            metadata_path = Path(self._current_item.metadata())
-            if not metadata_path.exists():
-                self.display_area.clear()
-                return
-
-            # Load metadata
-            from dw_maya.dw_presets_io import dw_json
-            data = dw_json.load_json(str(metadata_path))
-
-            # Get solver name
-            solver = getattr(self._current_item, 'solver_name', None)
-            if not solver:
-                solver = self._current_item.data(self._current_item.CUSTOM_ROLES.get('SOLVER', 0))
-
-            # Get comment
-            version = cache_info.version if hasattr(cache_info, 'version') else 0
-            comment = data.get('comment', {}).get(solver, {}).get(str(version), "")
-
+            from dw_maya.DynEval.sim_cmds import cache_metadata
+            version = getattr(cache_info, 'version', 0)
+            comment = cache_metadata.get_comment(self._current_item, version)
             self.display_area.setText(comment)
 
         except Exception as e:
@@ -330,23 +310,18 @@ class CommentEditor(DynEvalWidgetBase):
             self.display_area.setText(comment)
             self.write_area.clear()
             self.save_requested.emit(comment)
+            # Cache panel subscribes to refresh its Comment column
+            self.publish(DynEvalKeys.COMMENT_SAVED, comment)
 
     def _save_to_disk(self, comment: str) -> bool:
         if not self._current_item or not self._current_cache:
             return False
         try:
-            from dw_maya.dw_presets_io import dw_json
-            metadata_path = Path(self._current_item.metadata())
-            solver = getattr(self._current_item, "solver_name", "")
-            version = str(self._current_cache.version)
-            payload = {"comment": {solver: {version: comment}}}
-            if metadata_path.exists():
-                dw_json.merge_json(str(metadata_path), payload, defer=True)
-            else:
-                dw_json.save_json(str(metadata_path), payload, defer=True)
-            return True
+            from dw_maya.DynEval.sim_cmds import cache_metadata
+            version = getattr(self._current_cache, "version", 0)
+            return cache_metadata.set_comment(self._current_item, version, comment)
         except Exception as e:
-            logger.error(f"Échec sauvegarde commentaire : {e}")
+            logger.error(f"Comment save failed: {e}")
             return False
 
     def _clear_write_area(self):
