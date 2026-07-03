@@ -1,8 +1,66 @@
-from typing import List, Optional
+from typing import List, Optional, Tuple
 from maya import cmds
+from dw_maya.dw_decorators import singleUndoChunk
 from dw_logger import get_logger
 
 logger = get_logger()
+
+
+@singleUndoChunk
+def offset_animation(value: float,
+                     nodes: Optional[List[str]] = None,
+                     attributes: Tuple[str, ...] = ('tx', 'ty', 'tz'),
+                     time_range: Optional[Tuple[float, float]] = None,
+                     relative: bool = True) -> int:
+    """Offset (or set) the value of every keyframe on the given attributes.
+
+    Args:
+        value: Amount to add to every key (or the absolute value to set
+            when relative=False).
+        nodes: Nodes to process; defaults to the current selection.
+        attributes: Attribute names to edit, defaults to ('tx', 'ty', 'tz').
+        time_range: Optional (start, end) to only edit keys in that range;
+            defaults to the whole animation.
+        relative: True adds value to each key, False sets each key to value.
+
+    Returns:
+        Number of node.attr plugs that were edited.
+
+    Example:
+        >>> offset_animation(5.0)                            # tx ty tz +5 on selection
+        >>> offset_animation(2.5, attributes=('ty',))        # ty only
+        >>> offset_animation(0.0, relative=False)            # flatten keys to 0
+        >>> offset_animation(1.0, time_range=(1001, 1050))   # only that range
+    """
+    target_nodes = nodes if nodes else cmds.ls(selection=True)
+    if not target_nodes:
+        cmds.warning("offset_animation: nothing selected and no nodes given.")
+        return 0
+
+    feed = {'edit': True,
+            'includeUpperBound': True,
+            'valueChange': value,
+            'relative': relative,
+            'absolute': not relative}
+    if time_range:
+        feed['time'] = (time_range[0], time_range[1])
+
+    edited = 0
+    for node in target_nodes:
+        for attr in attributes:
+            plug = f"{node}.{attr}"
+            if not cmds.objExists(plug):
+                logger.warning(f"offset_animation: {plug} does not exist, skipped.")
+                continue
+            if not cmds.keyframe(plug, query=True, keyframeCount=True):
+                logger.debug(f"offset_animation: {plug} has no keys, skipped.")
+                continue
+            cmds.keyframe(plug, **feed)
+            edited += 1
+
+    mode = "offset by" if relative else "set to"
+    logger.info(f"offset_animation: {edited} plug(s) {mode} {value}.")
+    return edited
 
 
 def delete_redundant_curves(all_nodes: bool = True) -> List[str]:

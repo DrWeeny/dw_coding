@@ -1,0 +1,612 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Slimfast — Architecture &amp; Maintainer Guide</title>
+<style>
+  /* For browser viewing only. Confluence strips most of this on paste —
+     the document relies on semantic structure (headings, tables, code, lists),
+     not on these styles. */
+  body { font-family: -apple-system, Segoe UI, Roboto, Arial, sans-serif;
+         line-height: 1.55; max-width: 920px; margin: 24px auto; padding: 0 16px;
+         color: #1d2125; }
+  h1 { border-bottom: 3px solid #4ecdc4; padding-bottom: 6px; }
+  h2 { border-bottom: 1px solid #ccc; padding-bottom: 4px; margin-top: 40px; }
+  h3 { margin-top: 28px; }
+  code { background: #f1f2f4; padding: 1px 5px; border-radius: 3px;
+         font-family: Consolas, Menlo, monospace; font-size: 0.92em; }
+  pre { background: #1d2125; color: #e6e6e6; padding: 14px 16px; border-radius: 6px;
+        overflow-x: auto; font-size: 0.86em; line-height: 1.4; }
+  pre code { background: none; color: inherit; padding: 0; }
+  table { border-collapse: collapse; width: 100%; margin: 12px 0; }
+  th, td { border: 1px solid #ccc; padding: 7px 10px; text-align: left; vertical-align: top; }
+  th { background: #f1f2f4; }
+  blockquote { border-left: 4px solid #4ecdc4; background: #f0fbfa; margin: 14px 0;
+               padding: 8px 16px; }
+  blockquote.warn { border-left-color: #e0a800; background: #fff8e6; }
+  blockquote.note { border-left-color: #4c8bf5; background: #eef4ff; }
+  .mermaid-src { border-left: 4px dashed #888; }
+  .small { color: #5a6772; font-size: 0.9em; }
+</style>
+</head>
+<body>
+
+<h1>Slimfast — Architecture &amp; Maintainer Guide</h1>
+
+<p class="small">Audience: tech artists comfortable with Python but from mixed backgrounds.
+Goal: be able to <strong>fix a bug</strong> or <strong>add a new panel / advanced
+operation</strong> without the original author present.</p>
+
+<blockquote class="note">
+<strong>How to put this in Confluence.</strong> Open this file in Chrome, select-all,
+copy, and paste into the Confluence editor — headings, tables, lists, links and code
+blocks convert to native elements (inline colours are dropped, which is fine).
+Add a <code>{toc}</code> macro at the top for a table of contents, and turn any code
+block into a Confluence <em>Code Block</em> macro for syntax highlighting. The
+diagrams are written as <strong>Mermaid</strong> source: if your space has the
+Mermaid / PlantUML / draw.io macro, paste the source into it; otherwise paste it
+into <a href="https://mermaid.live">mermaid.live</a> and drop the rendered PNG in.
+</blockquote>
+
+<hr>
+
+<h2 id="overview">1. What Slimfast is, in one minute</h2>
+
+<p><strong>Slimfast</strong> is a Maya weight-painting tool. A character mesh can carry
+many different kinds of per-vertex weight: a <em>skinCluster</em> has one weight per
+bone, a <em>blendShape</em> has base weights, an <em>nCloth</em> has dozens of named
+simulation maps (thickness, stretch…), and so on. Historically each of these needed a
+different tool, different buttons, and different Maya commands.</p>
+
+<p>Slimfast hides all of that behind <strong>one interface</strong>. You select a mesh,
+Slimfast lists every paintable weight source on it, and the same buttons — <em>flood,
+smooth, mirror, select-by-range, copy/paste, paint</em> — work on all of them. The UI
+never asks "is this a skinCluster or an nCloth?"; it just calls the same handful of
+methods on whatever weight source is active.</p>
+
+<p>Making "the same buttons work on everything" possible is what most of this document
+is about. Three ideas do the heavy lifting:</p>
+
+<ol>
+  <li><strong>Node wrappers</strong> (<code>MayaNode</code>) — a friendlier handle on a Maya node.</li>
+  <li><strong>Factories &amp; registries</strong> — code that hands you the <em>right</em> wrapper for a node without you writing <code>if/elif</code> chains.</li>
+  <li><strong>A shared contract</strong> (<code>WeightSource</code>) — every weight source implements the same small set of methods, so callers stay type-blind.</li>
+</ol>
+
+<h2 id="glossary">2. Glossary</h2>
+
+<table>
+<tr><th>Term</th><th>Meaning</th></tr>
+<tr><td><strong>Deformer</strong></td><td>A Maya node that changes a mesh's shape: cluster, blendShape, skinCluster, wire, softMod…</td></tr>
+<tr><td><strong>Influence / bone</strong></td><td>A joint that a skinCluster is bound to. Each vertex has one weight per influence; the weights of a vertex sum to 1.0.</td></tr>
+<tr><td><strong>Weight map</strong></td><td>One float per vertex (0..1 usually). A skinCluster has one map per influence; an nCloth has many named maps.</td></tr>
+<tr><td><strong>MObject</strong></td><td>OpenMaya's internal handle to a node. Survives renaming (unlike a name string).</td></tr>
+<tr><td><strong>Factory</strong></td><td>A function whose job is to <em>build and return the right object</em> for you (see §5).</td></tr>
+<tr><td><strong>Registry</strong></td><td>A lookup table mapping a key (e.g. a node type) to a class. The factory reads it.</td></tr>
+<tr><td><strong>Protocol / ABC</strong></td><td>A promised set of methods a class agrees to provide. Code can rely on the methods without knowing the concrete class. <code>WeightSource</code> is ours.</td></tr>
+<tr><td><strong>Artisan</strong></td><td>Maya's interactive paint tool (the brush). Slimfast can drive it or bypass it with direct numpy writes.</td></tr>
+<tr><td><strong>Controller</strong></td><td>The class that holds all Maya logic for Slimfast (<code>SlimfastController</code>). The UI never calls Maya directly.</td></tr>
+</table>
+
+<h2 id="repo-map">3. Repository map</h2>
+
+<p>Almost all active work lives under <code>dw_maya/</code>. First, <strong>where the pieces
+live</strong> on disk — the folders Slimfast touches and the one-line job of each:</p>
+
+<pre><code>dw_maya/
+├── Slimfast/              the tool itself — UI + controller + sub-panels
+│   ├── main_ui.py             window, buttons, sliders (no Maya calls)
+│   ├── cmds.py                SlimfastController — all Maya logic
+│   ├── wgt_signals.py         UI ↔ controller signals
+│   ├── wgt_deformer_panel.py  panel base class + @panel_for registry
+│   └── wgt_skin_panel.py      worked example: skinCluster influence tree
+│
+├── dw_paint/              the type-blind weight layer
+│   ├── protocol.py            WeightSource contract (the shared API)
+│   ├── weight_source.py       resolve_weight_sources() + apply_operation()
+│   └── operations.py          pure weight math (smooth/mirror/vector/radial)
+│
+├── dw_deformers/          deformer wrappers + skin writers
+│   ├── dw_deformer_class.py   Deformer classes + make_deformer() factory
+│   ├── dw_skinning_class.py   the rich SkinCluster (lock-aware writes)
+│   └── dw_skinning.py         write_influence_columns (API 1.0 writer)
+│
+├── dw_nucleus_utils/      NClothMap weight source (nCloth/nRigid maps)
+├── dw_maya_nodes/         MayaNode / MAttr / ObjPointer node wrappers
+├── dw_node_registry.py    type registry powering lsNode()
+└── dw_maya_utils/         components, selection, vertex-id helpers</code></pre>
+
+<p>And second, <strong>how those folders depend on each other</strong>. Read every
+arrow as <em>"imports / depends on"</em>: <code>A → B</code> means A needs B, so a change
+in B can ripple up to A.</p>
+
+<pre class="mermaid-src"><code>%% Mermaid — dependency map. Arrow A --> B reads "A depends on / imports B".
+flowchart TD
+    SF["Slimfast/<br/>(the tool: UI + controller + panels)"]
+    DP["dw_paint/<br/>(WeightSource contract,<br/>operations, weight_source factory)"]
+    DEF["dw_deformers/<br/>(Deformer classes,<br/>make_deformer factory,<br/>skinning writers)"]
+    NUC["dw_nucleus_utils/<br/>(NClothMap weight source)"]
+    NODES["dw_maya_nodes/<br/>(MayaNode / MAttr / ObjPointer)"]
+    REG["dw_node_registry.py<br/>(type registry for lsNode)"]
+    UTIL["dw_maya_utils/<br/>(components, selection, ids)"]
+
+    SF --> DP
+    SF --> DEF
+    SF --> UTIL
+    DP --> DEF
+    DP --> NUC
+    DEF --> NODES
+    DEF --> REG
+    NUC --> NODES
+    NODES --> REG</code></pre>
+
+<blockquote>
+<strong>Where do I look when…</strong> see the <a href="#file-map">file-map table</a> at the end —
+it maps "the button does the wrong thing" to "open this file".
+</blockquote>
+
+<h2 id="mayanode">4. The node wrappers — <code>MayaNode</code></h2>
+
+<p>Lives in <code>dw_maya/dw_maya_nodes/</code>. These wrappers give you PyMEL-style
+ergonomics (dot access to attributes, connections, presets) while keeping
+<code>cmds</code> speed underneath. Three classes:</p>
+
+<table>
+<tr><th>Class</th><th>Role</th></tr>
+<tr><td><code>ObjPointer</code></td><td>Base class. Stores an <code>MObject</code>/UUID so the wrapper keeps working after the node is renamed.</td></tr>
+<tr><td><code>MayaNode</code></td><td>High-level node wrapper (inherits <code>ObjPointer</code>). Attribute access, transform/shape duality, presets.</td></tr>
+<tr><td><code>MAttr</code></td><td>Single-attribute wrapper returned by attribute access — get/set, connect (<code>&gt;&gt;</code>), compare, slice.</td></tr>
+</table>
+
+<pre><code class="language-python">cube = MayaNode('pCube1')
+cmds.rename('pCube1', 'myCube')
+print(cube.node)            # 'myCube'  — pointer still valid after rename
+
+cube.translateX            # an MAttr
+cube.translateX.get()      # read
+cube.translateX.set(10)    # write
+cube.translateX &gt;&gt; other.translateX   # connectAttr
+
+MayaNode('myLocator', 'locator')       # second arg is a type -> creates the node</code></pre>
+
+<blockquote class="warn">
+<strong>Why <code>MObject</code> and not the name string?</strong> Names change (rename,
+namespace import, reference). An <code>MObject</code> is a stable handle, so a wrapper
+you stored five operations ago still points at the right node. This is the same reason
+the skinning code resolves influences by <code>MObject</code>/index, not by name.
+</blockquote>
+
+<h2 id="factories">5. Factories &amp; registries — the core idea</h2>
+
+<h3>5.1 What is a factory? (no Maya)</h3>
+
+<p>A <strong>factory</strong> is just a function whose job is to <em>decide which class to
+build and return it to you</em>, so the caller doesn't have to. Naïve code without a
+factory grows an ever-longer <code>if/elif</code> chain that every caller must repeat:</p>
+
+<pre><code class="language-python"># WITHOUT a factory — every caller duplicates this and must be edited
+# whenever a new shape is added.
+def make_shape(kind):
+    if kind == 'circle':
+        return Circle()
+    elif kind == 'square':
+        return Square()
+    elif kind == 'triangle':
+        return Triangle()
+    ...</code></pre>
+
+<p>A <strong>registry</strong> turns that chain into a lookup table, and the factory reads
+the table. Adding a new shape becomes one line — and <em>no caller changes</em>:</p>
+
+<pre><code class="language-python"># WITH a registry + factory
+_SHAPES = {}                       # the registry (a dict)
+
+def register(kind, cls):
+    _SHAPES[kind] = cls
+
+def make_shape(kind):              # the factory
+    return _SHAPES.get(kind, DefaultShape)()
+
+register('circle', Circle)         # a new shape = one register() call
+register('square', Square)</code></pre>
+
+<blockquote>
+<strong>Why we use this everywhere.</strong> New deformer types, new nucleus maps and new
+UI panels all get added by <em>registering</em> a class, never by editing a big
+conditional in the middle of the tool. That is exactly what makes Slimfast safe for you
+to extend while the author is away: you add a file and one registration line; you don't
+touch the dispatch logic.
+</blockquote>
+
+<h3>5.2 Our deformer factory — <code>make_deformer()</code></h3>
+
+<p>File: <code>dw_maya/dw_deformers/dw_deformer_class.py</code>. The registry is a plain
+dict; the factory looks up the Maya node type and falls back to the base
+<code>Deformer</code>:</p>
+
+<pre><code class="language-python">_DEFORMER_CLASSES = {
+    'cluster':     Cluster,
+    'softMod':     SoftMod,
+    'blendShape':  BlendShape,
+    'wire':        Wire,
+    'skinCluster': SkinCluster,
+}
+
+def make_deformer(node, preset=None, blend_value=1.0):
+    node_type = cmds.nodeType(node)
+    cls = _DEFORMER_CLASSES.get(node_type, Deformer)   # &lt;-- the lookup
+    ...
+    return cls(node, preset, blend_value)</code></pre>
+
+<blockquote class="warn">
+<strong>Gotcha worth knowing.</strong> There are historically <em>two</em> SkinCluster
+classes — a light stub and the full implementation in
+<code>dw_skinning_class.py</code>. The full one re-claims the
+<code>'skinCluster'</code> slot in <code>_DEFORMER_CLASSES</code> at import time, so
+<code>make_deformer('skinCluster1')</code> returns the rich class. If you ever
+<code>importlib.reload(dw_deformer_class)</code> in isolation you reset the dict back to
+the stub — reload <code>dw_skinning_class</code> too (or just restart Maya). Sanity
+check: <code>type(make_deformer(node)).__module__</code> should end in
+<code>dw_skinning_class</code>.
+</blockquote>
+
+<h3>5.3 The type registry — <code>lsNode()</code> / <code>dw_node_registry</code></h3>
+
+<p>File: <code>dw_maya/dw_node_registry.py</code>. This is a richer registry used to wrap
+<em>any</em> node (not just deformers). It supports two kinds of registration —
+by exact type, and by a <em>condition</em> function — and resolves in a fixed priority
+order:</p>
+
+<pre class="mermaid-src"><code>%% Mermaid — lsNode / node_registry resolution order
+flowchart TD
+    A["resolve(node)"] --> B{"exact node-type<br/>in registry?"}
+    B -- yes --> R1["return that class"]
+    B -- no --> C{"any parent type<br/>in the inheritance<br/>chain registered?<br/>(most specific first)"}
+    C -- yes --> R2["return that class"]
+    C -- no --> D{"any registered<br/>condition(node)<br/>returns True?"}
+    D -- yes --> R3["return that class"]
+    D -- no --> R4["fall back to<br/>base MayaNode"]</code></pre>
+
+<pre><code class="language-python"># by exact type
+register_type('cluster', Cluster)
+
+# by condition — e.g. "a mesh that is connected to an nCloth node"
+def _is_cloth(node):
+    return node.type == 'mesh' and bool(cmds.listConnections(node, type='nCloth'))
+register_condition(_is_cloth, NClothMap)</code></pre>
+
+<blockquote class="note">
+<strong>Two registries, on purpose.</strong> <code>make_deformer</code> uses its own
+<code>_DEFORMER_CLASSES</code> dict (deformers only, exact-type). <code>lsNode</code> uses
+<code>dw_node_registry</code> (everything, with inheritance + conditions). They are
+independent; a class can live in both.
+</blockquote>
+
+<h2 id="weightsource">6. The shared contract — <code>WeightSource</code></h2>
+
+<p>File: <code>dw_maya/dw_paint/protocol.py</code>. This is the abstraction that lets the
+UI stay type-blind. Every paintable thing — a deformer, an nCloth map, a vertex-colour
+channel — is a <code>WeightSource</code> and provides the same small API:</p>
+
+<table>
+<tr><th>Member</th><th>What it does</th></tr>
+<tr><td><code>available_maps()</code></td><td>Names of the maps this node exposes (e.g. <code>['weightList']</code>, or every influence of a skin, or <code>['thickness','stretch',…]</code>).</td></tr>
+<tr><td><code>use_map(name)</code></td><td>Activate one map. Chainable. Single-map nodes auto-resolve so you can skip it.</td></tr>
+<tr><td><code>get_weights()</code> / <code>set_weights(list)</code></td><td>Read / write the active map (one float per vertex).</td></tr>
+<tr><td><code>paint()</code></td><td>Open the right Artisan tool for the active map.</td></tr>
+<tr><td><code>node_name</code> / <code>mesh_name</code> / <code>vtx_count</code></td><td>Identity helpers.</td></tr>
+</table>
+
+<pre class="mermaid-src"><code>%% Mermaid — WeightSource class hierarchy
+classDiagram
+    class WeightSource {
+      <<abstract>>
+      +available_maps()
+      +use_map(name)
+      +get_weights()
+      +set_weights(list)
+      +paint()
+      +node_name
+      +mesh_name
+      +vtx_count
+    }
+    class Deformer
+    class Cluster
+    class BlendShape
+    class SkinCluster
+    class NClothMap
+    class VertexColorAlpha
+
+    WeightSource <|-- Deformer
+    Deformer <|-- Cluster
+    Deformer <|-- BlendShape
+    Deformer <|-- SkinCluster
+    WeightSource <|-- NClothMap
+    WeightSource <|-- VertexColorAlpha</code></pre>
+
+<p>Because they all share the contract, the entry-point factory returns them in one flat
+list with no type checks needed by the caller:</p>
+
+<pre><code class="language-python">from dw_maya.dw_paint.weight_source import resolve_weight_sources, apply_operation
+
+sources = resolve_weight_sources('pSphere1', mode='all')   # deformers + nucleus + vtxColor
+src = sources[0]
+src.use_map('weightList').get_weights()
+apply_operation(src, 'smooth', iterations=3)   # works on ANY source</code></pre>
+
+<blockquote>
+<strong>This is the payoff of §5 + §6.</strong> <code>resolve_weight_sources</code> is a
+factory that asks each backend "what's on this mesh?" and returns a list of
+<code>WeightSource</code> objects. <code>apply_operation</code> then dispatches a named
+op (<code>flood/smooth/mirror/vector/radial</code>) to that source. The UI calls these
+two functions and never branches on node type.
+</blockquote>
+
+<h2 id="slimfast-arch">7. Slimfast's own architecture</h2>
+
+<p>Slimfast follows a strict <strong>UI ↔ Controller</strong> split. The UI builds widgets
+and connects signals; it <em>never imports <code>cmds</code></em>. All Maya logic lives in
+the controller. They communicate through a tiny signals object.</p>
+
+<pre class="mermaid-src"><code>%% Mermaid — Slimfast components
+flowchart LR
+    subgraph UI["SlimfastWidget  (main_ui.py)"]
+      BTN["buttons / sliders"]
+      PANEL["active sub-panel<br/>(DeformerPanelBase)"]
+    end
+    SIG["SlimfastSignals<br/>(wgt_signals.py)"]
+    CTRL["SlimfastController<br/>(cmds.py)  — all Maya logic"]
+    WS["WeightSource(s)<br/>(resolve_weight_sources)"]
+    MAYA["Maya scene"]
+
+    BTN -- "method calls" --> CTRL
+    CTRL -- "signals (sources_changed,<br/>active_changed, mesh_changed)" --> SIG
+    SIG --> UI
+    CTRL --> WS
+    WS --> MAYA
+    PANEL -. "registered via @panel_for" .- CTRL</code></pre>
+
+<h3>7.1 Key files</h3>
+<table>
+<tr><th>File</th><th>Responsibility</th></tr>
+<tr><td><code>main_ui.py</code> — <code>SlimfastWidget</code></td><td>Builds the window, all buttons/sliders, wires them to controller methods, swaps sub-panels.</td></tr>
+<tr><td><code>cmds.py</code> — <code>SlimfastController</code></td><td>Every Maya call: refresh sources, set_weight, smooth, mirror, copy/paste, selection, transfer. The brain.</td></tr>
+<tr><td><code>wgt_signals.py</code> — <code>SlimfastSignals</code></td><td>The <code>QObject</code> carrying signals so the controller stays PySide-agnostic.</td></tr>
+<tr><td><code>wgt_deformer_panel.py</code></td><td>The <strong>panel registry</strong> + base class for per-deformer sub-panels (<code>DeformerPanelBase</code>, <code>@panel_for</code>).</td></tr>
+<tr><td><code>wgt_skin_panel.py</code></td><td>A complex example panel: the skinCluster influence tree (locks, prune field).</td></tr>
+</table>
+
+<h3>7.2 The panel registry</h3>
+<p>Each deformer type can have its own sub-panel (the skinCluster influence list, the
+nCloth map-type badge…). Panels register themselves with <code>@panel_for</code> — the
+same registry pattern as §5. <code>main_ui</code> builds the radio buttons from
+<code>get_mode_registry()</code> and picks a panel for the active node with
+<code>get_panel_class(node_type)</code>.</p>
+
+<h2 id="flow">8. End-to-end flows</h2>
+
+<p>Tracing a single action top-to-bottom is the fastest way to learn the codebase — and
+to debug it. Two flows cover almost everything: <strong>picking a source</strong> (which
+also swaps the panel) and <strong>running an operation</strong> (clicking "Set 0").</p>
+
+<h3 id="flow-pick">8.1 Picking a source → swapping the panel</h3>
+
+<p>Before any button does anything, a <code>WeightSource</code> must be <em>active</em>.
+That happens in two steps: <code>refresh()</code> reads the Maya selection and fills the
+source combo; choosing a row activates that source <em>and</em> selects the matching
+sub-panel. Selecting a row is the "item pick" — it decodes
+<code>(source_idx, map_name)</code> from the row, activates both on the controller, then
+asks the panel registry which panel that node type wants.</p>
+
+<pre class="mermaid-src"><code>%% Mermaid — sequence for picking a source and swapping the panel
+sequenceDiagram
+    actor User
+    participant Maya
+    participant UI as SlimfastWidget (main_ui.py)
+    participant Ctrl as SlimfastController (cmds.py)
+    participant Reg as panel registry (wgt_deformer_panel.py)
+    participant Panel as DeformerPanelBase
+
+    User->>UI: select mesh in Maya, click Refresh
+    UI->>Ctrl: refresh()
+    Ctrl->>Maya: filterExpand(selection)
+    Ctrl->>Ctrl: resolve_weight_sources(mesh, mode)
+    Ctrl-->>UI: sources_changed(node_labels, map_lists)
+    UI->>UI: _on_sources_changed() rebuilds source combo
+    Note over UI,Ctrl: refresh() auto-calls select_source(0)
+
+    User->>UI: pick a row in the source combo
+    UI->>UI: _on_source_combo_changed() decodes (source_idx, map_name)
+    UI->>Ctrl: select_source(idx)  →  select_map(map_name)
+    Ctrl-->>UI: active_changed(source)
+    UI->>Reg: get_panel_class(node_type)
+    UI->>UI: _switch_to_panel(panel_class)  (setCurrentWidget)
+    UI->>Panel: on_combo_changed(node_type, maps)
+    UI->>Panel: on_source_changed(source, map, ctrl)  (if panel changed)</code></pre>
+
+<blockquote class="note">
+<strong>Two signals, two jobs.</strong> <code>sources_changed</code> rebuilds the
+<em>list</em> of rows; <code>active_changed</code> fires whenever the <em>active</em>
+source/map changes and is what every panel and the shared buttons (Set 0/1, paint,
+copy/paste) listen to via <code>on_source_changed</code>. The panel swap is driven off
+the row's stored <code>node_type</code> (<code>UserRole+1</code>), not off the signal —
+so the registry (§7.2) decides which panel a node type gets, exactly like §5.
+</blockquote>
+
+<h3 id="flow-set0">8.2 Running an operation: clicking "Set 0"</h3>
+
+<pre class="mermaid-src"><code>%% Mermaid — sequence for "Set 0" on a skinCluster
+sequenceDiagram
+    actor User
+    participant UI as SlimfastWidget (main_ui.py)
+    participant Ctrl as SlimfastController (cmds.py)
+    participant Src as SkinCluster (dw_skinning_class.py)
+    participant W as write_influence_columns (dw_skinning.py)
+    participant Maya
+
+    User->>UI: click "Set 0"
+    UI->>Ctrl: set_weight(0.0, op='replace')
+    Ctrl->>Src: flood(0.0, components=selection)
+    Src->>Src: _lock_aware_write(...)  redistribute onto unlocked siblings
+    Src->>W: write the modified columns (API 1.0)
+    W->>Maya: MFnSkinCluster.setWeights(...)
+    Ctrl->>Maya: set_artisan_value(0.0)  (keep brush in sync)
+    Ctrl-->>UI: (signals refresh state)</code></pre>
+
+<blockquote class="note">
+<strong>Debugging mindset.</strong> If "Set 0" misbehaves, walk this chain top-down:
+is the <em>button</em> wired (main_ui)? Does the <em>controller</em> get the right value
+and selection (cmds.py <code>set_weight</code>)? Does the <em>source</em> do the right
+math (<code>flood</code>/<code>_lock_aware_write</code>)? Did the <em>write</em> land in
+Maya (turn on DEBUG logging — the writers log per-pass results)? Each layer is small and
+testable on its own.
+</blockquote>
+
+<h2 id="extend-panel">9. How to add a new deformer panel</h2>
+
+<p>Say you want a custom panel for <code>wire</code> deformers. You add <strong>one
+file</strong> and <strong>one decorator</strong> — no existing file changes.</p>
+
+<pre><code class="language-python"># dw_maya/Slimfast/wgt_wire_panel.py
+from dw_maya.Slimfast.wgt_deformer_panel import DeformerPanelBase, panel_for
+
+@panel_for(
+    node_types = ['wire'],     # which Maya types trigger this panel
+    label      = 'Wire',       # radio-button text
+    ctrl_mode  = 'deformer',   # which controller mode to use
+    order      = 18,           # left-to-right order of the radio button
+)
+class WirePanel(DeformerPanelBase):
+    def build_body(self):
+        self._lbl = QtWidgets.QLabel('Wire deformer')
+        return self._lbl
+
+    def on_source_changed(self, source, active_map, ctrl):
+        self._lbl.setText(source.node_name if source else '—')</code></pre>
+
+<p>Then import the module once (so the decorator runs) — the same way
+<code>wgt_skin_panel</code> is imported in <code>main_ui.py</code>. That's it: the radio
+button appears, and the panel shows whenever a <code>wire</code> is the active source.</p>
+
+<table>
+<tr><th>Override</th><th>When</th></tr>
+<tr><td><code>build_header / build_body / build_footer</code></td><td>Return a widget for that zone (or <code>None</code> to skip).</td></tr>
+<tr><td><code>on_source_changed(source, active_map, ctrl)</code></td><td>The active weight source changed — refresh your widgets. <code>ctrl</code> is the controller, your hook into Maya logic.</td></tr>
+<tr><td><code>on_enter()</code></td><td>Cheap re-sync when the user returns to the tool (e.g. re-read lock states).</td></tr>
+<tr><td>ClassVars <code>_has_envelope</code>, <code>_has_paint</code>, …</td><td>Declare capabilities; the host UI shows/hides shared widgets accordingly.</td></tr>
+</table>
+
+<blockquote>
+<strong>Pattern reuse.</strong> <code>wgt_skin_panel.py</code> is the worked "complex panel"
+example — a model/view tree with a custom lock column and a prune field. Copy its shape
+when your panel needs real interaction.
+</blockquote>
+
+<h2 id="extend-op">10. How to add a new advanced operation (mirror-style)</h2>
+
+<p>Advanced ops (the existing <em>vector</em> and <em>radial</em> distributions, and
+<em>mirror</em>/<em>smooth</em>) follow a consistent four-layer recipe. To add one — call
+it <code>gradient</code> — touch these four places:</p>
+
+<ol>
+<li><strong>Pure function</strong> in <code>dw_maya/dw_paint/operations.py</code> that takes
+a mesh + parameters and returns a new per-vertex weight list. Keep it Maya-light and
+side-effect-free so it is unit-testable.
+<pre><code class="language-python">def set_gradient_weights(mesh, ..., invert=False):
+    # compute and return List[float], one per vertex
+    return new_weights</code></pre></li>
+
+<li><strong>Dispatch</strong>: expose it through <code>apply_operation</code> (the op map in
+<code>weight_source.py</code>) <em>or</em>, for ops that need bespoke selection/centre
+handling, add a dedicated controller method (mirror what
+<code>apply_vector_weights</code> / <code>apply_radial_weights</code> already do).</li>
+
+<li><strong>Controller method</strong> in <code>cmds.py</code>, decorated with
+<code>@singleUndoChunk</code> (one undo step) and respecting the active mask /
+selection. Read with <code>self._active.get_weights()</code>, combine with the op result
+per the chosen <code>op</code> (replace/add/subtract/multiply), and write back with
+<code>self._active.set_weights(result)</code>.
+<pre><code class="language-python">@singleUndoChunk
+def apply_gradient_weights(self, ..., op='replace'):
+    if not self._require_active():
+        return
+    new_weights = set_gradient_weights(self._active.mesh_name, ...)
+    weights = list(self._active.get_weights())
+    mask = self._mask_vtx_ids        # advanced-ops vertex mask, or None = whole mesh
+    ...combine + write...
+    self._clamp_weights_post(mask)   # honour the clamp checkboxes</code></pre></li>
+
+<li><strong>UI</strong> in <code>main_ui.py</code>: add the widgets (button + any params) and
+connect the button to the new controller method. The UI never touches Maya — it only
+calls <code>self._ctrl.apply_gradient_weights(...)</code>.</li>
+</ol>
+
+<blockquote class="warn">
+<strong>Two rules that keep ops correct.</strong>
+(1) Operations are <em>selection-aware</em>: respect <code>_mask_vtx_ids</code> /
+the live vertex selection so a partial paint stays partial.
+(2) For <strong>skinCluster</strong>, writing the active influence is not a plain
+column write — <code>set_weights</code> routes through the lock-aware redistribution
+(<code>_lock_aware_write</code>) so locked bones are never disturbed and per-vertex
+totals stay 1.0. You get that for free by going through <code>set_weights</code>; do not
+call the API directly.
+</blockquote>
+
+<h2 id="debugging">11. Debugging checklist</h2>
+
+<table>
+<tr><th>Symptom</th><th>First thing to check</th></tr>
+<tr><td>"My edit to a class did nothing."</td><td>Reload the toolkit: <code>from dw_maya import reload_dw_toolkit; reload_dw_toolkit()</code>. For skinCluster edits, confirm <code>make_deformer</code> returns the rich class (§5.2 gotcha).</td></tr>
+<tr><td>A weight op runs but the result is wrong on a skin.</td><td>Turn on DEBUG logging; the skin writers log per-pass convergence (<code>... ok=True</code>). Check lock states and the active influence (right side/namespace on production rigs).</td></tr>
+<tr><td>A button does nothing.</td><td>Trace the §8 chain: is the signal connected in <code>main_ui</code>? Does the controller method early-return on <code>_require_active()</code> (no source/map selected)?</td></tr>
+<tr><td>Panel doesn't appear for a node type.</td><td>Was the panel module imported (so <code>@panel_for</code> ran)? Is <code>node_types</code> correct?</td></tr>
+<tr><td>Crash mentioning <code>PySide</code> enums / <code>exec_</code>.</td><td>PySide2 vs PySide6 difference — see §12.</td></tr>
+</table>
+
+<p>There is an in-Maya test suite for the skin write path:</p>
+<pre><code class="language-python">import importlib, dw_maya.tests.test_skin_flood as t
+importlib.reload(t); t.run_tests()</code></pre>
+
+<h2 id="conventions">12. Conventions &amp; gotchas</h2>
+
+<ul>
+<li><strong>Imports:</strong> <code>import module</code> then <code>module.func()</code>;
+avoid <code>import *</code> and <code>import x as y</code> except where noted.</li>
+<li><strong>Naming:</strong> classes &amp; tool packages <code>CamelCase</code>; functions
+<code>lower_case</code>; inline type hints.</li>
+<li><strong>Python 3.7 target:</strong> no walrus <code>:=</code>; f-strings for formatting.</li>
+<li><strong>PySide2 / PySide6:</strong> production Maya may ship only PySide2. New code prefers
+PySide6 but <em>always</em> provides the PySide2 fallback (the try/except import block at
+the top of each UI file). Watch enum-based widget APIs and <code>exec_()</code> →
+<code>exec()</code>. Always assign new <code>QStandardItem</code>/Qt objects to a variable
+(Python/C++ garbage-collection mismatch), and pair every model with a proxy model.</li>
+<li><strong>OpenMaya API 1.0 vs 2.0:</strong> for multi-influence skin writes the API&nbsp;2.0
+<code>MFnSkinCluster.setWeights</code> mis-dispatches; the centralized writer
+<code>write_influence_columns</code> uses API&nbsp;1.0. Don't reintroduce direct API&nbsp;2.0
+multi-influence writes.</li>
+<li><strong>Undo:</strong> wrap user-facing controller ops in <code>@singleUndoChunk</code> so
+one click = one undo step.</li>
+</ul>
+
+<h2 id="file-map">13. File map — "where do I look?"</h2>
+
+<table>
+<tr><th>I want to change…</th><th>Open</th></tr>
+<tr><td>A button, slider, layout, or wiring</td><td><code>Slimfast/main_ui.py</code></td></tr>
+<tr><td>What a button actually <em>does</em> in Maya</td><td><code>Slimfast/cmds.py</code> (<code>SlimfastController</code>)</td></tr>
+<tr><td>A per-deformer sub-panel</td><td><code>Slimfast/wgt_deformer_panel.py</code> (base + registry), <code>wgt_skin_panel.py</code> (example)</td></tr>
+<tr><td>How weight sources are discovered / dispatched</td><td><code>dw_paint/weight_source.py</code> (<code>resolve_weight_sources</code>, <code>apply_operation</code>)</td></tr>
+<tr><td>The shared weight contract</td><td><code>dw_paint/protocol.py</code> (<code>WeightSource</code>)</td></tr>
+<tr><td>A weight math operation (smooth/mirror/vector/radial)</td><td><code>dw_paint/operations.py</code></td></tr>
+<tr><td>Deformer wrapper classes + factory</td><td><code>dw_deformers/dw_deformer_class.py</code> (<code>make_deformer</code>)</td></tr>
+<tr><td>skinCluster weights (flood, per-influence, lock-aware writer)</td><td><code>dw_deformers/dw_skinning_class.py</code>, <code>dw_deformers/dw_skinning.py</code></td></tr>
+<tr><td>nCloth / nRigid maps</td><td><code>dw_nucleus_utils/</code> (<code>NClothMap</code>)</td></tr>
+<tr><td>The generic node wrappers + type registry</td><td><code>dw_maya_nodes/</code>, <code>dw_node_registry.py</code></td></tr>
+</table>
+
+<hr>
+<p class="small">Generated as a maintainer reference for Slimfast. Keep the diagrams as
+Mermaid source so they stay editable when the code changes.</p>
+
+</body>
+</html>

@@ -132,6 +132,23 @@ class SlimfastController:
             self._active_map = None
             self._signals.active_changed.emit(None)
 
+    def source_index_for_node(self, node_name: str) -> Optional[int]:
+        """Index of the resolved source matching node_name (short or long form).
+
+        Used by external tools (DynEval paint handoff) to locate a source
+        after refresh() without reaching into the private source list.
+        """
+        short = node_name.split('|')[-1].split(':')[-1]
+        for index, source in enumerate(self._sources):
+            src_node = getattr(source, 'node_name', None)
+            if src_node is None:
+                continue
+            if src_node == node_name:
+                return index
+            if src_node.split('|')[-1].split(':')[-1] == short:
+                return index
+        return None
+
     def select_map(self, map_name: str) -> None:
         """Activate a map on the current source node."""
         if self._active is None:

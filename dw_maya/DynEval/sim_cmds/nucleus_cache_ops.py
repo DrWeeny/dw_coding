@@ -31,7 +31,7 @@ from pathlib import Path
 import maya.cmds as cmds
 
 from dw_logger import get_logger
-from ..sim_widget import CacheInfo, CacheType
+from ..dendrology.cache_leaf import CacheInfo, CacheType
 from . import cache_management
 
 logger = get_logger()
@@ -49,17 +49,23 @@ class NucleusCacheOps:
         Scan item.cache_dir() for .xml files and return one CacheInfo each.
         Result is sorted by file name (= version order).
         """
-        try:
-            cache_dir = Path(item.cache_dir())
-        except Exception as e:
-            logger.warning(f"list_caches: cache_dir() failed for {item.node!r}: {e}")
+        if not hasattr(item, "cache_dir"):
+            logger.debug(f"list_caches: {item.node!r} has no cache_dir(), skipping")
             return []
 
-        if not cache_dir.exists():
+        # exists()/glob() stay inside the try: on Windows an invalid path
+        # (e.g. a stray ':' component) raises OSError from exists() itself.
+        try:
+            cache_dir = Path(item.cache_dir())
+            if not cache_dir.exists():
+                return []
+            xml_paths = sorted(cache_dir.glob("*.xml"))
+        except Exception as e:
+            logger.warning(f"list_caches: cache scan failed for {item.node!r}: {e}")
             return []
 
         result = []
-        for xml_path in sorted(cache_dir.glob("*.xml")):
+        for xml_path in xml_paths:
             info = NucleusCacheOps._info_from_xml(xml_path, item.node)
             if info:
                 result.append(info)
@@ -129,7 +135,7 @@ class NucleusCacheOps:
 
             # 5. Attach
             cache_management.attach_ncache(str(target_xml), node)
-            logger.debug(f"Created and attached: {target_xml.name!r} → {node!r}")
+            logger.debug(f"Created and attached: {target_xml.name!r} -> {node!r}")
 
             # 6. Return CacheInfo
             return NucleusCacheOps._info_from_xml(target_xml, node)
@@ -151,7 +157,7 @@ class NucleusCacheOps:
         try:
             cache_management.delete_caches([item.node])
             cache_management.attach_ncache(str(cache_info.path), item.node)
-            logger.debug(f"Attached {Path(cache_info.path).name!r} → {item.node!r}")
+            logger.debug(f"Attached {Path(cache_info.path).name!r} -> {item.node!r}")
         except Exception as e:
             logger.error(f"NucleusCacheOps.attach failed: {e}")
             raise
@@ -227,32 +233,47 @@ class NucleusCacheOps:
 
         Frame range strategy
         ────────────────────
-        1. Read startTime / endTime from the <Entry> element (may be ticks or frames
-           depending on Maya version — treated as frames here for display purposes).
-        2. If the first <channel0> exposes an explicit EndFrame attribute, prefer that
-           value since it is guaranteed to be in frames.
+        nCache XML stores times in ticks:
+            <time Range="250-1250"/>
+            <cacheTimePerFrame TimePerFrame="250"/>
+        frames = ticks / TimePerFrame. Falls back to channel0's
+        StartTime/EndTime attributes (also ticks) when <time> is absent.
 
         Version
         ───────
-        Extracted from the file stem: "cloth_v003" → "003".
-        Falls back to the full stem if the "_v" separator is absent.
+        Extracted from the file stem: "cloth_v003" → 3 (int).
+        Falls back to 0 if the "_v" separator or digits are absent.
         """
         try:
-            root  = ET.parse(xml_path).getroot()
-            entry = root.find("Entry")
+            root = ET.parse(xml_path).getroot()
+
+            tpf_el = root.find("cacheTimePerFrame")
+            ticks_per_frame = (
+                float(tpf_el.get("TimePerFrame", 250)) if tpf_el is not None else 250.0
+            ) or 250.0
+
+            start_ticks, end_ticks = None, None
+            time_el = root.find("time")
+            if time_el is not None and time_el.get("Range"):
+                parts = time_el.get("Range").split("-")
+                if len(parts) == 2:
+                    start_ticks = float(parts[0])
+                    end_ticks   = float(parts[1])
+
+            if start_ticks is None:
+                ch = root.find("Channels/channel0")
+                if ch is not None and ch.get("EndTime"):
+                    start_ticks = float(ch.get("StartTime", 0))
+                    end_ticks   = float(ch.get("EndTime"))
 
             start, end = 0, 0
-            if entry is not None:
-                start = int(float(entry.get("startTime", 0)))
-                end   = int(float(entry.get("endTime",   0)))
+            if start_ticks is not None:
+                start = int(round(start_ticks / ticks_per_frame))
+                end   = int(round(end_ticks / ticks_per_frame))
 
-                ch = entry.find("Channels/channel0")
-                if ch is not None and ch.get("EndFrame"):
-                    end   = int(float(ch.get("EndFrame")))
-                    start = int(float(ch.get("StartTime", start)))
-
-            stem    = xml_path.stem
-            version = stem.rsplit("_v", 1)[-1] if "_v" in stem else stem
+            stem = xml_path.stem
+            version_tag = stem.rsplit("_v", 1)[-1] if "_v" in stem else ""
+            version = int(version_tag) if version_tag.isdigit() else 0
             date    = datetime.fromtimestamp(
                 xml_path.stat().st_mtime
             ).strftime("%Y-%m-%d %H:%M")

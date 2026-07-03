@@ -7,7 +7,7 @@ DynEvalUI (QMainWindow)
 ├── SimTreePanel          discovers + displays sim hierarchy, publishes SELECTED_NODE
 └── SimDetailPanel
     ├── CacheVersionPanel  version list + create / attach / delete
-    └── MapListPanel       map list + "Paint in Slimfast" trigger
+r    └── MapListPanel       map list + type combo; double-click = artisan paint
 
 DataHub contract (all inter-widget communication goes through these keys):
     SELECTED_NODE          SimItem | None         tree → all panels
@@ -26,6 +26,7 @@ DynEvalMainWindow contract (expected from wgt_base.py):
 
 from __future__ import annotations
 
+from functools import partial
 from typing import Optional
 
 from dw_maya.DynEval.sim_cmds.compat import (
@@ -40,6 +41,8 @@ import maya.OpenMayaUI as omui
 from dw_logger import get_logger
 
 from .hub_keys import DynEvalKeys
+from .dendrology.map_leaf import MapInfo
+from . import sim_cmds
 # Ensure available simulation systems register themselves on import (nucleus, ...).
 # Importing the systems package triggers each backend module to call register()
 # (see systems/__init__.py). This must happen before discover_all() is used.
@@ -78,7 +81,7 @@ class DynEvalUI(DynEvalMainWindow):
     Responsibilities:
     - Creates the hub (via DynEvalMainWindow base).
     - Lays out SimTreePanel + SimDetailPanel.
-    - Bridges PAINT_REQUESTED → Slimfast (the only cross-tool concern).
+    - Handles PAINT_REQUESTED via the dw_paint stack (NClothMap.paint()).
     - Exposes build_tree / refresh_tree as the public API for external callers.
     """
 
@@ -140,15 +143,32 @@ class DynEvalUI(DynEvalMainWindow):
     # ------------------------------------------------------------------
 
     def _on_paint_requested(self, _old, map_info):
-        """Bridge PAINT_REQUESTED to Slimfast — the only cross-tool call."""
+        """Open Maya's artisan paint tool on the requested nucleus map.
+
+        Goes through the dw_paint weight-source stack (NClothMap) so the
+        paint entry point is the same logic Slimfast uses — DynEval just
+        skips the Slimfast UI and calls use_map + paint directly.
+        """
         if map_info is None:
             return
         try:
-            from dw_maya.dw_paint import slimfast
-            slimfast.open_for(map_info)
+            from dw_maya.dw_nucleus_utils.dw_ncloth_class import NClothMap
+            from dw_maya.dw_nucleus_utils.dw_core import get_mesh_from_nucx_node
+
+            mesh = map_info.mesh or get_mesh_from_nucx_node(map_info.node)
+            if not mesh or not cmds.objExists(mesh):
+                cmds.warning(
+                    f"No mesh resolved for '{map_info.node}' - cannot paint."
+                )
+                return
+
+            # artAttrNClothToolScript works on the current selection
+            cmds.select(mesh, replace=True)
+            source = NClothMap(map_info.node, mesh, map_info.name)
+            source.paint()
         except Exception as e:
-            logger.error(f"Slimfast launch failed: {e}")
-            cmds.warning(f"Could not open Slimfast: {e}")
+            logger.error(f"Paint launch failed: {e}")
+            cmds.warning(f"Could not open paint tool: {e}")
 
 
 # ============================================================================
@@ -194,7 +214,7 @@ class SimTreePanel(DynEvalWidgetBase):
     # ------------------------------------------------------------------
 
     def build_tree(self):
-        self._status.show_loading("Building…")
+        self._status.show_loading("Building...")
         self.tree.clear()
 
         try:
@@ -397,7 +417,7 @@ class CacheVersionPanel(DynEvalWidgetBase):
         # -- Frame range row -----------------------------------------------
         fr_row = QtWidgets.QHBoxLayout()
         fr_row.addWidget(QtWidgets.QLabel("Frame range:"))
-        self._fr_label = QtWidgets.QLabel("—")
+        self._fr_label = QtWidgets.QLabel("-")
         fr_row.addWidget(self._fr_label)
         fr_row.addStretch()
         layout.addLayout(fr_row)
@@ -439,11 +459,12 @@ class CacheVersionPanel(DynEvalWidgetBase):
     def _on_node_changed(self, _old, new_item):
         self._current_item = new_item
         self._rebuild_list()
-        self._set_actions_enabled(new_item is not None)
+        node_type = getattr(new_item, "node_type", None)
+        self._set_actions_enabled(node_type in ("nCloth", "hairSystem"))
 
     def _on_frame_range(self, _old, frame_range):
         if frame_range:
-            self._fr_label.setText(f"{frame_range[0]} – {frame_range[1]}")
+            self._fr_label.setText(f"{frame_range[0]} - {frame_range[1]}")
 
     def _on_create_requested(self, _old, item):
         """Cache creation triggered from the tree context menu."""
@@ -467,11 +488,11 @@ class CacheVersionPanel(DynEvalWidgetBase):
 
         for cache_info in system.cache_ops.list_caches(self._current_item):
             frames = (
-                f"{cache_info.start} \u2013 {cache_info.end}"
-                if (cache_info.start or cache_info.end) else "\u2014"
+                f"{cache_info.start} - {cache_info.end}"
+                if (cache_info.start or cache_info.end) else "-"
             )
             row = QtWidgets.QTreeWidgetItem([
-                cache_info.version,
+                f"v{cache_info.version:03d}",
                 cache_info.date,
                 frames,
             ])
@@ -554,13 +575,23 @@ class CacheVersionPanel(DynEvalWidgetBase):
 
 class MapListPanel(DynEvalWidgetBase):
     """
-    Lists paintable maps for the selected node.
-    "Paint" button publishes PAINT_REQUESTED → DynEvalUI bridges to Slimfast.
+    Lists paintable maps for the selected node, with an editable map-type
+    combobox per row (None / Per-Vertex / Texture, i.e. the *MapType attr).
+
+    Double-clicking a map forces its type to Per-Vertex (painting needs it)
+    and publishes PAINT_REQUESTED → DynEvalUI opens artisan via NClothMap.
+    Labels are colored by type: green = Per-Vertex, blue = Texture.
 
     Subscribes to
     -------------
     SELECTED_NODE          repopulates the map list
     """
+
+    MAP_TYPE_LABELS = ("None", "Per-Vertex", "Texture")
+    PER_VERTEX = 1
+    # Label color per map type: None -> default, Per-Vertex -> green,
+    # Texture -> blue (matches the old RFX tool).
+    MAP_TYPE_COLORS = (None, (130, 200, 120), (95, 160, 230))
 
     def __init__(self, hub, parent=None):
         super().__init__(hub, parent)
@@ -569,23 +600,23 @@ class MapListPanel(DynEvalWidgetBase):
         layout = QtWidgets.QVBoxLayout(self)
         layout.setSpacing(4)
 
-        self.map_list = QtWidgets.QListWidget()
-        self.map_list.setSelectionMode(QtWidgets.QAbstractItemView.SingleSelection)
-        layout.addWidget(self.map_list)
-
-        btn_row = QtWidgets.QHBoxLayout()
-        self._btn_paint = QtWidgets.QPushButton("Paint in Slimfast")
-        self._btn_paint.setEnabled(False)
-        btn_row.addWidget(self._btn_paint)
-        btn_row.addStretch()
-        layout.addLayout(btn_row)
+        self.map_tree = QtWidgets.QTreeWidget()
+        self.map_tree.setHeaderLabels(["Map", "Type"])
+        self.map_tree.setRootIsDecorated(False)
+        self.map_tree.setSelectionMode(QtWidgets.QAbstractItemView.SingleSelection)
+        header = self.map_tree.header()
+        header.setSectionResizeMode(0, QtWidgets.QHeaderView.Stretch)
+        header.setSectionResizeMode(1, QtWidgets.QHeaderView.Fixed)
+        header.setStretchLastSection(False)
+        self.map_tree.setColumnWidth(1, 100)
+        layout.addWidget(self.map_tree)
 
         # Hub subscriptions
         self.subscribe(DynEvalKeys.SELECTED_NODE, self._on_node_changed)
 
         # Widget connections
-        self.map_list.currentRowChanged.connect(self._on_map_selected)
-        self._btn_paint.clicked.connect(self._request_paint)
+        self.map_tree.currentItemChanged.connect(self._on_map_selected)
+        self.map_tree.itemDoubleClicked.connect(self._on_map_double_clicked)
 
     # ------------------------------------------------------------------
     # Hub callbacks
@@ -600,36 +631,73 @@ class MapListPanel(DynEvalWidgetBase):
     # ------------------------------------------------------------------
 
     def _rebuild_list(self):
-        self.map_list.clear()
-        self._btn_paint.setEnabled(False)
+        self.map_tree.clear()
 
         if not self._current_item:
             return
         if not hasattr(self._current_item, "get_maps"):
             return
 
-        for map_info in self._current_item.get_maps():
-            row = QtWidgets.QListWidgetItem(map_info.name)
-            row.setData(QtCore.Qt.UserRole, map_info)
-            self.map_list.addItem(row)
+        # get_maps() returns plain map names — wrap them in MapInfo so
+        # downstream consumers (Slimfast bridge) know node + mesh too.
+        node = getattr(self._current_item, "node", None)
+        mesh = getattr(self._current_item, "mesh_transform", None)
+        for map_name in self._current_item.get_maps():
+            map_info = MapInfo(node=node, name=map_name, mesh=mesh)
+            row = QtWidgets.QTreeWidgetItem([map_name, ""])
+            row.setData(0, QtCore.Qt.UserRole, map_info)
+            self.map_tree.addTopLevelItem(row)
+
+            combo = QtWidgets.QComboBox()
+            combo.addItems(list(self.MAP_TYPE_LABELS))
+            map_type = sim_cmds.get_vtx_map_type(node, f"{map_name}MapType")
+            if map_type is not None and 0 <= map_type < len(self.MAP_TYPE_LABELS):
+                combo.setCurrentIndex(map_type)
+                self._apply_type_color(row, map_type)
+            combo.currentIndexChanged.connect(
+                partial(self._on_map_type_changed, map_info, row)
+            )
+            self.map_tree.setItemWidget(row, 1, combo)
+
+    def _apply_type_color(self, row, type_index: int):
+        """Color the map label by its type (green vertex / blue texture)."""
+        rgb = None
+        if 0 <= type_index < len(self.MAP_TYPE_COLORS):
+            rgb = self.MAP_TYPE_COLORS[type_index]
+        if rgb is None:
+            brush = QtGui.QBrush()  # default-constructed = view default color
+        else:
+            brush = QtGui.QBrush(QtGui.QColor(*rgb))
+        row.setForeground(0, brush)
 
     def _selected_map_info(self):
-        row = self.map_list.currentItem()
-        return row.data(QtCore.Qt.UserRole) if row else None
+        row = self.map_tree.currentItem()
+        return row.data(0, QtCore.Qt.UserRole) if row else None
 
     # ------------------------------------------------------------------
     # Actions
     # ------------------------------------------------------------------
 
-    def _on_map_selected(self, _row: int):
+    def _on_map_selected(self, _current, _previous):
         map_info = self._selected_map_info()
-        self._btn_paint.setEnabled(map_info is not None)
         self.publish(DynEvalKeys.MAP_SELECTED, map_info)
 
-    def _request_paint(self):
-        map_info = self._selected_map_info()
-        if map_info:
-            self.publish(DynEvalKeys.PAINT_REQUESTED, map_info)
+    def _on_map_type_changed(self, map_info, row, index: int):
+        sim_cmds.set_vtx_map_type(map_info.node, f"{map_info.name}MapType", index)
+        self._apply_type_color(row, index)
+
+    def _on_map_double_clicked(self, row, _column: int):
+        """Force the map to Per-Vertex and hand off to painting."""
+        map_info = row.data(0, QtCore.Qt.UserRole)
+        if map_info is None:
+            return
+
+        combo = self.map_tree.itemWidget(row, 1)
+        if combo is not None and combo.currentIndex() != self.PER_VERTEX:
+            # setCurrentIndex fires _on_map_type_changed → sets the attr
+            combo.setCurrentIndex(self.PER_VERTEX)
+
+        self.publish(DynEvalKeys.PAINT_REQUESTED, map_info)
 
 
 # ============================================================================
@@ -662,7 +730,7 @@ class _StatusBar(QtWidgets.QWidget):
         self.show()
 
     def show_error(self, message: str):
-        self._label.setText(f"⚠  {message}")
+        self._label.setText(f"[!]  {message}")
         self.show()
 
     def hide(self):

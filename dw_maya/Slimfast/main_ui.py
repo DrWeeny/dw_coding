@@ -1383,6 +1383,72 @@ class SlimfastWidget(QtWidgets.QWidget):
     def _on_refresh(self) -> None:
         self._ctrl.refresh()
 
+    def refresh_sources(self) -> None:
+        """Public re-resolve from the current Maya selection (external callers)."""
+        self._ctrl.refresh()
+
+    def focus_map(self,
+                  node: str,
+                  map_name: Optional[str] = None) -> bool:
+        """Select the source-combo row for a node (and optionally one map).
+
+        External handoff API (used by DynEval's "Paint in Slimfast"): after
+        refresh_sources(), point the UI at the row matching `node`, preferring
+        the row whose stored map equals `map_name`. Falls back to the node's
+        first row when the map is not found. Returns True when a row was
+        selected.
+        """
+        source_idx = self._ctrl.source_index_for_node(node)
+        if source_idx is None:
+            # The restored mode filter may exclude this node type (e.g.
+            # 'deformer' mode hides nCloth maps) — retry once in 'all' mode.
+            all_btn = self._mode_btns.get('all')
+            if all_btn is not None and not all_btn.isChecked():
+                all_btn.setChecked(True)
+                # buttonClicked does not fire on programmatic setChecked
+                self._on_mode_changed(all_btn)
+                source_idx = self._ctrl.source_index_for_node(node)
+        if source_idx is None:
+            logger.warning(f"focus_map: no resolved source for '{node}'.")
+            return False
+
+        model = self._source_combo.model()
+        if model is None:
+            return False
+
+        fallback_row = None
+        target_row = None
+        for row in range(model.rowCount()):
+            item = model.item(row)
+            if item is None or not item.isEnabled():
+                continue
+            data = item.data(QtCore.Qt.UserRole)
+            if data is None or data[0] != source_idx:
+                continue
+            if fallback_row is None:
+                fallback_row = row
+            if map_name is None or data[1] == map_name:
+                target_row = row
+                break
+
+        row = target_row if target_row is not None else fallback_row
+        if row is None:
+            return False
+        if target_row is None and map_name is not None:
+            logger.warning(
+                f"focus_map: map '{map_name}' not found on '{node}', "
+                f"using first available map."
+            )
+
+        # Mirror _on_sources_changed: set the index silently, then run the
+        # handler explicitly (setCurrentIndex alone does not fire when the
+        # row is already current).
+        self._source_combo.blockSignals(True)
+        self._source_combo.setCurrentIndex(row)
+        self._source_combo.blockSignals(False)
+        self._on_source_combo_changed(row)
+        return True
+
     @Slot()
     def _on_pick_mesh(self) -> None:
         """Select the active mesh transform in the viewport."""

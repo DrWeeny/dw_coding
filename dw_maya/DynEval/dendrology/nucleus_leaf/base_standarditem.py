@@ -242,7 +242,13 @@ class BaseSimulationItem(QtGui.QStandardItem):
 
     @property
     def namespace(self):
-        return self.node.split(":")[0] if ":" in self.node else ":"
+        """Namespace of the node, '' when there is none.
+
+        Never return a ':' sentinel here — this value is used as a path
+        component by cache_dir()/metadata() and ':' is invalid in Windows
+        directory names (WinError 123).
+        """
+        return self.node.split(":")[0] if ":" in self.node else ""
 
     @property
     def solver_name(self):
@@ -267,6 +273,27 @@ class BaseSimulationItem(QtGui.QStandardItem):
         ruleLocation = cmds.workspace(fileRuleEntry=fileRule)
         cmds.workspace(fileRule=[fileRule, location])
 
+    def cache_dir(self, mode: int = 1) -> str:
+        """Cache directory for this item.
+
+        Args:
+            mode: 0 -> the shared dynTmp work dir, 1 -> the versioned dir
+                (<fileCache>/<namespace>/<solver>/<short_name>).
+
+        Empty parts (no namespace) are skipped — never fed to an f-string
+        path, which would produce a leading slash and jump to the drive root.
+        """
+        self.set_filerule()
+        directory = cmds.workspace(fileRuleEntry='fileCache')
+        directory = cmds.workspace(expandName=directory)
+        path = Path(directory)
+        if mode == 0:
+            return str(path / 'dynTmp')
+        for part in (self.namespace, self.solver_name, self.short_name):
+            if part:
+                path = path / part
+        return str(path)
+
     def metadata(self, mode=1):
         '''
         used to store which cache is starred
@@ -281,5 +308,8 @@ class BaseSimulationItem(QtGui.QStandardItem):
         if mode == 0:
             return str(Path(directory) / 'dynTmp')
 
-        directory = Path(directory) / f"{self.namespace}/{self.solver_name}/metadata.json"
-        return str(directory)
+        path = Path(directory)
+        for part in (self.namespace, self.solver_name):
+            if part:
+                path = path / part
+        return str(path / "metadata.json")

@@ -16,22 +16,7 @@ from pathlib import Path
 from maya import cmds
 
 
-class CacheType(Enum):
-    NCACHE = "nCache"
-    GEOCACHE = "geoCache"
-    ALEMBIC = "alembic"
-
-@dataclass
-class CacheInfo:
-    """Data container for cache information."""
-    name: str
-    path: Path
-    node: str
-    version: int
-    cache_type: CacheType
-    is_valid: bool = True
-    is_attached: bool = False
-    mesh: Optional[str] = None
+from dw_maya.DynEval.dendrology.cache_leaf import CacheInfo, CacheType
 
 
 class CacheOperationStatus(Enum):

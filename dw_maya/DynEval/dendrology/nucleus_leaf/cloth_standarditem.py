@@ -35,16 +35,27 @@ class ClothTreeItem(BaseSimulationItem):
 
     @property
     def mesh_transform(self):
-        """Transform of the simulated output mesh, or None if unresolved."""
+        """Transform of the simulated output mesh, or None if unresolved.
+
+        Primary: downstream mesh from outputMesh (the visible sim mesh).
+        Fallback: the input mesh via dw_core.get_mesh_from_nucx_node —
+        both shapes live under the same transform in a standard setup.
+        """
         try:
             hist = cmds.listHistory(self.node + '.outputMesh', lf=False, f=True) or []
             shapes = [i for i in hist if cmds.nodeType(i) == 'mesh' and len(i.split('.')) == 1]
-            if not shapes:
-                return None
-            transforms = lsTr(shapes[0], long=True)
-            return transforms[0] if transforms else None
+            if shapes:
+                transforms = lsTr(shapes[0], long=True)
+                if transforms:
+                    return transforms[0]
         except Exception as e:
             logger.warning(f"mesh_transform lookup failed for {self.node!r}: {e}")
+
+        try:
+            from dw_maya.dw_nucleus_utils.dw_core import get_mesh_from_nucx_node
+            return get_mesh_from_nucx_node(self.node)
+        except Exception as e:
+            logger.warning(f"input-mesh fallback failed for {self.node!r}: {e}")
             return None
 
     def _get_current_state(self) -> bool:
@@ -79,20 +90,8 @@ class ClothTreeItem(BaseSimulationItem):
             logger.error(f"Failed to set state for {self.node_type} {self.node}: {e}")
             raise
 
-    def cache_dir(self, mode=1):
-        '''
-        :return: str '../cache/ncache/nucleus/cloth/'
-        '''
-
-        self.set_filerule()
-        directory = cmds.workspace(fileRuleEntry='fileCache')
-        directory = cmds.workspace(en=directory)
-        if mode == 0:
-            return str(Path(directory) / 'dynTmp')
-
-        directory = Path(directory) / f"{self.namespace}/{self._get_solver(self.node)}/{self.short_name}"
-
-        return str(directory)
+    # cache_dir() inherited from BaseSimulationItem
+    # (<fileCache>/<namespace>/<solver>/<short_name>, empty parts skipped)
 
     def cache_file(self, mode=1, suffix=''):
         """Construct cache filename."""
@@ -114,10 +113,14 @@ class ClothTreeItem(BaseSimulationItem):
     def get_iter(self):
         """Determine current cache iteration/version."""
         path = Path(self.cache_dir())
-        if path.exists():
-            versions = [int(file.stem.split('_v')[-1]) for file in path.glob('*.xml')]
-            return max(versions, default=0)
-        return 0
+        if not path.exists():
+            return 0
+        versions = []
+        for file in path.glob('*.xml'):
+            tail = file.stem.rsplit('_v', 1)[-1]
+            if tail.isdigit():
+                versions.append(int(tail))
+        return max(versions, default=0)
 
     def get_maps(self):
         """Retrieve available vertex maps for the node."""

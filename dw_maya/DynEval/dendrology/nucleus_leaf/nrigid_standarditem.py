@@ -80,11 +80,9 @@ class NRigidTreeItem(BaseSimulationItem):
             raise
 
 
-    def cache_dir(self, mode=1):
-        """Returns the directory path for cache files."""
-        base_dir = cmds.workspace(fileRuleEntry='fileCache')
-        cache_subdir = f"/{self.namespace}/{self.solver_name}/{self.short_name}/"
-        return os.path.join(base_dir, 'dynTmp' if mode == 0 else cache_subdir).replace('//', '/')
+    # cache_dir() inherited from BaseSimulationItem — the previous local
+    # version joined an unexpanded workspace rule with a leading-slash
+    # subpath, which os.path.join resolves to the drive root.
 
     def cache_file(self, mode=1, suffix=''):
         """Generates the file path for the cache file based on the iteration."""
@@ -105,13 +103,16 @@ class NRigidTreeItem(BaseSimulationItem):
     def get_iter(self):
         """Retrieves the latest iteration version number."""
         path = self.cache_dir()
-        if os.path.exists(path):
-            versions = [
-                int(re.search(r'v(\d{3})', file).group(1))
-                for file in os.listdir(path) if file.endswith('.xml')
-            ]
-            return max(versions, default=0)
-        return 0
+        if not os.path.exists(path):
+            return 0
+        versions = []
+        for file in os.listdir(path):
+            if not file.endswith('.xml'):
+                continue
+            match = re.search(r'_v(\d+)', file)
+            if match:
+                versions.append(int(match.group(1)))
+        return max(versions, default=0)
 
     def get_maps(self):
         """Retrieves the vertex maps associated with this node."""

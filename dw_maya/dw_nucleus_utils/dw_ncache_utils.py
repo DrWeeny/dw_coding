@@ -1,14 +1,7 @@
-import sys, os
-
-# ----- Edit sysPath -----#
-rdPath = 'E:\\dw_coding\\dw_open_tools'
-if not rdPath in sys.path:
-    print(f"Add {rdPath} to sysPath")
-    sys.path.insert(0, rdPath)
-
 import maya.cmds as cmds
 import maya.mel as mel
 from .dw_nx_mel import *
+from dw_maya.dw_decorators import acceptString
 from typing import Optional, List
 import re
 

@@ -81,8 +81,9 @@ class SimulationTreeView(QtWidgets.QTreeView):
     def __init__(self, parent=None):
         super().__init__(parent)
 
-        # Set the model
-        self.setModel(SimulationTreeModel())
+        # Set the model (keep a Python reference — Qt/C++ ownership mismatch)
+        model = SimulationTreeModel(self)
+        self.setModel(model)
 
         # Setup delegate
         self.toggle_delegate = ToggleButtonDelegate(self)
@@ -114,7 +115,15 @@ class SimulationTreeView(QtWidgets.QTreeView):
         self.selectionModel().selectionChanged.connect(self._handle_selection_changed)
 
     def clear(self):
-        self.setModel(SimulationTreeModel())
+        """Remove all rows but keep the model instance alive.
+
+        Replacing the model (setModel) would destroy the selection model and
+        silently orphan every selectionChanged connection made against it —
+        including SimTreePanel's, which publishes SELECTED_NODE to the hub.
+        """
+        model = self.model()
+        if model is not None:
+            model.removeRows(0, model.rowCount())
 
     def _handle_toggle(self, state_index: QtCore.QModelIndex, new_state: bool):
         """Handle toggle events with support for batch operations."""
@@ -162,7 +171,6 @@ class SimulationTreeView(QtWidgets.QTreeView):
             selected_items = self.get_selected_items()  # Use existing method
             # Emit a custom signal name to avoid colliding with Qt internals
             self.selection_changed_custom.emit(selected_items)
-            print(f"Selection changed: {len(selected_items)} items")  # Debug print
         except Exception as e:
             logger.error(f"Selection change handling failed: {e}")
 

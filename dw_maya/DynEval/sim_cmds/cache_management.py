@@ -8,6 +8,9 @@ import dw_maya.dw_nucleus_utils as dwnx
 import dw_maya.dw_duplication as dwdup
 import dw_maya.dw_maya_nodes as dwnn
 from dw_maya.dw_decorators import acceptString
+from dw_logger import get_logger
+
+logger = get_logger()
 
 
 def has_cache(ncloth: str):
@@ -60,7 +63,8 @@ def delete_caches(ncloth: list, delete_file=None):
             to_del.extend(set(cache_nodes))
 
     if not to_del:
-        cmds.warning("No cache nodes found to delete.")
+        # Expected on the first cache of a node — not warning-worthy
+        logger.debug("delete_caches: no cache nodes connected, nothing to do.")
         return
 
     if delete_file:
@@ -187,25 +191,6 @@ def create_cache(ncloth_shapes: list, cache_dir: str, time_range: list = None, *
         return []
 
     return cache_files
-
-
-def cache_all_simple():
-    ncloth_shapes = cmds.ls(type="nCloth")
-
-    cmds.waitCursor(state=1)
-    dw_maya.nucleus_utils.cache_management.delete_caches(ncloth_shapes)
-    cmds.waitCursor(state=0)
-
-    cache_list = dw_maya.nucleus_utils.cache_management.create_cache(ncloth_shapes, distribution="OneFilePerFrame")
-
-    for ncloth, cache_name in zip(ncloth_shapes, cache_list):
-        cache_dir = dw_maya.nucleus_utils.cache_management.get_project_cache_directory()
-        cache_path = os.path.join(cache_dir, cache_name)
-        cache_xml = f"{cache_path}.xml"
-
-        mu.executeDeferred(dw_maya.nucleus_utils.cache_management.attach_ncache,
-                           cache_xml,
-                           ncloth)
 
 
 def materialize(mesh: str, cache_path: str) -> str:

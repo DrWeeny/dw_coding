@@ -26,7 +26,11 @@ class CacheType(Enum):
 
 @dataclass
 class CacheInfo:
-    """Data container for cache information."""
+    """Data container for cache information.
+
+    Canonical definition — sim_widget modules and nucleus_cache_ops import
+    this one; do not redeclare it locally.
+    """
     name: str
     path: Path
     node: str
@@ -35,6 +39,9 @@ class CacheInfo:
     is_valid: bool = True
     is_attached: bool = False
     mesh: Optional[str] = None
+    start: int = 0
+    end: int = 0
+    date: str = ""
 
 
 class CacheColors:

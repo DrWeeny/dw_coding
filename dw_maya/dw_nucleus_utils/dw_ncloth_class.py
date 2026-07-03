@@ -224,8 +224,14 @@ class NClothMap(WeightSource):
     def get_artisan_name(self) ->str:
         return "artAttrNClothContext"
 
-    def paint(self) -> None:
-        """Open Maya's artisan paint tool for the currently active map."""
+    def _paint(self) -> None:
+        """Open Maya's artisan paint tool for the currently active map.
+
+        Named _paint (not paint) — the WeightSource base class owns the
+        public paint() template that chains prepaint / _paint / postpaint;
+        overriding paint() directly leaves the abstract _paint unimplemented
+        and makes the class uninstantiable.
+        """
         from dw_maya.dw_nucleus_utils import artisan_nucx_update
         active = self._require_map()
         # Promote map type so artisan has something to paint

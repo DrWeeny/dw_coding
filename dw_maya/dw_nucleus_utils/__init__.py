@@ -6,4 +6,5 @@ from .dw_localisation import create_loca_cluster
 from .dw_core import get_nucleus_solver
 from .dw_nucleus_paint import artisan_nucx_update, artisan_nucx_open, flood_smooth_vtx_map, interpolate_vertex_map
 from .dw_ncloth_class import NClothMap
+from .dw_ncache_utils import attach_ncache, find_existing_caches
 

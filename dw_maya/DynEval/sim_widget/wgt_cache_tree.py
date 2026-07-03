@@ -28,28 +28,9 @@ from dw_logger import get_logger
 # Local imports
 from dw_maya.DynEval.hub_keys import DynEvalKeys
 from dw_maya.DynEval.sim_widget.wgt_base import DynEvalWidget
-from dw_maya.DynEval.dendrology.cache_leaf import CacheItem
+from dw_maya.DynEval.dendrology.cache_leaf import CacheItem, CacheInfo, CacheType
 
 logger = get_logger()
-
-
-class CacheType(Enum):
-    NCACHE = "nCache"
-    GEOCACHE = "geoCache"
-    ALEMBIC = "alembic"
-
-
-@dataclass
-class CacheInfo:
-    """Data container for cache information."""
-    name: str
-    path: Path
-    node: str
-    version: int
-    cache_type: CacheType
-    is_valid: bool = True
-    is_attached: bool = False
-    mesh: Optional[str] = None
 
 
 class CacheColors:
