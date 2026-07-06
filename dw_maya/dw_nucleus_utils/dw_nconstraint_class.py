@@ -134,24 +134,6 @@ class nConstraint(dwnn.MayaNode):
 
         return network_dict
 
-    def attrPreset(self) -> dict:
-        """Create a preset of the node attributes.
-
-        Returns:
-            dict: A dictionary containing all attributes for both `tr` and `sh`.
-        """
-        tr_dic = dwpreset.createAttrPreset(self.tr)
-        sh_dic = dwpreset.createAttrPreset(self.sh)
-        combined_dic = dwu.merge_two_dicts(tr_dic, sh_dic)
-
-        key = self.sh.split(':')[-1] + '_network'
-        combined_dic[key] = self.network
-
-        out_dic = {self.tr.split(':')[-1]: combined_dic}
-        out_dic[f'{self.tr.split(":")[-1]}_nodeType'] = self.nodeType
-
-        return out_dic
-
     @property
     def components(self) -> list:
         """Retrieve all components associated with the nComponents."""
@@ -163,22 +145,6 @@ class nConstraint(dwnn.MayaNode):
             else:
                 components += component
         return components
-
-    def _build_network(self,
-                       src_node_name:str,
-                       node_preset:dict=None,
-                       target_node_name:str=None,
-                       namespace:str=None):
-        """Legacy entry point: extract the network slice and delegate.
-
-        Kept so the old preset format (network nested under
-        ``<name>_network``) keeps rebuilding. New presets call
-        :meth:`_apply_network` directly via NConstraintNetworkComponent.
-        """
-        network = (node_preset or {}).get(f"{src_node_name}_network")
-        if not network:
-            return
-        self._apply_network(network, namespace, target=target_node_name)
 
     def _apply_network(self,
                        network:dict,
@@ -271,73 +237,6 @@ class nConstraint(dwnn.MayaNode):
                             texture = correspondance[texture]
 
                         cmds.connectAttr(f'{texture}.{np}Map', f'{cf.tr}.{np}')
-
-    def loadNode(self, preset: dict, blend: float = 1, namespace: str = ':') -> None:
-        """Load the dynamic constraint node based on a preset.
-
-        Args:
-            preset (dict): The preset data.
-            blend (float, optional): The blend value. Defaults to 1.
-            namespace (str, optional): Target namespace for the node. Defaults to ':'.
-        """
-        if isinstance(preset, str):
-            self.createNode(preset)
-            return
-
-        if isinstance(preset, dict):
-            # preset should have two parts : node with all his network and node_nodeType
-            # theorically inside the main node dictionnary, you can find in saved attributes :
-            # nodeType = "node_name_type"
-            # so you should find transform if there is one and shapes under this transform
-            # name provided to this node can be different from the one inside the class
-            # if the node exists already, it should apply the preset to it
-            # if it doesnt it should first create the node
-
-            # future name of the node
-            futur_node_name_transform = self.__dict__['node']
-
-            preset_node_type_key = [pname for pname in preset if pname.endswith("_nodeType")]
-
-            node_type = None
-            if preset_node_type_key:
-                node_type = preset[preset_node_type_key[0]]
-
-            if not node_type or node_type != "dynamicConstraint":
-                return
-
-            if not cmds.objExists(futur_node_name_transform):
-                self.createNode(node_type, targ_ns=namespace, name=futur_node_name_transform)
-
-            # find the key name of the main dictionnary provided
-            node_preset_key = preset_node_type_key[0].rsplit('_', 1)[0]
-            # get the sub dic with all the network and attributes per node
-            sub_dic = preset[node_preset_key]
-
-            for key in sub_dic:
-                # find dictrionnaries for transform and shape
-                sub_nt = sub_dic[key].get("nodeType", None)
-                if sub_nt == "transform":
-                    dwpreset.dw_preset.blend_attr_dic(src_node=key,
-                                            target_node=self.tr,
-                                            preset=sub_dic,
-                                            blend_value=blend)
-
-                    self._build_network(src_node_name=key,
-                                        node_preset=sub_dic,
-                                        target_node_name=self.tr,
-                                        namespace=namespace)
-
-                elif sub_nt == "dynamicConstraint":
-                    dwpreset.dw_preset.blend_attr_dic(src_node=key,
-                                            target_node=self.sh,
-                                            preset=sub_dic,
-                                            blend_value=blend)
-
-                    self._build_network(src_node_name=key,
-                                        node_preset=sub_dic,
-                                        target_node_name=self.sh,
-                                        namespace=namespace)
-
 
 
 class nComponent(dwnn.MayaNode):

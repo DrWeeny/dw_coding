@@ -7,7 +7,9 @@ connection components.
 Deliberately NOT registered for the ``mesh`` node type: an exact-type registry
 entry would short-circuit the condition-based resolution in ``lsNode()`` (mesh +
 nCloth -> NClothMap, mesh + nRigid -> ...). Instantiate ``Mesh(name)`` directly
-when you want geometry in the snapshot.
+when you want geometry in the snapshot. It IS registered in the preset-only
+class map, so ``node_from_preset`` / ``load_preset_file`` rebuild ``mesh``
+entries (and their geometry slice) through this class.
 
 Classes:
     Mesh: MayaNode + GeometryComponent.
@@ -30,3 +32,6 @@ class Mesh(MayaNode):
     """
 
     preset_components = MayaNode.preset_components + (pcomp.GeometryComponent(),)
+
+
+pcomp.register_preset_class('mesh', Mesh)

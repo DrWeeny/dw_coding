@@ -982,11 +982,23 @@ class MayaNode(ObjPointer):
                 return
 
             identity, body = self._pick_preset_entry(nodes)
+            node_type = body.get('nodeType') if isinstance(body, dict) else None
+
+            # Specialize the wrapper from the stored nodeType so type-specific
+            # components (constraint network, geometry, ...) participate in
+            # the apply even when the caller built a plain MayaNode. Only
+            # done when the subclass adds no custom __init__ state.
+            if node_type and type(self) is MayaNode:
+                import dw_maya.dw_node_registry as node_registry
+                cls = (pcomp.resolve_preset_class(node_type)
+                       or node_registry.resolve_type(node_type))
+                if (cls is not MayaNode and issubclass(cls, MayaNode)
+                        and cls.__init__ is MayaNode.__init__):
+                    self.__class__ = cls
 
             # Create the node before any accessor that assumes it exists
             # (presetIdentity / .sh / .tr choke on a not-yet-created node).
             if not cmds.objExists(self.__dict__['node']):
-                node_type = body.get('nodeType') if isinstance(body, dict) else None
                 if not node_type:
                     logger.error(f"loadNode: no matching entry / nodeType to "
                                  f"create '{self.__dict__['node']}'")
@@ -999,8 +1011,10 @@ class MayaNode(ObjPointer):
                                       create=True)
             # Map the stored identity to the live node so ConnectionComponent
             # replays plugs onto this node even when it was given a new name.
+            # Identity is transform-based, so map it to the transform (falls
+            # back to the node itself for shape-less / DG nodes).
             if identity:
-                ctx.name_map[identity] = self.node
+                ctx.name_map[identity] = self.tr or self.node
             self.applyPreset(nodes, ctx)
         except Exception as e:
             logger.error(f"Failed to load node preset: {e}")

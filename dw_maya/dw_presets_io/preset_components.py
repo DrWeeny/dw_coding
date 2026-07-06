@@ -266,19 +266,21 @@ class ConnectionComponent(PresetComponent):
 
     Stores namespace-stripped directed pairs (``{"pairs": [[src, dst], ...]}``)
     and replays them through :class:`PresetContext` so a rebuilt graph reconnects
-    under a new namespace. Incoming-only by default - in a whole-graph rebuild
-    every node records its own inputs, so capturing outputs too would just
-    duplicate. Set ``directions=("in", "out")`` for single-node presets that must
-    also keep their downstream links (e.g. mesh -> shadingGroup).
+    under a new namespace. ``io`` selects the captured directions as
+    ``(incoming, outgoing)`` booleans. Incoming-only by default - in a
+    whole-graph rebuild every node records its own inputs, so capturing outputs
+    too would just duplicate. Use ``io=(True, True)`` for single-node presets
+    that must also keep their downstream links (e.g. mesh -> shadingGroup,
+    constraint -> driven node).
     """
 
     key = "connections"
     enabled_by_default = True
 
     def __init__(self,
-                 directions: tuple = ("in",),
+                 io: tuple = (True, False),
                  skip_types: tuple = _DEFAULT_SKIP_CONN_TYPES):
-        self.directions = tuple(directions)
+        self.io = (bool(io[0]), bool(io[1]))
         self.skip_types = tuple(skip_types)
 
     def _targets(self, node: "Any") -> List[str]:
@@ -313,14 +315,14 @@ class ConnectionComponent(PresetComponent):
                 pairs.append([key[0], key[1]])
 
         for target in targets:
-            if "in" in self.directions:
+            if self.io[0]:
                 conns = cmds.listConnections(target, s=True, d=False,
                                              p=True, c=True) or []
                 for i in range(0, len(conns), 2):
                     local, other = conns[i], conns[i + 1]
                     if not self._skip(other, local_short):
                         _add(other, local)   # other -> this node
-            if "out" in self.directions:
+            if self.io[1]:
                 conns = cmds.listConnections(target, s=False, d=True,
                                              p=True, c=True) or []
                 for i in range(0, len(conns), 2):
@@ -343,7 +345,13 @@ class ConnectionComponent(PresetComponent):
                     resolved = cand
                     break
             else:
-                return None
+                # 5. any-namespace lookup (capture strips namespaces, so a
+                # node living in a namespace other than target_ns needs a
+                # recursive search). Only trust an unambiguous hit.
+                hits = cmds.ls(short, recursive=True) or []
+                if len(hits) != 1:
+                    return None
+                resolved = hits[0]
         return f"{resolved}.{attr_part}"
 
     def apply(self, node: "Any", data: Dict, ctx: PresetContext) -> None:
@@ -710,6 +718,48 @@ class AnimationComponent(PresetComponent):
 # Rebuild dispatch
 # ---------------------------------------------------------------------------
 
+# Preset-specific class overrides, consulted before the node registry when
+# rebuilding from a preset. Lets a class own a node type for *rebuild* purposes
+# without registering it in dw_node_registry (e.g. Mesh for "mesh", which must
+# stay unregistered there so lsNode's condition-based cloth / rigid resolution
+# keeps working). Direct registrations land in PRESET_CLASSES; classes whose
+# module cannot be imported here at import time (dw_maya_utils <-> dw_maya_nodes
+# cycle, see dw_maya_hierarchy's module notes) are listed as deferred import
+# paths and loaded on first use.
+PRESET_CLASSES: Dict[str, type] = {}
+_PRESET_CLASS_PATHS: Dict[str, tuple] = {
+    "mesh": ("dw_maya.dw_maya_utils.mesh_class", "Mesh"),
+}
+
+
+def register_preset_class(node_type: str, cls: type) -> None:
+    """Map ``node_type`` to ``cls`` for preset rebuilds only."""
+    PRESET_CLASSES[node_type] = cls
+
+
+def resolve_preset_class(node_type: str):
+    """Return the preset-rebuild class for ``node_type``, or None.
+
+    Checks direct registrations first, then the deferred-import paths
+    (imported once, cached into PRESET_CLASSES).
+    """
+    cls = PRESET_CLASSES.get(node_type)
+    if cls is not None:
+        return cls
+    path = _PRESET_CLASS_PATHS.get(node_type)
+    if not path:
+        return None
+    import importlib
+    try:
+        module = importlib.import_module(path[0])
+        cls = getattr(module, path[1])
+    except Exception as e:
+        logger.warning(f"resolve_preset_class: cannot load {path[0]}.{path[1]}: {e}")
+        return None
+    PRESET_CLASSES[node_type] = cls
+    return cls
+
+
 def node_from_preset(identity: str, body: Dict, ctx: Optional[PresetContext] = None) -> "Any":
     """Rebuild a single node from a stored entry, dispatching on its node type.
 
@@ -730,9 +780,11 @@ def node_from_preset(identity: str, body: Dict, ctx: Optional[PresetContext] = N
 
     ctx = ctx or PresetContext(create=True)
     node_type = body.get("nodeType")
-    cls = resolve_type(node_type)
+    cls = resolve_preset_class(node_type) or resolve_type(node_type)
 
-    target = ctx.resolve_name(identity)
+    # A pre-seeded remap (load_preset_file(remap=...)) wins over the default
+    # target-namespace naming, so an entry can be rebuilt under a new name.
+    target = ctx.name_map.get(identity) or ctx.resolve_name(identity)
     if cmds.objExists(target):
         node = cls(target)
     else:
@@ -741,20 +793,80 @@ def node_from_preset(identity: str, body: Dict, ctx: Optional[PresetContext] = N
         # avoids the accessors that assume an existing node, and suppresses the
         # "does not exist" warning the bare-name ctor would log.
         node = cls(target, node_type)
-    ctx.name_map[identity] = node.node
+    # Identity is transform-based (presetIdentity), so map it to the transform:
+    # node.node defaults to the shape, and consumers of the map (constraint
+    # rebuilds, connection replay) expect the name the identity stood for.
+    ctx.name_map[identity] = node.tr or node.node
 
     node.applyPreset({"nodes": {identity: body}}, ctx)
     return node
 
 
+def save_preset_file(nodes: List["Any"],
+                     path: str,
+                     only: Optional[list] = None,
+                     skip: Optional[list] = None,
+                     defer: bool = False) -> bool:
+    """Save several nodes into one ``dw_preset`` envelope, in the given order.
+
+    Order matters on load: :func:`load_preset_file` rebuilds in saved order
+    with one shared context, so put dependencies first (e.g. a collider mesh
+    before the constraint that drives it).
+
+    Args:
+        nodes: Node names, MayaNode instances, and/or already-captured
+            ``{identity: body}`` dicts (as returned by ``createPreset`` -
+            merged as-is, ``only``/``skip`` do not re-filter them). Names are
+            specialized through the registry (:func:`dw_lsNode.lsNode`) so
+            type-specific components (constraint network, geometry, ...)
+            are captured.
+        path: Output json path.
+        only / skip: Component-key filters forwarded to ``createPreset``.
+        defer: Forwarded to ``save_json``.
+    """
+    import dw_maya.dw_lsNode as dw_lsNode
+
+    data = {"format": PRESET_FORMAT,
+            "version": PRESET_VERSION,
+            "nodes": {}}
+    for node in nodes:
+        if isinstance(node, dict):
+            data["nodes"].update(node.get("nodes", node))
+            continue
+        if isinstance(node, str):
+            wrapped = dw_lsNode.lsNode(node)
+            if not wrapped:
+                logger.warning(f"save_preset_file: '{node}' not found, skipping")
+                continue
+            node = wrapped[0]
+        data["nodes"].update(node.createPreset(only=only, skip=skip))
+    if not data["nodes"]:
+        logger.warning(f"save_preset_file: nothing captured, '{path}' not written")
+        return False
+    logger.info(f"Saving preset to {path}")
+    return dw_json.save_json(path, data, defer=defer)
+
+
 def load_preset_file(path: str,
                      target_ns: str = ":",
-                     create: bool = True) -> List["Any"]:
-    """Rebuild every node in a saved preset file. Returns the wrapped nodes."""
+                     create: bool = True,
+                     remap: Optional[Dict[str, str]] = None) -> List["Any"]:
+    """Rebuild every node in a saved preset file. Returns the wrapped nodes.
+
+    Args:
+        path: Preset json path.
+        target_ns: Namespace rebuilt nodes and name lookups resolve against.
+        create: Allow creating missing nodes.
+        remap: Optional ``{stored_identity: scene_node}`` overrides, seeded
+            into the context's name map before anything applies - use it when
+            a driver was renamed between save and load.
+    """
     data = dw_json.load_json(path)
     if not data or data.get("format") != PRESET_FORMAT:
         logger.warning(f"load_preset_file: '{path}' is not a {PRESET_FORMAT} file.")
         return []
     ctx = PresetContext(target_ns=target_ns, create=create)
+    if remap:
+        ctx.name_map.update(remap)
     return [node_from_preset(identity, body, ctx)
             for identity, body in data.get("nodes", {}).items()]
