@@ -725,6 +725,11 @@ class MayaNode(ObjPointer):
         ctx = pcomp.PresetContext(target_ns=target_ns, blend=blend)
         self.applyPreset(data, ctx, only=only, skip=skip)
 
+    def listConnections(self, **kwargs):
+        connection_list = cmds.listConnections(self.node, **kwargs)
+        return connection_list
+
+
     def listHistory(self, **kwargs) -> list:
         """List node history with optional filtering.
 
