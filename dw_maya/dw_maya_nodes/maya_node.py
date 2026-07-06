@@ -725,10 +725,9 @@ class MayaNode(ObjPointer):
         ctx = pcomp.PresetContext(target_ns=target_ns, blend=blend)
         self.applyPreset(data, ctx, only=only, skip=skip)
 
-    def listConnections(self, **kwargs):
+    def listConnections(self, **kwargs) -> list:
         connection_list = cmds.listConnections(self.node, **kwargs)
-        return connection_list
-
+        return list(set(connection_list))
 
     def listHistory(self, **kwargs) -> list:
         """List node history with optional filtering.
@@ -952,105 +951,77 @@ class MayaNode(ObjPointer):
     def loadNode(self, preset: Union[str, dict],
                  blend: float = 1.0,
                  namespace: str = ':'):
-        """Load node from preset, optionally blending attributes.
+        """Create (if missing) and apply a v2 component preset onto this node.
+
+        Accepts either a bare node type string ("locator", "multiplyDivide",
+        ...) for plain creation, or a v2 component preset - the full envelope
+        (``{"format": "dw_preset", "nodes": {...}}``) or a bare
+        ``{identity: body}`` mapping as returned by :meth:`createPreset`.
+
+        When the wrapped node does not exist yet, it is created from the
+        entry's stored ``nodeType`` first, then the component slices are
+        applied through :meth:`applyPreset`. SPECIAL_TOKENS ($RFSTART /
+        $RFEND / ...) and numeric blending are resolved per-attribute by
+        ``preset_components.apply_attr``.
 
         Args:
-            preset: Node type or preset dictionary
-            blend: Blend factor for attribute values
-            namespace: Target namespace
-
-        Example:
-            {'pCube1': {'rotateX': 0.0,
-               'nodeType': 'transform',
-               'rotateY': 1.0,
-               'translateX': 100,
-               'translateY': 0.0,
-               'translateZ': 0.0},
-            'pSphere1': {'nodeType': 'transform',
-                       'scaleX': 0.5,
-                       'translateX': 1,
-                       'translateY': 0,
-                       'rotateY': 50}}
-
+            preset: Node type string, or v2 preset dict.
+            blend: Blend factor threaded to the attribute apply (1.0 = set).
+            namespace: Target namespace for created nodes (``:`` = root).
         """
         try:
-            # Handle string preset
+            # Bare node type string -> plain creation, nothing to apply.
             if isinstance(preset, str):
                 self.createNode(preset)
                 return
 
-            # Process dictionary preset
-            for node_name, attributes in preset.items():
-                # Skip if no nodeType attribute
-                if 'nodeType' not in attributes:
-                    logger.warning(f"No nodeType found for {node_name}, skipping")
-                    continue
+            nodes = preset.get("nodes", preset)
+            if not isinstance(nodes, dict) or not nodes:
+                logger.warning(f"loadNode: empty or invalid preset for "
+                               f"'{self.__dict__['node']}'")
+                return
 
-                # Handle namespace
-                full_node_name = (f"{namespace}:{node_name}" if namespace not in [':', '']
-                                  else node_name)
-                node_type = attributes['nodeType']
+            identity, body = self._pick_preset_entry(nodes)
 
-                # Check if this is the node we're looking for, handling namespace correctly
-                self_node_basenames = []
-                # Get transform node basename if it exists
-                if self.tr:
-                    self_node_basenames.append(self.stripNamespace(0))  # 0 for transform
-                # Get shape node basename if it exists and is different from transform
-                if self.sh and self.sh != self.tr:
-                    self_node_basenames.append(self.stripNamespace(1))  # 1 for shape
+            # Create the node before any accessor that assumes it exists
+            # (presetIdentity / .sh / .tr choke on a not-yet-created node).
+            if not cmds.objExists(self.__dict__['node']):
+                node_type = body.get('nodeType') if isinstance(body, dict) else None
+                if not node_type:
+                    logger.error(f"loadNode: no matching entry / nodeType to "
+                                 f"create '{self.__dict__['node']}'")
+                    return
+                self.createNode(node_type, namespace, name=self.__dict__['node'])
 
-                current_node_basename = node_name
-
-                # Check using full names or base names
-                if full_node_name == self.__dict__['node'] or current_node_basename in self_node_basenames:
-                    logger.debug(f"Processing node: {full_node_name}")
-                    # Create or use existing node
-                    if not cmds.objExists(self.__dict__['node']):
-                        # Create new node with the specified node type
-                        self.createNode(node_type, namespace, name=full_node_name)
-
-                    # Create a copy of attributes without the nodeType for blending
-                    attrs_to_apply = attributes.copy()
-                    attrs_to_apply.pop('nodeType', None)
-
-                    # Apply attributes
-                    for attr, value in attrs_to_apply.items():
-                        try:
-                            # With this type-specific targeting:
-                            if node_type == "transform":
-                                target_attr = f"{self.tr}.{attr}"
-                            else:
-                                target_attr = f"{self.sh}.{attr}"
-
-                            if not cmds.ls(target_attr):
-                                logger.debug(f"Skipping attribute {attr} for node {full_node_name}")
-                                continue
-
-                            # Check if value is a special token that needs evaluation
-                            from dw_maya.dw_constants import SPECIAL_TOKENS
-                            if isinstance(value, str) and value in SPECIAL_TOKENS:
-                                value = SPECIAL_TOKENS[value]()
-
-                            # Check for and delete any existing animation keys
-                            if cmds.keyframe(target_attr, query=True, keyframeCount=True):
-                                cmds.cutKey(target_attr)
-
-                            current_value = cmds.getAttr(target_attr)
-
-                            # Apply blending if needed
-                            if blend < 0.999 and isinstance(value, (int, float, bool)):
-                                blended_value = value * blend + current_value * (1 - blend)
-                                cmds.setAttr(target_attr, blended_value)
-                            else:
-                                if isinstance(value, str):
-                                    cmds.setAttr(target_attr, value, type='string')
-                                else:
-                                    cmds.setAttr(target_attr, value)
-                        except Exception as e:
-                            logger.warning(f"Failed to set attribute {attr}: {e}")
-
-                    break
+            target_ns = namespace if namespace else ':'
+            ctx = pcomp.PresetContext(target_ns=target_ns,
+                                      blend=blend,
+                                      create=True)
+            # Map the stored identity to the live node so ConnectionComponent
+            # replays plugs onto this node even when it was given a new name.
+            if identity:
+                ctx.name_map[identity] = self.node
+            self.applyPreset(nodes, ctx)
         except Exception as e:
             logger.error(f"Failed to load node preset: {e}")
             raise
+
+    def list_presets_type(self) -> list:
+        """
+        Returns: animation attributes connections
+        """
+        return [i.key for i in self.preset_components]
+
+    def _pick_preset_entry(self, nodes: dict) -> tuple:
+        """Select the ``(identity, body)`` entry matching this wrapper.
+
+        Mirrors :meth:`_select_body`, but derives the identity from the stored
+        node string (base name, path/namespace stripped) so it works before
+        the node exists in the scene.
+        """
+        target = self.__dict__['node'].split('|')[-1].split(':')[-1]
+        if target in nodes:
+            return target, nodes[target]
+        if len(nodes) == 1:
+            return next(iter(nodes.items()))
+        return None, {}

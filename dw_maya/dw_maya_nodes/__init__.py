@@ -27,5 +27,6 @@ Author:
 from .obj_pointer import ObjPointer
 from .attr import MAttr
 from .maya_node import MayaNode
+from .constraint_node import Constraint
 
-__all__ = ['ObjPointer', 'MAttr', 'MayaNode']
+__all__ = ['ObjPointer', 'MAttr', 'MayaNode', 'Constraint']
