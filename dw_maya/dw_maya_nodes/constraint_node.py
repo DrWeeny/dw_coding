@@ -132,22 +132,8 @@ class ConstraintNetworkComponent(pcomp.PresetComponent):
     # apply
     # ------------------------------------------------------------------ #
     def _resolve_node(self, name: str, ctx: pcomp.PresetContext):
-        """Rename-map -> target-namespace -> bare -> any-namespace resolution."""
-        short = _short(name)
-        if short in ctx.name_map:
-            return ctx.name_map[short]
-        for cand in (ctx.resolve_name(short), short, name):
-            if cmds.objExists(cand):
-                return cand
-        # Capture strips namespaces; find the node wherever it lives, but
-        # only trust an unambiguous hit.
-        hits = cmds.ls(short, recursive=True) or []
-        if len(hits) == 1:
-            return hits[0]
-        if hits:
-            logger.warning(f"ConstraintNetwork: '{short}' is ambiguous across "
-                           f"namespaces ({hits}), skipping")
-        return None
+        """Shared stored-name resolution (see ``resolve_scene_node``)."""
+        return pcomp.resolve_scene_node(name, ctx)
 
     def _to_transform(self, name):
         """Coerce a resolved node to a transform (constraints reject shapes)."""

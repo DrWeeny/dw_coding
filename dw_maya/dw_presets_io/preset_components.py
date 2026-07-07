@@ -261,6 +261,38 @@ def _strip_plug(plug: str) -> str:
     return f"{short}{sep}{attr_part}"
 
 
+def resolve_scene_node(name: str, ctx: PresetContext) -> Optional[str]:
+    """Resolve a stored (namespace-stripped) node name to a live scene node.
+
+    Shared by every component that stores node names. Resolution order:
+    rename map -> target-namespace qualified -> bare short name -> stored
+    name as-is -> any-namespace recursive lookup (unambiguous hits only,
+    since capture strips namespaces).
+    """
+    short = name.split("|")[-1].split(":")[-1]
+    mapped = ctx.name_map.get(short)
+    if mapped:
+        if cmds.objExists(mapped):
+            return mapped
+        # A full-path map entry goes stale when the node (or an ancestor) is
+        # re-parented after being recorded - fall through to the name-based
+        # lookups and refresh the map with whatever they find.
+    for cand in (ctx.resolve_name(short), short, name):
+        if cmds.objExists(cand):
+            if mapped:
+                ctx.name_map[short] = cand
+            return cand
+    hits = cmds.ls(short, recursive=True) or []
+    if len(hits) == 1:
+        if mapped:
+            ctx.name_map[short] = hits[0]
+        return hits[0]
+    if hits:
+        logger.warning(f"resolve_scene_node: '{short}' is ambiguous across "
+                       f"namespaces ({hits}), skipping")
+    return None
+
+
 class ConnectionComponent(PresetComponent):
     """Capture / restore a node's connections as remappable plug pairs.
 
@@ -334,24 +366,9 @@ class ConnectionComponent(PresetComponent):
 
     def _resolve_plug(self, plug: str, ctx: PresetContext) -> Optional[str]:
         node_part, _, attr_part = plug.partition(".")
-        short = node_part.split("|")[-1].split(":")[-1]
-        # 1. node created during this rebuild
-        if short in ctx.name_map:
-            resolved = ctx.name_map[short]
-        else:
-            # 2. target-namespace qualified, 3. bare short, 4. original plug node
-            for cand in (ctx.resolve_name(short), short, node_part):
-                if cmds.objExists(cand):
-                    resolved = cand
-                    break
-            else:
-                # 5. any-namespace lookup (capture strips namespaces, so a
-                # node living in a namespace other than target_ns needs a
-                # recursive search). Only trust an unambiguous hit.
-                hits = cmds.ls(short, recursive=True) or []
-                if len(hits) != 1:
-                    return None
-                resolved = hits[0]
+        resolved = resolve_scene_node(node_part, ctx)
+        if not resolved:
+            return None
         return f"{resolved}.{attr_part}"
 
     def apply(self, node: "Any", data: Dict, ctx: PresetContext) -> None:
@@ -365,6 +382,62 @@ class ConnectionComponent(PresetComponent):
                     cmds.connectAttr(s, d, force=True)
             except Exception as e:
                 logger.warning(f"ConnectionComponent: connect {s} -> {d} failed: {e}")
+
+
+# ---------------------------------------------------------------------------
+# Hierarchy component
+# ---------------------------------------------------------------------------
+
+class HierarchyComponent(PresetComponent):
+    """Capture / restore the transform's parent.
+
+    Stores the namespace-stripped parent name (plus the full ancestor chain
+    for context) so a rebuilt node lands back under its group. Apply resolves
+    the parent through :func:`resolve_scene_node`; when the parent is missing
+    and ``ctx.create`` is set, an empty transform group is created.
+
+    Re-parenting uses ``relative=True`` so the local TRS values written by
+    :class:`AttributeComponent` stay valid - which also means this component
+    must run *before* attributes in a class ``preset_components`` tuple.
+    """
+
+    key = "hierarchy"
+    enabled_by_default = True
+
+    def capture(self, node: "Any", ctx: PresetContext) -> Optional[Dict]:
+        tr = node.tr
+        if not tr:
+            return None
+        parent = cmds.listRelatives(tr, parent=True, fullPath=True)
+        if not parent:
+            return None  # world-level node: nothing to restore
+        chain = [p.split(":")[-1] for p in parent[0].split("|") if p]
+        return {"parent": chain[-1], "path": chain}
+
+    def apply(self, node: "Any", data: Dict, ctx: PresetContext) -> None:
+        tr = node.tr
+        parent_short = data.get("parent")
+        if not tr or not parent_short:
+            return
+        current = cmds.listRelatives(tr, parent=True) or []
+        if current and current[0].split("|")[-1].split(":")[-1] == parent_short:
+            return  # already under the right parent
+        resolved = resolve_scene_node(parent_short, ctx)
+        if not resolved and ctx.create:
+            resolved = cmds.createNode("transform",
+                                       name=ctx.resolve_name(parent_short),
+                                       skipSelect=True)
+            logger.info(f"HierarchyComponent: created missing parent group "
+                        f"'{resolved}'")
+        if not resolved:
+            logger.warning(f"HierarchyComponent: parent '{parent_short}' not "
+                           f"found, '{tr}' left where it is")
+            return
+        try:
+            cmds.parent(tr, resolved, relative=True)
+        except Exception as e:
+            logger.warning(f"HierarchyComponent: parent '{tr}' -> "
+                           f"'{resolved}' failed: {e}")
 
 
 # ---------------------------------------------------------------------------
@@ -793,16 +866,17 @@ def node_from_preset(identity: str, body: Dict, ctx: Optional[PresetContext] = N
         # avoids the accessors that assume an existing node, and suppresses the
         # "does not exist" warning the bare-name ctor would log.
         node = cls(target, node_type)
+    node.applyPreset({"nodes": {identity: body}}, ctx)
     # Identity is transform-based (presetIdentity), so map it to the transform:
     # node.node defaults to the shape, and consumers of the map (constraint
     # rebuilds, connection replay) expect the name the identity stood for.
+    # Recorded AFTER applyPreset: HierarchyComponent re-parents the node, so a
+    # path snapshot taken at creation time (world root) would go stale.
     ctx.name_map[identity] = node.tr or node.node
-
-    node.applyPreset({"nodes": {identity: body}}, ctx)
     return node
 
 
-def save_preset_file(nodes: List["Any"],
+def save_preset_file(nodes: List[Any],
                      path: str,
                      only: Optional[list] = None,
                      skip: Optional[list] = None,
@@ -850,7 +924,7 @@ def save_preset_file(nodes: List["Any"],
 def load_preset_file(path: str,
                      target_ns: str = ":",
                      create: bool = True,
-                     remap: Optional[Dict[str, str]] = None) -> List["Any"]:
+                     remap: Optional[Dict[str, str]] = None) -> List[Any]:
     """Rebuild every node in a saved preset file. Returns the wrapped nodes.
 
     Args:

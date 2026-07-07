@@ -56,8 +56,11 @@ class MayaNode(ObjPointer):
         - Shape attributes take priority when duplicated with transform
     """
 
-    #: Ordered preset components this class owns. Used in createPreset
-    preset_components = (pcomp.AttributeComponent(), # store attributes
+    #: Ordered preset components this class owns. Used in createPreset.
+    #: Hierarchy runs first: it re-parents in relative mode, so the local
+    #: values AttributeComponent writes afterwards give the right world pose.
+    preset_components = (pcomp.HierarchyComponent(), # restore parenting
+                         pcomp.AttributeComponent(), # store attributes
                          pcomp.ConnectionComponent(), # save connections
                          pcomp.AnimationComponent()) # save animation curves
 
@@ -752,6 +755,32 @@ class MayaNode(ObjPointer):
         except Exception as e:
             logger.error(f"Failed to list history: {e}")
             return []
+
+    def getParent(self, all_parents: bool = False):
+        """Return the parent of this node's transform.
+
+        Args:
+            all_parents: When True, return the whole ancestor chain as full
+                paths, immediate parent first, top-most last.
+
+        Returns:
+            str | None: Immediate parent full path (None at world level), or
+            a list of ancestor paths when ``all_parents`` is True (empty at
+            world level).
+
+        Example:
+            >>> node = MayaNode('collider')      # |grp_a|grp_b|collider
+            >>> node.getParent()                 # '|grp_a|grp_b'
+            >>> node.getParent(all_parents=True) # ['|grp_a|grp_b', '|grp_a']
+        """
+        tr = self.tr
+        parents = cmds.listRelatives(tr, parent=True, fullPath=True) if tr else None
+        if not parents:
+            return [] if all_parents else None
+        if not all_parents:
+            return parents[0]
+        parts = parents[0].split('|')  # ['', 'grp_a', 'grp_b']
+        return ['|'.join(parts[:i + 1]) for i in range(len(parts) - 1, 0, -1)]
 
     def parentTo(self, target):
         """Parent this node to target.
