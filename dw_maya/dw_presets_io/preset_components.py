@@ -17,6 +17,7 @@ Envelope (format ``dw_preset``, version 2)::
     {
         "format": "dw_preset",
         "version": 2,
+        "namespaces": {"asset": ["man_01"], "external": ["alien_999", ":"]},
         "nodes": {
             "<identity>": {
                 "nodeType": "mesh",
@@ -25,6 +26,15 @@ Envelope (format ``dw_preset``, version 2)::
             }
         }
     }
+
+Namespace model: a node's own namespace is *the asset* (``man_01``, ``man_02``
+are instances of the same preset). Names inside the asset are stored stripped
+(relocatable via ``PresetContext.target_ns``); names in *other* namespaces
+(another character, a shot collider) are **external** - kept verbatim,
+remappable via ``PresetContext.ext_ns_map``, skippable via
+``PresetContext.apply_external``, and expected to be missing in shots that
+lack the other asset (report them softer than internal misses). The top-level
+``namespaces`` summary exists so a remap UI never has to parse the pairs.
 
 Classes:
     PresetContext: shared state threaded through every apply (target namespace,
@@ -127,11 +137,21 @@ class PresetContext:
         create: When True, components may create nodes from scratch rather than
             only modifying an existing target.
         name_map: Source identity -> created/resolved node name.
+        apply_external: When False, stored names that were captured as
+            *external* (foreign-namespace, kept verbatim - see
+            ConnectionComponent) are skipped on apply instead of resolved.
+        ext_ns_map: External-namespace remap applied before resolving external
+            names, e.g. ``{":": "man_01", "alien_999": "alien01",
+            "god_00": ":"}`` (``:`` stands for the root namespace on either
+            side). Does not affect internal (asset) names - those follow
+            ``target_ns``.
     """
     target_ns: str = ":"
     blend: float = 1.0
     create: bool = False
     name_map: Dict[str, str] = field(default_factory=dict)
+    apply_external: bool = True
+    ext_ns_map: Dict[str, str] = field(default_factory=dict)
 
     def resolve_name(self, identity: str) -> str:
         """Return ``identity`` qualified with ``target_ns`` (root-safe)."""
@@ -261,15 +281,33 @@ def _strip_plug(plug: str) -> str:
     return f"{short}{sep}{attr_part}"
 
 
-def resolve_scene_node(name: str, ctx: PresetContext) -> Optional[str]:
-    """Resolve a stored (namespace-stripped) node name to a live scene node.
+def _node_namespace(node: str) -> str:
+    """Return the namespace prefix of ``node`` ('' for root, dag path dropped).
 
-    Shared by every component that stores node names. Resolution order:
-    rename map -> target-namespace qualified -> bare short name -> stored
-    name as-is -> any-namespace recursive lookup (unambiguous hits only,
-    since capture strips namespaces).
+    ``'man_01:cfx:body'`` -> ``'man_01:cfx'``; ``'body'`` / ``':body'`` -> ``''``.
     """
-    short = name.split("|")[-1].split(":")[-1]
+    short = node.split("|")[-1].lstrip(":")
+    if ":" not in short:
+        return ""
+    return short.rsplit(":", 1)[0]
+
+
+def resolve_scene_node(name: str, ctx: PresetContext) -> Optional[str]:
+    """Resolve a stored *internal* (asset-relative) node name to a scene node.
+
+    Shared by every component that stores node names. Internal names were
+    captured with the asset namespace stripped - either fully (``'body'``) or
+    down to a relative sub-namespace (``'cfx:body'`` in recursive-namespace
+    captures). Resolution order: rename map -> target-namespace qualified
+    (relative name first, then bare short name) -> bare short name -> stored
+    name as-is -> any-namespace recursive lookup (unambiguous hits only).
+
+    External (foreign-namespace) names go through
+    :func:`resolve_external_node` instead - they are never relocated into
+    ``ctx.target_ns``.
+    """
+    relative = name.split("|")[-1].lstrip(":")
+    short = relative.split(":")[-1]
     mapped = ctx.name_map.get(short)
     if mapped:
         if cmds.objExists(mapped):
@@ -277,7 +315,11 @@ def resolve_scene_node(name: str, ctx: PresetContext) -> Optional[str]:
         # A full-path map entry goes stale when the node (or an ancestor) is
         # re-parented after being recorded - fall through to the name-based
         # lookups and refresh the map with whatever they find.
-    for cand in (ctx.resolve_name(short), short, name):
+    candidates = []
+    if relative != short:
+        candidates.append(ctx.resolve_name(relative))
+    candidates.extend((ctx.resolve_name(short), short, name))
+    for cand in candidates:
         if cmds.objExists(cand):
             if mapped:
                 ctx.name_map[short] = cand
@@ -293,17 +335,77 @@ def resolve_scene_node(name: str, ctx: PresetContext) -> Optional[str]:
     return None
 
 
+def resolve_external_node(name: str, ctx: PresetContext) -> Optional[str]:
+    """Resolve a stored *external* (foreign-namespace) node name.
+
+    External names are captured verbatim (``'alien_999:sphere'``; a leading
+    ``:`` marks an explicit root-namespace node, ``':sphere'``) and are never
+    relocated into ``ctx.target_ns``. ``ctx.ext_ns_map`` remaps the namespace
+    first (full prefix, then its top-level root, so ``{'alien_999': 'alien01'}``
+    also covers ``alien_999:fx:sphere``); the remapped then the stored name are
+    tried as-is. No any-namespace fallback: a missing external node usually
+    just means the other asset is not in this shot, and callers should report
+    it at a lower severity than a missing internal node.
+    """
+    if not ctx.apply_external:
+        return None
+    short = name.split("|")[-1]
+    leafless_ns = _node_namespace(short) or ":"
+    candidates = []
+    mapped_ns = ctx.ext_ns_map.get(leafless_ns)
+    if mapped_ns is None and ":" in leafless_ns.strip(":"):
+        # Root-level remap covering nested categories (alien_999:fx -> ...).
+        root, rest = leafless_ns.split(":", 1)
+        root_mapped = ctx.ext_ns_map.get(root)
+        if root_mapped is not None:
+            mapped_ns = rest if root_mapped in (":", "") else f"{root_mapped}:{rest}"
+    if mapped_ns is not None:
+        leaf = short.split(":")[-1]
+        if mapped_ns in (":", ""):
+            candidates.append(f":{leaf}")
+        else:
+            candidates.append(f"{mapped_ns}:{leaf}")
+    candidates.append(short)
+    for cand in candidates:
+        if cmds.objExists(cand):
+            return cand
+    logger.info(f"resolve_external_node: '{name}' not in scene (expected when "
+                f"the external asset is absent from this shot)")
+    return None
+
+
 class ConnectionComponent(PresetComponent):
     """Capture / restore a node's connections as remappable plug pairs.
 
-    Stores namespace-stripped directed pairs (``{"pairs": [[src, dst], ...]}``)
-    and replays them through :class:`PresetContext` so a rebuilt graph reconnects
-    under a new namespace. ``io`` selects the captured directions as
-    ``(incoming, outgoing)`` booleans. Incoming-only by default - in a
-    whole-graph rebuild every node records its own inputs, so capturing outputs
-    too would just duplicate. Use ``io=(True, True)`` for single-node presets
-    that must also keep their downstream links (e.g. mesh -> shadingGroup,
-    constraint -> driven node).
+    Stores directed pairs (``{"pairs": [[src, dst], ...]}``) and replays them
+    through :class:`PresetContext` so a rebuilt graph reconnects under a new
+    namespace. ``io`` selects the captured directions as ``(incoming,
+    outgoing)`` booleans. Incoming-only by default - in a whole-graph rebuild
+    every node records its own inputs, so capturing outputs too would just
+    duplicate. Use ``io=(True, True)`` for single-node presets that must also
+    keep their downstream links (e.g. mesh -> shadingGroup, constraint ->
+    driven node).
+
+    Namespace semantics - the captured node's namespace is *the asset*:
+
+    - **internal** plugs (same asset) are namespace-stripped so the preset
+      relocates onto ``man_02`` etc. via ``ctx.target_ns``.
+    - **external** plugs (another namespace: the other character, a shot
+      collider) keep their namespace verbatim when
+      ``keep_external_namespace`` is True (default) - a root-namespace
+      external node is stored with an explicit leading ``:``. Their top-level
+      namespaces are recorded in the slice's ``external_ns`` list so apply /
+      report can tell the two classes apart without re-parsing pairs. On
+      apply they resolve through :func:`resolve_external_node`
+      (``ctx.ext_ns_map`` remap, no relocation) and are skipped wholesale
+      when ``ctx.apply_external`` is False. With
+      ``keep_external_namespace=False`` everything is stripped (legacy
+      behavior, lossy in multi-asset shots).
+    - ``recursive_namespace=True`` widens "the asset" from the node's exact
+      namespace to its top-level root: with categorising namespaces like
+      ``man_01:cfx`` / ``man_01:animation``, sibling categories count as
+      internal and are stored relative (``animation:mesh``). Off by default -
+      then only plugs in exactly the node's namespace are internal.
     """
 
     key = "connections"
@@ -311,9 +413,13 @@ class ConnectionComponent(PresetComponent):
 
     def __init__(self,
                  io: tuple = (True, False),
-                 skip_types: tuple = _DEFAULT_SKIP_CONN_TYPES):
+                 skip_types: tuple = _DEFAULT_SKIP_CONN_TYPES,
+                 keep_external_namespace: bool = True,
+                 recursive_namespace: bool = False):
         self.io = (bool(io[0]), bool(io[1]))
         self.skip_types = tuple(skip_types)
+        self.keep_external_namespace = keep_external_namespace
+        self.recursive_namespace = recursive_namespace
 
     def _targets(self, node: "Any") -> List[str]:
         """The actual Maya nodes this wrapper owns (transform and/or shape)."""
@@ -334,14 +440,51 @@ class ConnectionComponent(PresetComponent):
         except Exception:
             return True
 
+    def _store_plug(self,
+                    plug: str,
+                    asset_ns: str,
+                    external_ns: set) -> str:
+        """Return the stored form of ``plug``, recording foreign namespaces.
+
+        Internal plugs come out asset-relative (namespace stripped, or stripped
+        down to the sub-namespace in recursive mode); external plugs keep their
+        namespace, with a leading ``:`` marking explicit root. Top-level
+        namespaces of external plugs accumulate into ``external_ns``.
+        """
+        node_part, sep, attr_part = plug.partition(".")
+        short = node_part.split("|")[-1].lstrip(":")
+        ns = _node_namespace(short)
+
+        if not self.keep_external_namespace:
+            return f"{short.split(':')[-1]}{sep}{attr_part}"
+
+        if (self.recursive_namespace and asset_ns and ns
+                and ns.split(":")[0] == asset_ns.split(":")[0]):
+            # Same asset root (own or sibling category): store relative to the
+            # root so target_ns (the new root) restores the category path.
+            stored = short.split(":", 1)[1]
+        elif ns == asset_ns:
+            stored = short.split(":")[-1]
+        elif ns:
+            external_ns.add(ns.split(":")[0])
+            stored = short
+        else:
+            # Foreign node sitting in the root namespace (shot-level item).
+            external_ns.add(":")
+            stored = f":{short}"
+        return f"{stored}{sep}{attr_part}"
+
     def capture(self, node: "Any", ctx: PresetContext) -> Optional[Dict]:
         targets = self._targets(node)
         local_short = {t.split("|")[-1].split(":")[-1] for t in targets}
+        asset_ns = _node_namespace(targets[0])
+        external_ns: set = set()
         pairs: List[List[str]] = []
         seen = set()
 
         def _add(src: str, dst: str):
-            key = (_strip_plug(src), _strip_plug(dst))
+            key = (self._store_plug(src, asset_ns, external_ns),
+                   self._store_plug(dst, asset_ns, external_ns))
             if key not in seen:
                 seen.add(key)
                 pairs.append([key[0], key[1]])
@@ -362,19 +505,55 @@ class ConnectionComponent(PresetComponent):
                     if not self._skip(other, local_short):
                         _add(local, other)   # this node -> other
 
-        return {"pairs": pairs} if pairs else None
+        if not pairs:
+            return None
+        data: Dict[str, Any] = {"pairs": pairs}
+        if self.keep_external_namespace:
+            # Always written (even empty) so apply can tell a new-format slice
+            # (relative names may contain ':') from a legacy all-stripped one.
+            data["asset_ns"] = asset_ns
+            data["external_ns"] = sorted(external_ns)
+        return data
 
-    def _resolve_plug(self, plug: str, ctx: PresetContext) -> Optional[str]:
+    @staticmethod
+    def _is_external(stored_node: str, data: Dict) -> bool:
+        """True when a stored node name was captured as external.
+
+        Legacy slices (no ``external_ns`` key) are all-internal by
+        construction. In new slices a leading ``:`` marks a root-namespace
+        external; otherwise the name's top-level namespace is checked against
+        the recorded ``external_ns`` list (relative internal names from
+        recursive captures may contain ``:`` too, so the colon alone does not
+        decide).
+        """
+        if "external_ns" not in data:
+            return False
+        if stored_node.startswith(":"):
+            return True
+        if ":" not in stored_node:
+            return False
+        return stored_node.split(":")[0] in data["external_ns"]
+
+    def _resolve_plug(self, plug: str, data: Dict, ctx: PresetContext) -> Optional[str]:
         node_part, _, attr_part = plug.partition(".")
-        resolved = resolve_scene_node(node_part, ctx)
+        if self._is_external(node_part, data):
+            resolved = resolve_external_node(node_part, ctx)
+        else:
+            resolved = resolve_scene_node(node_part, ctx)
         if not resolved:
             return None
         return f"{resolved}.{attr_part}"
 
     def apply(self, node: "Any", data: Dict, ctx: PresetContext) -> None:
+        skipped_external = 0
         for src, dst in data.get("pairs", []):
-            s = self._resolve_plug(src, ctx)
-            d = self._resolve_plug(dst, ctx)
+            if not ctx.apply_external and (
+                    self._is_external(_plug_node(src), data)
+                    or self._is_external(_plug_node(dst), data)):
+                skipped_external += 1
+                continue
+            s = self._resolve_plug(src, data, ctx)
+            d = self._resolve_plug(dst, data, ctx)
             if not s or not d:
                 continue
             try:
@@ -382,6 +561,9 @@ class ConnectionComponent(PresetComponent):
                     cmds.connectAttr(s, d, force=True)
             except Exception as e:
                 logger.warning(f"ConnectionComponent: connect {s} -> {d} failed: {e}")
+        if skipped_external:
+            logger.info(f"ConnectionComponent: skipped {skipped_external} "
+                        f"external connection(s) (ctx.apply_external=False)")
 
 
 # ---------------------------------------------------------------------------
@@ -628,16 +810,16 @@ class GeometryComponent(PresetComponent):
 
 
 # ---------------------------------------------------------------------------
-# Animation component (keyframes)
+# Keyframe component (animCurves)
 # ---------------------------------------------------------------------------
 
 def apply_anim_curve(plug: str, cdata: Dict, clear: bool = True) -> None:
     """Write a captured animation curve onto ``plug`` (``node.attr``).
 
-    The reusable primitive behind AnimationComponent.apply - exposed so a curve
+    The reusable primitive behind KeyframeComponent.apply - exposed so a curve
     captured on one node can be retargeted onto a *different* plug (e.g. baking
     a joint's animation onto a control). ``cdata`` is one attr's dict from a
-    captured ``animation`` slice (``keys`` + ``weighted`` / ``pre`` / ``post``).
+    captured ``keyframes`` slice (``keys`` + ``weighted`` / ``pre`` / ``post``).
 
     Args:
         plug: Target ``node.attr`` to key.
@@ -680,7 +862,7 @@ def apply_anim_curve(plug: str, cdata: Dict, clear: bool = True) -> None:
 
 
 def flatten_animation(anim_data: Dict) -> Dict[str, Dict]:
-    """Merge a captured ``animation`` slice's role dicts into ``{attr: cdata}``.
+    """Merge a captured ``keyframes`` slice's role dicts into ``{attr: cdata}``.
 
     A capture splits curves by role (``transform`` / ``shape`` / ``node``);
     retargeting onto another node usually wants them flat, keyed by attribute.
@@ -691,8 +873,13 @@ def flatten_animation(anim_data: Dict) -> Dict[str, Dict]:
     return flat
 
 
-class AnimationComponent(PresetComponent):
-    """Capture / restore keyframe animation on a node's attributes.
+class KeyframeComponent(PresetComponent):
+    """Capture / restore keyframed animCurves on a node's attributes.
+
+    Named "keyframes" rather than "animation" on purpose: a channel can also
+    be animated by an expression (or a driven connection), which this component
+    does not capture - expressions come through as connections today and may
+    get their own component later.
 
     Extends the historical value-only snapshot (``{attr: [(time, value)]}``,
     see presetSaver/dw_maps) to a full curve round-trip: per key it also stores
@@ -701,12 +888,12 @@ class AnimationComponent(PresetComponent):
     values.
 
     Opt-in (``enabled_by_default = False``): include it with
-    ``createPreset(only=[..., "animation"])``. Values are split by role
+    ``createPreset(only=[..., "keyframes"])``. Values are split by role
     (``transform`` / ``shape`` / ``node``) like AttributeComponent. Blend is not
     applied to curves - animation is restored wholesale.
     """
 
-    key = "animation"
+    key = "keyframes"
     enabled_by_default = False
 
     def _capture_target(self, target: str) -> Dict[str, Any]:
@@ -785,6 +972,26 @@ class AnimationComponent(PresetComponent):
                 plug = f"{target}.{attr}"
                 if cmds.objExists(plug):
                     apply_anim_curve(plug, cdata)
+
+
+def collect_preset_namespaces(nodes: Dict[str, Dict]) -> Dict[str, list]:
+    """Summarize the namespaces referenced by captured entries.
+
+    Scans the connection slices for their recorded ``asset_ns`` /
+    ``external_ns`` and returns ``{"asset": [...], "external": [...]}``
+    (``:`` stands for the root namespace). Stored in the envelope so a remap
+    UI can list its options without parsing every pair of every node.
+    """
+    asset: set = set()
+    external: set = set()
+    for body in nodes.values():
+        conn = body.get("connections")
+        if not isinstance(conn, dict):
+            continue
+        if "asset_ns" in conn:
+            asset.add(conn["asset_ns"] or ":")
+        external.update(conn.get("external_ns", []))
+    return {"asset": sorted(asset), "external": sorted(external)}
 
 
 # ---------------------------------------------------------------------------
@@ -917,6 +1124,7 @@ def save_preset_file(nodes: List[Any],
     if not data["nodes"]:
         logger.warning(f"save_preset_file: nothing captured, '{path}' not written")
         return False
+    data["namespaces"] = collect_preset_namespaces(data["nodes"])
     logger.info(f"Saving preset to {path}")
     return dw_json.save_json(path, data, defer=defer)
 
@@ -924,7 +1132,9 @@ def save_preset_file(nodes: List[Any],
 def load_preset_file(path: str,
                      target_ns: str = ":",
                      create: bool = True,
-                     remap: Optional[Dict[str, str]] = None) -> List[Any]:
+                     remap: Optional[Dict[str, str]] = None,
+                     apply_external: bool = True,
+                     ext_ns_map: Optional[Dict[str, str]] = None) -> List[Any]:
     """Rebuild every node in a saved preset file. Returns the wrapped nodes.
 
     Args:
@@ -934,12 +1144,19 @@ def load_preset_file(path: str,
         remap: Optional ``{stored_identity: scene_node}`` overrides, seeded
             into the context's name map before anything applies - use it when
             a driver was renamed between save and load.
+        apply_external: When False, connections captured toward *other*
+            namespaces (external assets) are skipped instead of resolved.
+        ext_ns_map: External-namespace remap, e.g. ``{"alien_999": "alien01",
+            ":": "man_01", "god_00": ":"}``. The file's top-level
+            ``namespaces["external"]`` lists valid keys.
     """
     data = dw_json.load_json(path)
     if not data or data.get("format") != PRESET_FORMAT:
         logger.warning(f"load_preset_file: '{path}' is not a {PRESET_FORMAT} file.")
         return []
-    ctx = PresetContext(target_ns=target_ns, create=create)
+    ctx = PresetContext(target_ns=target_ns, create=create,
+                        apply_external=apply_external,
+                        ext_ns_map=dict(ext_ns_map or {}))
     if remap:
         ctx.name_map.update(remap)
     return [node_from_preset(identity, body, ctx)

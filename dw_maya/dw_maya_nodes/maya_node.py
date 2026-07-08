@@ -61,8 +61,8 @@ class MayaNode(ObjPointer):
     #: values AttributeComponent writes afterwards give the right world pose.
     preset_components = (pcomp.HierarchyComponent(), # restore parenting
                          pcomp.AttributeComponent(), # store attributes
-                         pcomp.ConnectionComponent(), # save connections
-                         pcomp.AnimationComponent()) # save animation curves
+                         pcomp.ConnectionComponent(io=(True, True)), # save connections
+                         pcomp.KeyframeComponent()) # save keyframed animCurves (opt-in)
 
     def __init__(self, name: str,
                  preset: Optional[Dict] = None,
@@ -612,7 +612,7 @@ class MayaNode(ObjPointer):
         """Yield the components selected for this pass.
 
         ``only`` restricts to the given component keys (and overrides
-        ``enabled_by_default``, so opt-in components like animation can be
+        ``enabled_by_default``, so opt-in components like keyframes can be
         included explicitly). ``skip`` removes keys. With neither, every
         default-on component runs.
         """
@@ -709,6 +709,7 @@ class MayaNode(ObjPointer):
         data = {"format": pcomp.PRESET_FORMAT,
                 "version": pcomp.PRESET_VERSION,
                 "nodes": self.createPreset(only=only, skip=skip)}
+        data["namespaces"] = pcomp.collect_preset_namespaces(data["nodes"])
         logger.info(f"Saving preset to {path}")
         return dw_maya.dw_presets_io.save_json(path, data, defer=defer)
 
@@ -717,15 +718,25 @@ class MayaNode(ObjPointer):
                    blend: float = 1.0,
                    target_ns: str = ":",
                    only: Optional[list] = None,
-                   skip: Optional[list] = None) -> None:
-        """Load a ``dw_preset`` file and apply it onto this node."""
+                   skip: Optional[list] = None,
+                   apply_external: bool = True,
+                   ext_ns_map: Optional[Dict] = None) -> None:
+        """Load a ``dw_preset`` file and apply it onto this node.
+
+        ``apply_external`` / ``ext_ns_map`` control connections captured toward
+        other namespaces (external assets): skip them wholesale, or remap their
+        namespace (``{"alien_999": "alien01", ":": "man_01"}``) - see
+        ``PresetContext``.
+        """
         data = dw_maya.dw_presets_io.load_json(path)
         if not data:
             return
         if data.get("format") != pcomp.PRESET_FORMAT:
             logger.warning(f"loadPreset: '{path}' is not a {pcomp.PRESET_FORMAT} file.")
             return
-        ctx = pcomp.PresetContext(target_ns=target_ns, blend=blend)
+        ctx = pcomp.PresetContext(target_ns=target_ns, blend=blend,
+                                  apply_external=apply_external,
+                                  ext_ns_map=dict(ext_ns_map or {}))
         self.applyPreset(data, ctx, only=only, skip=skip)
 
     def listConnections(self, **kwargs) -> list:

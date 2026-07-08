@@ -333,8 +333,8 @@ def test_geometry_rebuild_from_empty():
                 cmds.delete(n)
 
 
-def test_animation_roundtrip():
-    """AnimationComponent is opt-in and round-trips keys + values."""
+def test_keyframe_roundtrip():
+    """KeyframeComponent is opt-in and round-trips keys + values."""
     tr = cmds.polyCube(name="dw_anim_cube")[0]
     try:
         plug = f"{tr}.translateX"
@@ -344,20 +344,20 @@ def test_animation_roundtrip():
         m = MayaNode(tr)
 
         # Opt-in: absent from a default preset.
-        _assert("animation" not in m.createPreset()["dw_anim_cube"],
-                "animation should be off by default")
+        _assert("keyframes" not in m.createPreset()["dw_anim_cube"],
+                "keyframes should be off by default")
 
-        preset = m.createPreset(only=["animation"])
-        anim = preset["dw_anim_cube"]["animation"]
+        preset = m.createPreset(only=["keyframes"])
+        anim = preset["dw_anim_cube"]["keyframes"]
         _assert("transform" in anim and "translateX" in anim["transform"],
-                f"translateX animation not captured: {anim}")
+                f"translateX keys not captured: {anim}")
         _assert(len(anim["transform"]["translateX"]["keys"]) == 3,
                 "expected 3 keys captured")
 
         cmds.cutKey(plug, clear=True)
         _assert(cmds.keyframe(plug, query=True, keyframeCount=True) == 0,
                 "keys not cleared")
-        m.applyPreset(preset, only=["animation"])
+        m.applyPreset(preset, only=["keyframes"])
         _assert(cmds.keyframe(plug, query=True, keyframeCount=True) == 3,
                 "keys not restored")
         cmds.currentTime(10)
@@ -366,6 +366,135 @@ def test_animation_roundtrip():
     finally:
         if cmds.objExists(tr):
             cmds.delete(tr)
+
+
+# ---------------------------------------------------------------------------
+# Cross-namespace connections (asset vs external)
+# ---------------------------------------------------------------------------
+
+def _ensure_ns(path: str) -> None:
+    """Create a (possibly nested) namespace if missing."""
+    current = ""
+    for part in path.split(":"):
+        full = f"{current}:{part}" if current else part
+        if not cmds.namespace(exists=f":{full}"):
+            cmds.namespace(add=part, parent=f":{current}" if current else ":")
+        current = full
+
+
+def _remove_ns(ns: str) -> None:
+    if cmds.namespace(exists=f":{ns}"):
+        cmds.namespace(removeNamespace=f":{ns}", deleteNamespaceContent=True)
+
+
+def test_connection_external_namespace():
+    """Foreign-namespace links survive verbatim; ext_ns_map / apply_external work."""
+    for ns in ("man_01", "man_02", "alien_999", "alien_01"):
+        _ensure_ns(ns)
+    shot = None
+    try:
+        drv = cmds.createNode("transform", name="man_01:dw_xns_driver")
+        dst = cmds.createNode("transform", name="man_01:dw_xns_node")
+        alien = cmds.createNode("transform", name="alien_999:dw_xns_collider")
+        shot = cmds.createNode("transform", name="dw_xns_shotsphere")
+        cmds.connectAttr(f"{drv}.translateX", f"{dst}.translateX")
+        cmds.connectAttr(f"{alien}.translateY", f"{dst}.translateY")
+        cmds.connectAttr(f"{shot}.translateZ", f"{dst}.translateZ")
+
+        preset = MayaNode(dst).createPreset(only=["connections"])
+        conn = preset["dw_xns_node"]["connections"]
+        pairs = conn["pairs"]
+        _assert(["dw_xns_driver.translateX", "dw_xns_node.translateX"] in pairs,
+                f"internal pair should be ns-stripped: {pairs}")
+        _assert(["alien_999:dw_xns_collider.translateY",
+                 "dw_xns_node.translateY"] in pairs,
+                f"external pair should keep its namespace: {pairs}")
+        _assert([":dw_xns_shotsphere.translateZ",
+                 "dw_xns_node.translateZ"] in pairs,
+                f"root external should carry an explicit ':' : {pairs}")
+        _assert(conn["asset_ns"] == "man_01", f"asset_ns wrong: {conn['asset_ns']}")
+        _assert(set(conn["external_ns"]) == {"alien_999", ":"},
+                f"external_ns wrong: {conn['external_ns']}")
+        summary = pcomp.collect_preset_namespaces(preset)
+        _assert(summary == {"asset": ["man_01"],
+                            "external": [":", "alien_999"]},
+                f"namespace summary wrong: {summary}")
+
+        # Apply onto man_02 with the alien remapped alien_999 -> alien_01.
+        drv2 = cmds.createNode("transform", name="man_02:dw_xns_driver")
+        dst2 = cmds.createNode("transform", name="man_02:dw_xns_node")
+        alien2 = cmds.createNode("transform", name="alien_01:dw_xns_collider")
+        ctx = pcomp.PresetContext(target_ns="man_02",
+                                  ext_ns_map={"alien_999": "alien_01"})
+        MayaNode(dst2).applyPreset(preset, ctx, only=["connections"])
+        _assert(cmds.isConnected(f"{drv2}.translateX", f"{dst2}.translateX"),
+                "internal connection not retargeted to man_02")
+        _assert(cmds.isConnected(f"{alien2}.translateY", f"{dst2}.translateY"),
+                "external connection not remapped alien_999 -> alien_01")
+        _assert(cmds.isConnected(f"{shot}.translateZ", f"{dst2}.translateZ"),
+                "root external connection not restored as-is")
+
+        # apply_external=False: internal restored, externals left alone.
+        for plug in ("translateX", "translateY", "translateZ"):
+            conns = cmds.listConnections(f"{dst2}.{plug}", source=True,
+                                         destination=False, plugs=True) or []
+            for s in conns:
+                cmds.disconnectAttr(s, f"{dst2}.{plug}")
+        ctx = pcomp.PresetContext(target_ns="man_02", apply_external=False)
+        MayaNode(dst2).applyPreset(preset, ctx, only=["connections"])
+        _assert(cmds.isConnected(f"{drv2}.translateX", f"{dst2}.translateX"),
+                "internal connection should still apply")
+        _assert(not cmds.listConnections(f"{dst2}.translateY", source=True,
+                                         destination=False),
+                "external connection applied despite apply_external=False")
+        _assert(not cmds.listConnections(f"{dst2}.translateZ", source=True,
+                                         destination=False),
+                "root external applied despite apply_external=False")
+    finally:
+        if shot and cmds.objExists(shot):
+            cmds.delete(shot)
+        for ns in ("man_01", "man_02", "alien_999", "alien_01"):
+            _remove_ns(ns)
+
+
+def test_connection_recursive_namespace():
+    """recursive_namespace=True keeps sibling categories asset-relative."""
+    for ns in ("man_01:cfx", "man_01:anm", "man_02:cfx", "man_02:anm"):
+        _ensure_ns(ns)
+    try:
+        drv = cmds.createNode("transform", name="man_01:anm:dw_rns_drv")
+        dst = cmds.createNode("transform", name="man_01:cfx:dw_rns_node")
+        cmds.connectAttr(f"{drv}.translateX", f"{dst}.translateX")
+
+        # Default (recursive off): the sibling category is another namespace,
+        # so it is captured as external and kept verbatim.
+        flat = pcomp.ConnectionComponent(io=(True, False)) \
+            .capture(MayaNode(dst), pcomp.PresetContext())
+        _assert(["man_01:anm:dw_rns_drv.translateX",
+                 "dw_rns_node.translateX"] in flat["pairs"],
+                f"non-recursive capture wrong: {flat['pairs']}")
+        _assert(flat["external_ns"] == ["man_01"],
+                f"sibling category should be external by default: {flat}")
+
+        # Recursive: the whole man_01 root is the asset, names go relative.
+        comp = pcomp.ConnectionComponent(io=(True, False),
+                                         recursive_namespace=True)
+        data = comp.capture(MayaNode(dst), pcomp.PresetContext())
+        _assert(["anm:dw_rns_drv.translateX",
+                 "cfx:dw_rns_node.translateX"] in data["pairs"],
+                f"recursive capture wrong: {data['pairs']}")
+        _assert(data["external_ns"] == [],
+                f"recursive capture should have no external ns: {data}")
+
+        # Relative names re-qualify under the new asset root.
+        drv2 = cmds.createNode("transform", name="man_02:anm:dw_rns_drv")
+        dst2 = cmds.createNode("transform", name="man_02:cfx:dw_rns_node")
+        comp.apply(MayaNode(dst2), data, pcomp.PresetContext(target_ns="man_02"))
+        _assert(cmds.isConnected(f"{drv2}.translateX", f"{dst2}.translateX"),
+                "recursive pair not retargeted onto man_02 categories")
+    finally:
+        for ns in ("man_01", "man_02"):
+            _remove_ns(ns)
 
 
 _ALL_TESTS = [
@@ -381,7 +510,9 @@ _ALL_TESTS = [
     ("GeometryComponent dense file stress",        test_geometry_file_stress),
     ("GeometryComponent count-mismatch skip",      test_geometry_count_mismatch_skips),
     ("GeometryComponent rebuild from empty",       test_geometry_rebuild_from_empty),
-    ("AnimationComponent opt-in + key round-trip",  test_animation_roundtrip),
+    ("KeyframeComponent opt-in + key round-trip",  test_keyframe_roundtrip),
+    ("Connection external-namespace handling",     test_connection_external_namespace),
+    ("Connection recursive_namespace mode",        test_connection_recursive_namespace),
 ]
 
 

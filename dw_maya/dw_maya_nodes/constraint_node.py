@@ -263,7 +263,7 @@ class Constraint(MayaNode):
     preset_components = (ConstraintNetworkComponent(),
                          pcomp.AttributeComponent(),
                          pcomp.ConnectionComponent(io=(True, True)),
-                         pcomp.AnimationComponent())
+                         pcomp.KeyframeComponent())
 
 
 register_type('constraint', Constraint)
