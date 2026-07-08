@@ -497,6 +497,96 @@ def test_connection_recursive_namespace():
             _remove_ns(ns)
 
 
+def test_duplicate_with_constraint():
+    """duplicate_nodes keeps inputs + rebuilds the constraint on the copy."""
+    from dw_maya.dw_duplication import duplicate_nodes
+
+    made = []
+    try:
+        driver = cmds.createNode("transform", name="dw_dup_driver")
+        col = cmds.createNode("transform", name="dw_dup_col")
+        extra = cmds.createNode("transform", name="dw_dup_extra")
+        out = cmds.createNode("transform", name="dw_dup_out")
+        made += [driver, col, extra, out]
+        pc = cmds.parentConstraint(driver, col, maintainOffset=True)[0]
+        cmds.connectAttr(f"{extra}.scaleY", f"{col}.scaleY")     # shared input
+        cmds.connectAttr(f"{col}.visibility", f"{out}.visibility")  # output
+
+        dups = duplicate_nodes([col])
+        made += [d.tr or d.node for d in dups]
+        _assert(len(dups) == 2, f"expected copy + constraint, got {len(dups)}")
+        dup = dups[0].tr
+        _assert(dup == "dw_dup_col1", f"unexpected duplicate name: {dup}")
+
+        # New constraint drives the copy, from the same driver.
+        dup_cons = set(cmds.listConnections(dup, source=True,
+                                            destination=False,
+                                            type="parentConstraint") or [])
+        _assert(dup_cons and pc not in dup_cons,
+                f"copy should have its own constraint: {dup_cons}")
+        new_pc = dup_cons.pop()
+        targets = cmds.parentConstraint(new_pc, query=True, targetList=True)
+        _assert(targets == [driver], f"wrong constraint driver: {targets}")
+
+        # Shared input replayed; original's outgoing NOT stolen.
+        _assert(cmds.isConnected(f"{extra}.scaleY", f"{dup}.scaleY"),
+                "incoming connection not shared with the copy")
+        _assert(cmds.isConnected(f"{col}.visibility", f"{out}.visibility"),
+                "duplicate stole the original's outgoing connection")
+
+        # Original untouched: its own constraint still wired.
+        _assert(cmds.isConnected(f"{pc}.constraintTranslateX",
+                                 f"{col}.translateX"),
+                "original constraint broken by the duplicate")
+        _assert(cmds.objExists(new_pc) and new_pc != pc,
+                "constraint was reused instead of duplicated")
+    finally:
+        for n in made:
+            if cmds.objExists(n):
+                cmds.delete(n)
+
+
+def test_clipboard_roundtrip():
+    """save_to_clipboard / list / info / load round-trip in a private dir."""
+    import dw_maya.dw_presets_io.preset_clipboard as clip
+
+    keep = os.environ.get(clip.CLIPBOARD_ENV)
+    os.environ[clip.CLIPBOARD_ENV] = tempfile.mkdtemp(prefix="dw_cliptest_")
+    tr = None
+    try:
+        tr = cmds.createNode("transform", name="dw_clip_node")
+        cmds.setAttr(f"{tr}.translateX", 4.25)
+
+        path = clip.save_to_clipboard([tr], "dw_test_entry")
+        _assert(path and os.path.isfile(path), "clipboard file not written")
+        _assert("dw_test_entry" in clip.list_clipboard(),
+                f"entry not listed: {clip.list_clipboard()}")
+        info = clip.clipboard_info("dw_test_entry")
+        _assert(info["nodes"] == {"dw_clip_node": "transform"},
+                f"info nodes wrong: {info.get('nodes')}")
+
+        cmds.delete(tr)
+        tr = None
+        rebuilt = clip.load_from_clipboard("dw_test_entry")
+        _assert(rebuilt and cmds.objExists("dw_clip_node"),
+                "clipboard load did not rebuild the node")
+        tr = "dw_clip_node"
+        _assert(_close(cmds.getAttr(f"{tr}.translateX"), 4.25),
+                f"attr not restored: {cmds.getAttr(f'{tr}.translateX')}")
+
+        _assert(clip.clear_clipboard("dw_test_entry") == 1,
+                "clear_clipboard should remove one file")
+        _assert("dw_test_entry" not in clip.list_clipboard(),
+                "entry still listed after clear")
+    finally:
+        if tr and cmds.objExists(tr):
+            cmds.delete(tr)
+        if keep is None:
+            os.environ.pop(clip.CLIPBOARD_ENV, None)
+        else:
+            os.environ[clip.CLIPBOARD_ENV] = keep
+
+
 _ALL_TESTS = [
     ("createPreset shape (transform+shape roles)", test_create_preset_shape),
     ("applyPreset round-trip",                     test_apply_preset_roundtrip),
@@ -513,6 +603,8 @@ _ALL_TESTS = [
     ("KeyframeComponent opt-in + key round-trip",  test_keyframe_roundtrip),
     ("Connection external-namespace handling",     test_connection_external_namespace),
     ("Connection recursive_namespace mode",        test_connection_recursive_namespace),
+    ("duplicate_nodes with constraint",            test_duplicate_with_constraint),
+    ("Preset clipboard round-trip",                test_clipboard_roundtrip),
 ]
 
 

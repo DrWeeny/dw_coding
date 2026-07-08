@@ -1040,7 +1040,11 @@ def resolve_preset_class(node_type: str):
     return cls
 
 
-def node_from_preset(identity: str, body: Dict, ctx: Optional[PresetContext] = None) -> "Any":
+def node_from_preset(identity: str,
+                     body: Dict,
+                     ctx: Optional[PresetContext] = None,
+                     only: Optional[list] = None,
+                     skip: Optional[list] = None) -> "Any":
     """Rebuild a single node from a stored entry, dispatching on its node type.
 
     Resolves the stored ``nodeType`` through the node registry so the correct
@@ -1052,6 +1056,7 @@ def node_from_preset(identity: str, body: Dict, ctx: Optional[PresetContext] = N
         identity: Logical name of the entry (namespace-stripped).
         body: The entry dict (``nodeType`` + component slices).
         ctx: Apply context. A fresh one (create=True) is built when omitted.
+        only / skip: Component-key filters forwarded to ``applyPreset``.
 
     Returns:
         The wrapped node instance.
@@ -1073,7 +1078,7 @@ def node_from_preset(identity: str, body: Dict, ctx: Optional[PresetContext] = N
         # avoids the accessors that assume an existing node, and suppresses the
         # "does not exist" warning the bare-name ctor would log.
         node = cls(target, node_type)
-    node.applyPreset({"nodes": {identity: body}}, ctx)
+    node.applyPreset({"nodes": {identity: body}}, ctx, only=only, skip=skip)
     # Identity is transform-based (presetIdentity), so map it to the transform:
     # node.node defaults to the shape, and consumers of the map (constraint
     # rebuilds, connection replay) expect the name the identity stood for.
@@ -1087,7 +1092,7 @@ def save_preset_file(nodes: List[Any],
                      path: str,
                      only: Optional[list] = None,
                      skip: Optional[list] = None,
-                     defer: bool = False) -> bool:
+                     defer: bool = False) -> Optional[str]:
     """Save several nodes into one ``dw_preset`` envelope, in the given order.
 
     Order matters on load: :func:`load_preset_file` rebuilds in saved order
@@ -1104,6 +1109,9 @@ def save_preset_file(nodes: List[Any],
         path: Output json path.
         only / skip: Component-key filters forwarded to ``createPreset``.
         defer: Forwarded to ``save_json``.
+
+    Returns:
+        The written path, or None when nothing was captured / the write failed.
     """
     import dw_maya.dw_lsNode as dw_lsNode
 
@@ -1123,10 +1131,10 @@ def save_preset_file(nodes: List[Any],
         data["nodes"].update(node.createPreset(only=only, skip=skip))
     if not data["nodes"]:
         logger.warning(f"save_preset_file: nothing captured, '{path}' not written")
-        return False
+        return None
     data["namespaces"] = collect_preset_namespaces(data["nodes"])
     logger.info(f"Saving preset to {path}")
-    return dw_json.save_json(path, data, defer=defer)
+    return path if dw_json.save_json(path, data, defer=defer) else None
 
 
 def load_preset_file(path: str,

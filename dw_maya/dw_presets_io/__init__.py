@@ -71,11 +71,17 @@ from .preset_components import (PresetContext, PresetComponent,
                                 node_from_preset, load_preset_file, save_preset_file,
                                 collect_preset_namespaces,
                                 PRESET_FORMAT, PRESET_VERSION)
+from .preset_clipboard import (clipboard_dir, save_to_clipboard,
+                               list_clipboard, clipboard_info,
+                               load_from_clipboard, clear_clipboard)
 
 __all__ = ['get_folder', 'make_dir', 'save_json', 'load_json',
            'merge_json', 'update_json', 'createAttrPreset', 'blendAttrDic',
            'PresetContext', 'PresetComponent', 'AttributeComponent',
            'ConnectionComponent', 'GeometryComponent', 'KeyframeComponent',
            'apply_attr', 'apply_anim_curve', 'flatten_animation',
-           'node_from_preset', 'load_preset_file', 'save_preset_file', 'collect_preset_namespaces',
+           'node_from_preset', 'load_preset_file', 'save_preset_file',
+           'collect_preset_namespaces',
+           'clipboard_dir', 'save_to_clipboard', 'list_clipboard',
+           'clipboard_info', 'load_from_clipboard', 'clear_clipboard',
            'PRESET_FORMAT', 'PRESET_VERSION']
