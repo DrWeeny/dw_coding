@@ -743,6 +743,73 @@ class MayaNode(ObjPointer):
         connection_list = cmds.listConnections(self.node, **kwargs)
         return list(set(connection_list))
 
+    def disconnectAttr(self,
+                       attr: Optional[str] = None,
+                       source: bool = True,
+                       destination: bool = True) -> list:
+        """Break connections on one attribute, or clean the whole node.
+
+        Args:
+            attr: Attribute name; resolved with the usual transform/shape
+                duality. When None, every connected plug on the transform
+                and shape is disconnected.
+            source: Break incoming connections.
+            destination: Break outgoing connections.
+
+        Returns:
+            list: The broken connections as (source_plug, destination_plug).
+
+        Example:
+            >>> node.disconnectAttr('translateX')  # both directions
+            >>> node.disconnectAttr('inMesh', destination=False)
+            >>> node.disconnectAttr()  # clean every plug on the node
+        """
+        if attr is not None:
+            plug = getattr(self, attr)
+            if not isinstance(plug, MAttr):
+                logger.warning(f"disconnectAttr: no attribute '{attr}' "
+                               f"on '{self.node}'")
+                return []
+            return plug.disconnectAttr(source=source,
+                                       destination=destination)
+
+        targets = [self.tr]
+        if self.sh and self.sh != self.tr:
+            targets.append(self.sh)
+        targets = [t for t in targets if t] or [self.node]
+
+        # Dedupe: a tr <-> sh link shows up from both sides of the query.
+        pairs = []
+        seen = set()
+        for target in targets:
+            found = []
+            if source:
+                raw = cmds.listConnections(target, plugs=True,
+                                           connections=True,
+                                           source=True,
+                                           destination=False) or []
+                found += [(src, dst) for dst, src in zip(raw[::2], raw[1::2])]
+            if destination:
+                raw = cmds.listConnections(target, plugs=True,
+                                           connections=True,
+                                           source=False,
+                                           destination=True) or []
+                found += list(zip(raw[::2], raw[1::2]))
+            for pair in found:
+                if pair not in seen:
+                    seen.add(pair)
+                    pairs.append(pair)
+
+        broken = []
+        for src, dst in pairs:
+            try:
+                cmds.disconnectAttr(src, dst)
+                broken.append((src, dst))
+            except RuntimeError as e:
+                logger.warning(f"disconnectAttr: could not break "
+                               f"{src} -> {dst}: {e}")
+        return broken
+
     def listHistory(self, **kwargs) -> list:
         """List node history with optional filtering.
 

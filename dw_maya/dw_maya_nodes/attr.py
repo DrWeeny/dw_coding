@@ -1,4 +1,5 @@
 from maya import cmds
+import maya.api.OpenMaya as om
 from typing import Any, Dict, Optional, List
 from dw_maya.dw_decorators import acceptString
 import re
@@ -6,6 +7,35 @@ import re
 from dw_logger import get_logger
 
 logger = get_logger()
+
+
+def _iter_connected_pairs(plug: om.MPlug,
+                          source: bool = True,
+                          destination: bool = True):
+    """Yield (source_plug, destination_plug) names for every connection on
+    ``plug``, recursing into compound children and array elements.
+
+    cmds.listConnections on a parent plug does not report its children's
+    connections (asking on ``translate`` misses a keyed ``translateX``);
+    walking the MPlug tree catches them all with the exact plug names.
+    """
+    if plug.isArray:
+        for i in range(plug.evaluateNumElements()):
+            yield from _iter_connected_pairs(plug.elementByPhysicalIndex(i),
+                                             source,
+                                             destination)
+        return
+    if plug.isCompound:
+        for i in range(plug.numChildren()):
+            yield from _iter_connected_pairs(plug.child(i),
+                                             source,
+                                             destination)
+        # No return: the compound itself can be connected as a whole.
+    if source and plug.isDestination:
+        yield (plug.source().name(), plug.name())
+    if destination and plug.isSource:
+        for dst in plug.destinations():
+            yield (plug.name(), dst.name())
 
 class MAttr(object):
     """Wrapper for Maya attributes providing Pythonic access.
@@ -520,17 +550,39 @@ class MAttr(object):
         """List all connections to/from this attribute."""
         return cmds.listConnections(f'{self._node}.{self.attr}', **kwargs)
 
-    def disconnectAttr(self, source=True, destination=True):
-        """Disconnect this attribute from its connections."""
-        attr = f'{self._node}.{self.attr}'
-        conn = cmds.listConnections(attr, p=True, d=False, s=True,
-                                    scn=True)
-        dest = cmds.listConnections(attr, p=True, d=True, s=False,
-                                    scn=True)
-        if conn and source:
-            for c in conn:
-                cmds.disconnectAttr(c, attr)
+    def disconnectAttr(self,
+                       source: bool = True,
+                       destination: bool = True) -> list:
+        """Break every connection on this plug, children/elements included.
 
-        if dest and destination:
-            for d in dest:
-                cmds.disconnectAttr(attr, d)
+        Walks the MPlug tree so a child/element connection is caught when
+        asking on the parent (e.g. a keyed ``translateX`` when asking on
+        ``translate``), and the disconnect targets the plug really wired in
+        (a unitConversion, not the node beyond it).
+
+        Args:
+            source: Break incoming connections.
+            destination: Break outgoing connections.
+
+        Returns:
+            list: The broken connections as (source_plug, destination_plug).
+        """
+        attr = f'{self._node}.{self.attr}'
+        sel = om.MSelectionList()
+        try:
+            sel.add(attr)
+            plug = sel.getPlug(0)
+        except RuntimeError:
+            logger.warning(f"disconnectAttr: no plug '{attr}'")
+            return []
+        pairs = list(_iter_connected_pairs(plug, source, destination))
+
+        broken = []
+        for src, dst in pairs:
+            try:
+                cmds.disconnectAttr(src, dst)
+                broken.append((src, dst))
+            except RuntimeError as e:
+                logger.warning(f"disconnectAttr: could not break "
+                               f"{src} -> {dst}: {e}")
+        return broken
