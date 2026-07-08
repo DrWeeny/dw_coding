@@ -195,10 +195,26 @@ def _replay_connections(created: List[Any],
                          ctx, only=["connections"])
 
 
+def _resolve_parent_target(parent_to: Any) -> Optional[str]:
+    """Return the parent target as a scene node name, or None when unusable.
+
+    Accepts a node name or a MayaNode instance (its transform is used).
+    """
+    if parent_to is None or parent_to == "":
+        return None
+    target = parent_to if isinstance(parent_to, str) else parent_to.tr
+    if not target or not cmds.objExists(target):
+        logger.warning(f"duplicate_nodes: parent_to '{target}' not found, "
+                       f"ignored")
+        return None
+    return target
+
+
 def duplicate_nodes(nodes: Optional[List[Any]] = None,
                     with_constraints: bool = True,
                     with_outputs: bool = False,
-                    skip: Optional[list] = None) -> List[Any]:
+                    skip: Optional[list] = None,
+                    parent_to: Optional[Any] = None) -> List[Any]:
     """Hybrid duplicate: native copy for the content, preset for the graph.
 
     Each node is copied with ``cmds.duplicate`` (every shape type survives
@@ -215,6 +231,10 @@ def duplicate_nodes(nodes: Optional[List[Any]] = None,
             destination plug takes one incoming connection, so forcing the
             duplicate's outputs would steal them from the original.
         skip: Extra component keys to leave out of the replay.
+        parent_to: Node name or MayaNode to parent every duplicated source
+            under (world position kept). Constraints are left where the
+            native command puts them. Default None keeps the original's
+            parent.
 
     Returns:
         The wrapped duplicates (sources first, then their constraints).
@@ -222,6 +242,7 @@ def duplicate_nodes(nodes: Optional[List[Any]] = None,
     wrapped = _wrap_nodes(nodes)
     if not wrapped:
         return []
+    parent_target = _resolve_parent_target(parent_to)
 
     entries = _capture_entries(wrapped, with_constraints, skip,
                                light_geometry=True)
@@ -244,6 +265,13 @@ def duplicate_nodes(nodes: Optional[List[Any]] = None,
             continue
         dup = cmds.duplicate(original)[0]
         dup_path = cmds.ls(dup, long=True)[0]
+        # Re-parent BEFORE recording the copy in the rename map: the map
+        # stores full paths, and a later cmds.parent would invalidate them.
+        if parent_target:
+            dup_node = _wrap(dup_path)
+            if dup_node and dup_node.tr:
+                dup_node.parentTo(parent_target)
+                dup_path = cmds.ls(dup_node.tr, long=True)[0]
         # The duplicate drags constrained children along as dead constraint
         # copies (no targets, but still wired to the copy's channels) - they
         # would fight the proper rebuild in pass 1b.
@@ -279,7 +307,8 @@ def duplicate_nodes(nodes: Optional[List[Any]] = None,
 def mn_duplicate_nodes(nodes: Optional[List[Any]] = None,
                        with_constraints: bool = True,
                        with_outputs: bool = False,
-                       skip: Optional[list] = None) -> List[Any]:
+                       skip: Optional[list] = None,
+                       parent_to: Optional[Any] = None) -> List[Any]:
     """Pure preset duplicate: every copy is rebuilt from its captured entry.
 
     Same machinery as loading a preset file (``node_from_preset``), so it
@@ -298,6 +327,9 @@ def mn_duplicate_nodes(nodes: Optional[List[Any]] = None,
         with_outputs: Replay outgoing connections too (see
             :func:`duplicate_nodes`).
         skip: Extra component keys to leave out of the copy.
+        parent_to: Node name or MayaNode to parent every duplicated source
+            under (world position kept); wins over the stored hierarchy
+            slice. Default None keeps the preset placement.
 
     Returns:
         The wrapped duplicates (sources first, then their constraints).
@@ -305,6 +337,7 @@ def mn_duplicate_nodes(nodes: Optional[List[Any]] = None,
     wrapped = _wrap_nodes(nodes)
     if not wrapped:
         return []
+    parent_target = _resolve_parent_target(parent_to)
 
     entries = _capture_entries(wrapped, with_constraints, skip)
 
@@ -320,6 +353,15 @@ def mn_duplicate_nodes(nodes: Optional[List[Any]] = None,
     pass1_skip = ["connections"] + list(skip or [])
     created = [pcomp.node_from_preset(identity, body, ctx, skip=pass1_skip)
                for identity, body, _, _ in entries]
+
+    # Re-parent the source copies (constraints stay where their rebuild put
+    # them), refreshing the rename map entries the move invalidates.
+    if parent_target:
+        for node, (identity, _, _, needs_preset) in zip(created, entries):
+            if needs_preset or node is None or not node.tr:
+                continue
+            node.parentTo(parent_target)
+            ctx.name_map[identity] = node.tr or node.node
 
     # Pass 2 - replay connections now that every copy exists.
     _replay_connections(created, entries, ctx, with_outputs, skip)
