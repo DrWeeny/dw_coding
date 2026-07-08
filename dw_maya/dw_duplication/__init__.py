@@ -17,8 +17,12 @@ Animation/Cache Functions:
 Specialized Functions:
     dupWithPivotAdjustment: Duplicates with customized pivot placement
     instanceObjects: Creates Maya instances instead of full duplicates
-    duplicate_nodes: Preset-based duplicate keeping the incoming graph
-                     (inputs shared, driving constraints rebuilt on the copy)
+    duplicate_nodes: Hybrid duplicate keeping the incoming graph - native
+                     cmds.duplicate for the content (full shape fidelity),
+                     preset replay for inputs and driving constraints
+    mn_duplicate_nodes: Same graph replay, but the copies themselves are
+                     rebuilt purely from their preset entry (round-trip
+                     check; mesh-only geometry)
 
 Common Use Cases:
     - Clean mesh duplication: dupMesh()
@@ -44,8 +48,8 @@ from .dw_dup_bake import dupAnim
 from .dw_outmesh import outmesh
 from .dw_with_cache import dupWCache
 from .dw_dup_change_pivot import dupWithPivotAdjustment
-from .dw_dup_preset import duplicate_nodes
+from .dw_dup_preset import duplicate_nodes, mn_duplicate_nodes
 
 __all__ = ['cleanDuplication', 'dupMesh', 'freshDuplicate', 'dupAnim',
            'outmesh', 'dupWCache', 'dupWithPivotAdjustment',
-           'duplicate_nodes']
+           'duplicate_nodes', 'mn_duplicate_nodes']
