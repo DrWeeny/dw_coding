@@ -49,9 +49,10 @@ class MayaNode(ObjPointer):
         - Index 0 returns the transform, 1 the first shape, and N>=2 the
           N-th shape (a transform may carry several shapes — common in rig /
           groom setups).
-        - ``.sh`` always returns the *first* shape (warns once when the
-          transform has more than one; use :meth:`shapes` / :meth:`list_shapes`
-          or ``node[2]``, ``node[3]``… to reach the others).
+        - ``.sh`` follows the current item selection: ``node[2].sh`` is the
+          second shape (same as ``node[2].node``). With item 0/1 it returns
+          the *first* shape and warns once when the transform has more; use
+          :meth:`shapes` / :meth:`list_shapes` to list them all.
         - Attributes are accessed directly using Python attribute syntax
         - Shape attributes take priority when duplicated with transform
     """
@@ -179,9 +180,19 @@ class MayaNode(ObjPointer):
 
 
     @classmethod
-    def specialize(cls, node: str):
+    def specialize(cls, node: str) -> 'MayaNode':
+        """Wrap ``node`` in the most specific registered MayaNode subclass.
+
+        Resolution follows the node registry: exact node-type match ->
+        inherited type walk -> condition-based match -> plain MayaNode.
+
+        Returns:
+            An *instance* of the resolved class, ready to use.
+        """
         from dw_maya.dw_node_registry import resolve
-        return resolve(node)
+        # first call return the class
+        # second call instantiate the class
+        return resolve(node)(node)
 
     @property
     def __node(self) -> str:
@@ -235,6 +246,10 @@ class MayaNode(ObjPointer):
     def sh(self) -> str:
         """Return the shape node, or the node itself if it is not a transform.
 
+        Respects the current item selection: after ``node[2]`` this returns
+        the second shape (matching ``node[2].node``). With item 0/1 it
+        returns the first shape.
+
         Always uses ``fullPath=True`` on :func:`cmds.listRelatives` so the
         returned name is unambiguous when duplicate short names exist in the
         scene.
@@ -255,9 +270,16 @@ class MayaNode(ObjPointer):
         _sh = self.shapes()
         if not _sh:
             return self.tr
-        # A transform can own several shapes (rig / groom). ``.sh`` keeps its
-        # historical meaning — the first shape — but warns once so callers know
-        # to reach for shapes()/list_shapes() or node[2], node[3]…
+        # Follow the current item selection: node[2].sh must match
+        # node[2].node (the second shape), node[3] the third, etc.
+        idx = self.__dict__.get('item', 1)
+        if idx >= 2:
+            shape_idx = idx - 1
+            if 0 <= shape_idx < len(_sh):
+                return _sh[shape_idx]
+        # A transform can own several shapes (rig / groom). With item 0/1,
+        # ``.sh`` keeps its historical meaning — the first shape — but warns
+        # once so callers know to select the others via node[2], node[3]…
         if len(_sh) > 1 and not self.__dict__.get('_multi_shape_warned'):
             self.__dict__['_multi_shape_warned'] = True
             logger.warning(
@@ -608,20 +630,26 @@ class MayaNode(ObjPointer):
 
     def _iter_components(self,
                          only: Optional[list] = None,
-                         skip: Optional[list] = None):
+                         skip: Optional[list] = None,
+                         present: Optional[set] = None):
         """Yield the components selected for this pass.
 
         ``only`` restricts to the given component keys (and overrides
         ``enabled_by_default``, so opt-in components like keyframes can be
         included explicitly). ``skip`` removes keys. With neither, every
         default-on component runs.
+
+        ``present`` (apply passes only) is the set of slice keys stored in the
+        preset body: a default-off component whose slice exists in the preset
+        was opted in at capture time, so it applies without needing ``only``.
         """
         for comp in self.preset_components:
             if only is not None:
                 if comp.key not in only:
                     continue
             elif not comp.enabled_by_default:
-                continue
+                if present is None or comp.key not in present:
+                    continue
             if skip and comp.key in skip:
                 continue
             yield comp
@@ -677,7 +705,8 @@ class MayaNode(ObjPointer):
                     preset: dict,
                     ctx: Optional['pcomp.PresetContext'] = None,
                     only: Optional[list] = None,
-                    skip: Optional[list] = None) -> None:
+                    skip: Optional[list] = None,
+                    blend: Optional[float] = None) -> None:
         """Apply a preset onto this node, component by component.
 
         Args:
@@ -685,14 +714,20 @@ class MayaNode(ObjPointer):
                 bare ``{identity: body}`` mapping.
             ctx: Apply context (namespace / blend / create). Default blend 1.0.
             only / skip: Component-key filters (see :meth:`_iter_components`).
+            blend: Attribute blend factor (0.0 = keep current, 1.0 = preset
+                values). Only AttributeComponent interpolates; keyframes and
+                connections restore wholesale. When both ``ctx`` and ``blend``
+                are given, ``blend`` wins.
         """
         ctx = ctx or pcomp.PresetContext()
+        if blend is not None:
+            ctx.blend = blend
         nodes = preset.get("nodes", preset) if isinstance(preset, dict) else {}
         body = self._select_body(nodes)
         if not body:
             logger.warning(f"applyPreset: no matching entry for '{self.node}'")
             return
-        for comp in self._iter_components(only, skip):
+        for comp in self._iter_components(only, skip, present=set(body)):
             if comp.key in body:
                 try:
                     comp.apply(self, body[comp.key], ctx)
