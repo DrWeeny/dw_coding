@@ -210,8 +210,11 @@ def createNConstraint(selection=list, constraintType=str,
 
         if constraintType == "transform" and parentObject != "":
             if cmds.nodeType(parentObject) != "transform":
-                tforms = dwu.lsTr(parentObject)
-                parentObject = tforms[0]
+                # parentObject is a shape here - lsTr filters on transforms
+                # and would return [], walk up to the parent instead
+                tforms = cmds.listRelatives(parentObject, parent=True,
+                                            path=True)
+                parentObject = tforms[0] if tforms else parentObject
 
             cmds.parent(constraint, parentObject, s=1, r=1)
             print("m_createNConstraint.kParentingMsg")
@@ -338,8 +341,10 @@ def createNConstraint(selection=list, constraintType=str,
             componentObjects.append(nObject)
             cmds.connectAttr(nObject + ".nucleusId", component + ".objectId")
 
-        tforms = dwu.lsTr(obj)
-        objTform = tforms[0]
+        # obj is a shape (from ls -o -dag) - walk up to its transform;
+        # lsTr would ls it against type='transform' and return []
+        tforms = cmds.listRelatives(obj, parent=True, path=True)
+        objTform = tforms[0] if tforms else obj
         numComponents = componentIndexOffset
         inputMeshComponents = []
         inputMesh = []

@@ -29,6 +29,7 @@ import dw_maya.dw_deformers as dwdef
 import dw_maya.dw_presets_io.preset_components as pcomp
 from dw_maya.dw_nucleus_utils.dw_create_hierarchy import create_hierarchy, build_sim_step
 from dw_maya.dw_nucleus_utils.dw_make_collide import make_collide_ncloth
+from dw_maya.dw_nucleus_utils.dw_create_nconstraint import createNConstraint
 from dw_maya.dw_constants import SPECIAL_TOKENS
 
 from .registry import OpBackend, register
@@ -436,6 +437,95 @@ class PresetOp(OpBackend):
         names = [n.node for n in nodes]
         ctx.info(node_id, f'preset applied to {len(names)} node(s)')
         return {'nodes': names}
+
+
+@register
+class ConstraintOp(OpBackend):
+    """Create a dynamicConstraint, or rebuild constraints from a preset.
+
+    Two modes:
+        create (default): feed the input members (objects or components,
+            order matters: constrained members first, target last) to the
+            createNConstraint python port. The solver is inferred from the
+            members' nucleus objects.
+        preset: params['preset_path'] switches to rebuilding a saved
+            nConstraint dw_preset envelope (createAllConstraintPresets).
+
+    Params:
+        method (str): transform, pointToSurface (default), slideOnSurface,
+            weldBorders, force, match, tearableSurface, collisionExclusion,
+            disableCollision, pointToPoint.
+        name (str): Constraint node name.
+        preset_path (str): Preset mode - envelope json path.
+        target_ns (str): Preset mode - namespace (default ':').
+
+    Inputs:
+        first: Group output (or list) - constrained members/components.
+        second: Optional group output - target surface/object.
+
+    Outputs:
+        {'constraints': [transforms], 'shapes': [dynamicConstraint shapes]}
+    """
+
+    op_type = 'constraint'
+    dcc = 'maya'
+
+    METHODS = ('transform', 'pointToSurface', 'slideOnSurface',
+               'weldBorders', 'force', 'match', 'tearableSurface',
+               'collisionExclusion', 'disableCollision', 'pointToPoint')
+
+    def validate_params(self, params: dict) -> list:
+        if params.get('preset_path'):
+            if not os.path.isfile(str(params['preset_path'])):
+                return [f"preset file not found: {params['preset_path']}"]
+            return []
+        method = params.get('method', 'pointToSurface')
+        if method not in self.METHODS:
+            return [f"method must be one of {self.METHODS}, got '{method}'"]
+        return []
+
+    @staticmethod
+    def _members(value) -> list:
+        if isinstance(value, dict):
+            value = value.get('nodes')
+        return _as_list(value)
+
+    def execute(self, node_id, params, inputs, ctx):
+        # Preset mode: rebuild saved constraint networks
+        if params.get('preset_path'):
+            transforms = dwnx.createAllConstraintPresets(
+                str(params['preset_path']),
+                targ_ns=params.get('target_ns', ':'))
+            shapes = cmds.ls(transforms, dag=True, type='dynamicConstraint')
+            ctx.info(node_id, f'{len(transforms)} constraint(s) rebuilt '
+                              f'from preset')
+            return {'constraints': transforms, 'shapes': shapes}
+
+        # Create mode: constrained members first, target last
+        members = (self._members(inputs.get('first'))
+                   + self._members(inputs.get('second')))
+        if not members:
+            raise ValueError("no input members ('first' / 'second')")
+        created = createNConstraint(selection=members,
+                                    constraintType=params.get('method',
+                                                              'pointToSurface')) or []
+        shapes = cmds.ls(created, dag=True, type='dynamicConstraint')
+        if not shapes:
+            raise ValueError(f'createNConstraint created no constraint from '
+                             f'{len(members)} member(s)')
+        transforms = list(dict.fromkeys(
+            cmds.listRelatives(shapes, parent=True) or []))
+        # createNConstraint's own name kwarg only names the shape; rename
+        # the transform/shape pair explicitly
+        if params.get('name') and len(shapes) == 1:
+            new_shape = cmds.rename(shapes[0], params['name'] + 'Shape')
+            new_tr = cmds.rename(cmds.listRelatives(new_shape, parent=True)[0],
+                                 params['name'])
+            transforms = [new_tr]
+            shapes = cmds.listRelatives(new_tr, shapes=True)
+        ctx.info(node_id, f'{len(shapes)} constraint(s) created on '
+                          f'{len(members)} member(s)')
+        return {'constraints': transforms, 'shapes': shapes}
 
 
 @register
