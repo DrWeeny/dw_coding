@@ -1,14 +1,8 @@
-import sys, os
-
-# ----- Edit sysPath -----#
-rdPath = 'E:\\dw_coding\\dw_open_tools'
-if not rdPath in sys.path:
-    print(f"Add {rdPath} to sysPath")
-    sys.path.insert(0, rdPath)
 from math import sqrt
 from maya import cmds, mel
 from .dw_nx_mel import *
 import dw_maya.dw_maya_utils as dwu
+import dw_maya.dw_maya_nodes as dwnn
 from dw_maya.dw_decorators import acceptString
 import dw_maya.dw_duplication as dwdup
 import dw_maya.dw_deformers as dwdef
@@ -61,6 +55,9 @@ def make_collide_ncloth(sel_mesh: str, nucleus: str = None, **kwargs) -> list:
     new_rigid_nodes = []
 
     for mesh in input_meshes:
+        # Pointer-based handle: survives any transform/shape rename below
+        mesh_node = dwnn.MayaNode(mesh)
+
         # Check if the mesh is already an nRigid
         nBase = find_type_in_history(mesh, "nRigid", future=1, past=0)
         create_n_rigid = True
@@ -68,41 +65,47 @@ def make_collide_ncloth(sel_mesh: str, nucleus: str = None, **kwargs) -> list:
         if nBase:
             acN = cmds.listConnections(f"{nBase}.currentState")
             if acN and acN[0] == nucleus:
-                nRigid = nBase
-                collide = cmds.getAttr(f"{nRigid}.collide")
-                if collide:
+                rigid_node = dwnn.MayaNode(nBase)
+                if rigid_node.collide.getAttr():
                     cmds.warning(f"{mesh} already collides in nucleus {nucleus}")
                 else:
-                    cmds.setAttr(f"{nRigid}.collide", True)
+                    rigid_node.collide.setAttr(True)
                     create_n_rigid = False
 
         # Create nRigid if necessary
         if create_n_rigid:
-            tform = cmds.listRelatives(mesh, p=True, path=True)[0]
-            nRigid = cmds.createNode('nRigid', parent=tform)
+            rigid_node = dwnn.MayaNode(cmds.createNode('nRigid',
+                                                       parent=mesh_node.tr))
 
             if name:
-                nRigid_tr = cmds.rename(tform, name)
-                nRigid = cmds.listRelatives(nRigid_tr, type='nRigid')[0]
+                # Rename the nRigid shape itself, never the user's mesh
+                # transform. Plain cmds.rename on purpose: MayaNode.rename()
+                # has transform/shape-pair semantics and would rename the
+                # mesh transform the nRigid is parented under.
+                cmds.rename(rigid_node.node, name)
 
-            new_rigid_nodes.append(nRigid)
+            new_rigid_nodes.append(rigid_node.node)
 
             # Set initial nRigid properties
-            mel.eval(f'hideParticleAttrs("{nRigid}");')
-            cmds.setAttr(f"{nRigid}.selfCollide", False)
-            cmds.connectAttr("time1.outTime", f"{nRigid}.currentTime")
-            cmds.connectAttr(f"{mesh}.worldMesh", f"{nRigid}.inputMesh")
-            add_passive_to_nsystem(nRigid, nucleus)
-            cmds.connectAttr(f"{nucleus}.startFrame", f"{nRigid}.startFrame")
+            mel.eval(f'hideParticleAttrs("{rigid_node.node}");')
+            rigid_node.selfCollide.setAttr(False)
+            cmds.connectAttr("time1.outTime", f"{rigid_node.node}.currentTime")
+            cmds.connectAttr(f"{mesh_node.node}.worldMesh",
+                             f"{rigid_node.node}.inputMesh")
+            add_passive_to_nsystem(rigid_node.node, nucleus)
+            cmds.connectAttr(f"{nucleus}.startFrame",
+                             f"{rigid_node.node}.startFrame")
 
-        cmds.setAttr(f"{mesh}.quadSplit", 0)
+        mesh_node.quadSplit.setAttr(0)
 
-        # Calculate thickness if not provided
+        # Calculate thickness if not provided (per mesh — do not write back
+        # into the `thickness` kwarg or the first mesh's value leaks onto
+        # every following mesh)
         if not thickness:
-            bbox = cmds.exactWorldBoundingBox(mesh)
+            bbox = cmds.exactWorldBoundingBox(mesh_node.node)
             x, y, z = (bbox[3] - bbox[0]), (bbox[4] - bbox[1]), (bbox[5] - bbox[2])
             bbox_surface_area = 2 * ((x * y) + (x * z) + (y * z))
-            num_faces = cmds.polyEvaluate(mesh, face=True)
+            num_faces = cmds.polyEvaluate(mesh_node.node, face=True)
             max_ratio = 0.003
             min_width = 0.0001
             obj_size = sqrt(bbox_surface_area)
@@ -110,22 +113,22 @@ def make_collide_ncloth(sel_mesh: str, nucleus: str = None, **kwargs) -> list:
 
             if num_faces > 0:
                 estimated_edge_length = sqrt(bbox_surface_area / num_faces)
-                thickness = 0.13 * estimated_edge_length
-                if thickness < new_width:
-                    new_width = thickness
+                estimated_thickness = 0.13 * estimated_edge_length
+                if estimated_thickness < new_width:
+                    new_width = estimated_thickness
 
             if new_width < min_width:
                 new_width = min_width
         else:
             new_width = thickness
 
-        cmds.setAttr(f"{nRigid}.thickness", new_width)
+        rigid_node.thickness.setAttr(new_width)
 
         if preset == 1:
             new_width *= 4
 
         # Apply collider preset
-        set_collider_preset(nRigid, preset, new_width)
+        set_collider_preset(rigid_node.node, preset, new_width)
 
     # Force update of the nucleus node to reset the collide objects if start frame is changed
     cmds.getAttr(f"{nucleus}.forceDynamics")
@@ -201,8 +204,8 @@ def set_collider_preset(rigid=list, preset=2, thickness=.01):
     if len(sel) == 0:
         cmds.error('No Rigids in Selection')
     for i in sel:
-        for a, v in mypresets[order_sel[preset]].iteritems():
-            cmds.setAttr('{}.{}'.format(i, a), v)
+        for a, v in mypresets[order_sel[preset]].items():
+            cmds.setAttr(f'{i}.{a}', v)
 
 
 def combine_wrap(name: str,

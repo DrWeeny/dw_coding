@@ -35,7 +35,7 @@ class NConstraintNetworkComponent(pcomp.PresetComponent):
             return None
 
     def apply(self, node, data, ctx):
-        node._apply_network(data, namespace=ctx.target_ns)
+        node._apply_network(data, ctx=ctx)
 
 
 class nConstraint(dwnn.MayaNode):
@@ -147,36 +147,56 @@ class nConstraint(dwnn.MayaNode):
         return components
 
     def _apply_network(self,
-                       network:dict,
-                       namespace:str=None,
-                       target:str=None):
+                       network: dict,
+                       namespace: str = None,
+                       target: str = None,
+                       ctx=None):
         """Rebuild the constraint network from a network dict.
 
         Reconnects the dynamicConstraint to its nucleus, recreates/reconnects
         nComponents, restores their attributes, rewires nBase inputs and maps.
         Requires the cloth/hair/nucleus targets to already exist in the scene.
+        Stored names resolve through the shared preset resolver
+        (``resolve_scene_node``), so targets are found whether the rig lives
+        at root, in ``ctx.target_ns`` or in any other unambiguous namespace.
 
         Args:
             network: The network dict (as produced by :attr:`network`).
             namespace: Namespace the targets live in (``:`` / ``''`` for root).
+                Kept for backward compatibility; ignored when ``ctx`` is given.
             target: The constraint node to wire (defaults to this shape).
+            ctx: PresetContext from the component pipeline.
         """
         target = target or self.sh
+        if ctx is None:
+            ctx = pcomp.PresetContext(target_ns=namespace or ':')
 
-        # Validate the cloth/hair/nucleus elements exist
-        nBase = [f'{namespace}:{i.split(".")[-1]}'.replace('::', ':') for i in network['nBases']]
-        if not all(cmds.objExists(j) for j in nBase):
-            invalid_input = ', '.join(nBase)
-            logger.warning(
-                f'Cannot create dynamicConstraint node "{target}" due to missing elements: {invalid_input}')
+        # Resolve the cloth/hair/nucleus elements through the shared resolver
+        resolved = {}
+        missing = []
+        for stored in network.get('nBases', []):
+            stored_node = stored.split('.')[0]
+            scene_node = pcomp.resolve_scene_node(stored_node, ctx)
+            if scene_node:
+                resolved[stored_node] = scene_node
+            else:
+                missing.append(stored_node)
+        if missing:
+            logger.warning(f'Cannot rebuild network of "{target}", missing '
+                           f'elements: {", ".join(missing)}')
             return
 
-        # Connect to nucleus using the shape node
-        nucleus = [f'{namespace}:{n}' if namespace not in [':', ''] else n for n in network['nBases'] if
-                   cmds.nodeType(n) == 'nucleus'][0]
-        # connect to nucleus next available slots : multi = 2
-        for out_attr, in_attr in zip(dwu.get_type_io(target), dwu.get_type_io(nucleus, io=0, multi=2)):
+        # Connect the constraint to its nucleus (next available multi slots)
+        nucleus = next((n for n in resolved.values()
+                        if cmds.nodeType(n) == 'nucleus'), None)
+        if not nucleus:
+            logger.warning(f'No nucleus among the stored nBases of "{target}", '
+                           f'network skipped')
+            return
+        for out_attr, in_attr in zip(dwu.get_type_io(target),
+                                     dwu.get_type_io(nucleus, io=0, multi=2)):
             cmds.connectAttr(out_attr, in_attr, f=True)
+        cmds.connectAttr('time1.outTime', f'{target}.currentTime', f=True)
 
         # Look for nComponents :
         component_connections_list = network.get('nComponent', None)
@@ -184,59 +204,64 @@ class nConstraint(dwnn.MayaNode):
         if not component_connections_list:
             return
 
-        # lets check if components exists, if not, lets create them
-        component_final_list = []
-        for component in component_connections_list:
-            if not cmds.objExists(component[0]):
-                component_node = dwnn.MayaNode(component[0].split(".")[0],
-                                               preset='nComponent')
-            else:
-                component_node = dwnn.MayaNode(component[0])
-            component_final_list.append(component_node)
-
-        # lets iterate with the component list
-        for ccl, cf in zip(component_connections_list, component_final_list):
-            # seek the id number in bracket for destination connection
+        for ccl in component_connections_list:
+            stored_comp = ccl[0].split('.')[0]
+            # index part of the stored "constraintShape.componentIds[idx]"
             idx = ccl[1].split('[')[-1][:-1]
-            suffix = self.tr.rsplit(':', 1)[-1].replace('dynamicConstraint', 'dynC')
-            ncomp_name = f'{namespace}:nComp{idx}_{suffix}' if namespace not in [':',
-                                                                                 ''] else f'nComp{idx}_{suffix}'
+
+            # Reuse the nComponent when it already exists, create it otherwise
+            existing = pcomp.resolve_scene_node(stored_comp, ctx)
+            if existing:
+                cf = dwnn.MayaNode(existing)
+            else:
+                cf = dwnn.MayaNode(stored_comp, 'nComponent')
 
             # Set attributes
-            component_key = f'nComponent_{idx}'
-            component_attr_dic = network.get(component_key, None)
+            component_attr_dic = network.get(f'nComponent_{idx}', None)
             if component_attr_dic:
                 src_component = list(component_attr_dic.keys())[0]
-                dwpreset.dw_preset.blend_attr_dic(src_component, cf.tr, component_attr_dic)
+                dwpreset.dw_preset.blend_attr_dic(src_component,
+                                                  cf.node,
+                                                  component_attr_dic)
 
-            # Connect nComponent to nConstraint using the shape
-            out_attr = dwu.get_type_io(cf.tr)
-            in_attr = dwu.get_type_io(self.sh, io=0, index=0, multi=2)
-            # connect component id
-            cmds.connectAttr(out_attr, in_attr, f=True)
-            # connect time :
-            cmds.connectAttr("time1.outTime", f"{self.sh}.currentTime", f=True)
-
+            # Connect nComponent to nConstraint at the stored index
+            cmds.connectAttr(f'{cf.node}.outComponent',
+                             f'{target}.componentIds[{idx}]',
+                             f=True)
 
             # Connect nBase to nComponent
             nbase_dic_connections = network.get(f'nComponent_{idx}_nbase', None)
-            nmesh_out = nbase_dic_connections[0]
-            cmds.connectAttr(f'{namespace}:{nmesh_out}', f'{cf.tr}.objectId', f=True)
+            if nbase_dic_connections:
+                src_node, src_attr = nbase_dic_connections[0].split('.', 1)
+                src_resolved = pcomp.resolve_scene_node(src_node, ctx)
+                if src_resolved:
+                    cmds.connectAttr(f'{src_resolved}.{src_attr}',
+                                     f'{cf.node}.objectId',
+                                     f=True)
+                else:
+                    logger.warning(f'nComponent_{idx}: nBase source '
+                                   f'"{src_node}" not found, objectId not '
+                                   f'connected')
 
-            # Create and connect maps
-            map_key = f'nComponent_{idx}_maps'
-            map_dic = network.get(map_key, None)
-            if map_key in map_dic:
-                for x, np in enumerate(map_dic):
-                    if map_dic[np]:
-                        texture = map_dic[np]
-                        map_connections = map_dic.get(f'{map_key}_connections', None)
-                        correspondance = dw_maya.dw_presets_io.dw_preset.reconnectPreset(map_connections, True)
-
-                        if texture in correspondance:
-                            texture = correspondance[texture]
-
-                        cmds.connectAttr(f'{texture}.{np}Map', f'{cf.tr}.{np}')
+            # Reconnect texture-driven maps
+            map_dic = network.get(f'nComponent_{idx}_maps', None)
+            if map_dic:
+                map_connections = network.get(f'nComponent_{idx}_maps_connections', None)
+                correspondance = {}
+                if map_connections:
+                    correspondance = dw_maya.dw_presets_io.dw_preset.reconnectPreset(map_connections, True)
+                for map_attr, texture_plug in map_dic.items():
+                    if not texture_plug:
+                        continue
+                    texture = texture_plug.split('.')[0]
+                    if texture in correspondance:
+                        texture = correspondance[texture]
+                    try:
+                        cmds.connectAttr(f'{texture}.{map_attr}Map',
+                                         f'{cf.node}.{map_attr}')
+                    except Exception as e:
+                        logger.warning(f'nComponent_{idx}: map "{map_attr}" '
+                                       f'reconnection failed: {e}')
 
 
 class nComponent(dwnn.MayaNode):

@@ -83,6 +83,19 @@ class MayaNode(ObjPointer):
             self.__dict__['node'] = name
         self.__dict__['item'] = 1  #: int: can be either 0 or 1 and should be exented with Mesh or Cluster
 
+        # Built from a shape that is not the transform's first shape
+        # (e.g. an nRigid parented under the mesh transform): pin the item
+        # index to that shape so .node keeps speaking for it.
+        if _input:
+            _inherited = cmds.nodeType(_input, inherited=True) or []
+            if 'shape' in _inherited:
+                _shapes = self.shapes()
+                _long = cmds.ls(_input, long=True)
+                if _long and _long[0] in _shapes:
+                    _idx = _shapes.index(_long[0]) + 1  # item is 1-based
+                    if _idx > 1:
+                        self.__dict__['item'] = _idx
+
         # Handle preset if provided
         if preset:
             namespace = name.rsplit(':', 1)[0] if ':' in name else ''
@@ -935,6 +948,20 @@ class MayaNode(ObjPointer):
         p = re.compile(pattern)
 
         try:
+            # Pointed shape sharing its transform with sibling shapes
+            # (e.g. an nRigid under the mesh transform): rename it alone —
+            # the pair logic below would hijack the transform's name.
+            # shapes() excludes intermediate (orig) shapes, so a deformed
+            # mesh still takes the normal pair path.
+            _current = self.__node
+            _inherited = cmds.nodeType(_current, inherited=True) or []
+            if 'shape' in _inherited and len(self.shapes()) > 1:
+                _new = cmds.rename(_current, name)
+                self.__dict__['node'] = _new
+                logger.info(f"'{name}': renamed shape only, its transform "
+                            f"'{self.tr}' has sibling shapes.")
+                return self
+
             # Simple rename for single node
             if self.tr == self.sh:
                 cmds.rename(self.tr, name)

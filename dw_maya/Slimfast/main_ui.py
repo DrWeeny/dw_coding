@@ -54,9 +54,9 @@ import dw_maya.dw_nucleus_utils.dw_core
 import dw_maya.dw_nucleus_utils.dw_nucleus_paint
 from dw_logger import get_logger
 
-from dw_ressources import get_ressource_path
+from dw_ressources import get_resource_path
 
-ICON_PIPETTE =  str(get_ressource_path("pipette.png"))
+ICON_PIPETTE = str(get_resource_path("pipette.png"))
 
 logger = get_logger()
 

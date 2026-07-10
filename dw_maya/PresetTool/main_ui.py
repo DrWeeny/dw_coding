@@ -1,23 +1,22 @@
 import os
-import sys
-
-# ----- Edit sysPath -----#
-rdPath = 'E:\\dw_coding\\dw_open_tools'
-if rdPath not in sys.path:
-    print(f"Adding {rdPath} to sys.path")
-    sys.path.insert(0, rdPath)
+import json
+import fnmatch
+import traceback
 
 # Maya-specific imports
 import maya.cmds as cmds
 from maya import OpenMayaUI as omui
 
-# Shiboken and PySide6 for Maya 2022+
-from shiboken6 import wrapInstance
-from PySide6 import QtWidgets, QtCore, QtGui
+from dw_maya.PresetTool.compat import QtWidgets, QtCore, wrapInstance, qt_exec
 
 # External utility imports
+import dw_pipe_project
 import dw_maya.dw_nucleus_utils as dwnx
 import dw_maya.dw_presets_io as dwpreset
+from dw_maya.dw_constants import SPECIAL_TOKENS
+from dw_logger import get_logger
+
+logger = get_logger()
 
 
 def get_maya_main_window():
@@ -38,6 +37,7 @@ def make_chmod_dir(path, mode=0o777, limiter=10):
     :param mode: Permission mode (default is 0o777).
     :param limiter: Limit the depth of path splitting for creating directories (default is 10).
     """
+    path = path.replace('\\', '/')
     path_parts = path.split('/')
     to_check = [path.rsplit('/', x)[0] for x in range(1, limiter + 1) if x <= len(path_parts)]
     to_process = []
@@ -49,31 +49,114 @@ def make_chmod_dir(path, mode=0o777, limiter=10):
     # Create directory using external utility (dw_json)
     dwpreset.make_dir(path)
 
-    # Set permission for each new directory
+    # Set permission for each new directory (best effort - no-op on Windows)
     for dir_path in to_process:
-        os.chmod(dir_path, mode)
+        try:
+            os.chmod(dir_path, mode)
+        except OSError:
+            pass
 
 
 class PresetManager(QtWidgets.QMainWindow):
     type_list = ['character', 'prop']
     node_types = ['hairSystem', 'nCloth', 'nRigid', 'dynamicConstraint', 'nucleus', 'follicle']
     is_checked = [True, True, True, False, True, False]
-    _proj = os.environ.get('PROJ_NAME', 'default_project')
-    _asset = 'winnie'
-    preset_name = 'presetName'
+
+    OPTVAR_ROOT = 'dw_presetTool_root'
+    OPTVAR_TOKEN_RULES = 'dw_presetTool_token_rules'
+    SHOT_SUBDIR = 'data/attr_presets'
+
+    #: (node type or name pattern, attribute, token) applied at save time:
+    #: matching stored values are replaced by the token, which the load side
+    #: expands through SPECIAL_TOKENS.
+    TOKEN_RULES_DEFAULT = [['nucleus', 'startFrame', '$RFSTART']]
 
     def __init__(self, parent=None):
         super(PresetManager, self).__init__(parent or get_maya_main_window())
 
-
-        self._path = f"/people/abtidona/public/{self._proj}/assets/{{}}/{{}}/cfx/master/simRig/data/attr_presets/"
-        self._dynC_path = f"/people/abtidona/public/{self._proj}/assets/{{}}/{{}}/cfx/master/simRig/data/attr_presets/dynC/"
         self._dynC_isChecked = False
+        self.project = dw_pipe_project.get_project()
+        self._restore_root()
+        self.token_rules = self._restore_token_rules()
 
-        self.setGeometry(579, 515, 647, 181)
+        self.setGeometry(579, 515, 647, 221)
         self.setWindowTitle('Preset Manager')
 
         self.initUI()
+        self.refresh_all()
+
+    # ------------------------------------------------------------------
+    # Root persistence (DefaultProject only)
+    # ------------------------------------------------------------------
+
+    def _restore_root(self):
+        """Re-apply the root chosen in a previous session (optionVar)."""
+        if not isinstance(self.project, dw_pipe_project.DefaultProject):
+            return
+        if cmds.optionVar(exists=self.OPTVAR_ROOT):
+            root = cmds.optionVar(q=self.OPTVAR_ROOT)
+            if root:
+                self.project.set_root(root)
+
+    def set_preset_root(self):
+        """File > Set Preset Root: pick the folder presets are stored under."""
+        start = self.project.root if isinstance(self.project, dw_pipe_project.DefaultProject) else ''
+        chosen = QtWidgets.QFileDialog.getExistingDirectory(self,
+                                                            'Choose preset root',
+                                                            start)
+        if chosen:
+            self.project.set_root(chosen)
+            cmds.optionVar(sv=(self.OPTVAR_ROOT, chosen))
+            self.refresh_all()
+
+    def reset_preset_root(self):
+        """File > Reset Root: back to DW_PRESET_PATH env var or temp dir."""
+        self.project.set_root(None)
+        if cmds.optionVar(exists=self.OPTVAR_ROOT):
+            cmds.optionVar(remove=self.OPTVAR_ROOT)
+        self.refresh_all()
+
+    # ------------------------------------------------------------------
+    # Special token rules
+    # ------------------------------------------------------------------
+
+    def _restore_token_rules(self):
+        """Load the token rules saved in a previous session (optionVar)."""
+        if cmds.optionVar(exists=self.OPTVAR_TOKEN_RULES):
+            try:
+                rules = json.loads(cmds.optionVar(q=self.OPTVAR_TOKEN_RULES))
+                return [r for r in rules if len(r) == 3]
+            except (ValueError, TypeError):
+                logger.warning('Invalid saved token rules, using defaults')
+        return [list(r) for r in self.TOKEN_RULES_DEFAULT]
+
+    def edit_token_rules(self):
+        """File > Special Tokens: edit the save-time tokenization rules."""
+        dialog = TokenRulesDialog(self.token_rules, parent=self)
+        if qt_exec(dialog) == QtWidgets.QDialog.Accepted:
+            self.token_rules = dialog.rules()
+            cmds.optionVar(sv=(self.OPTVAR_TOKEN_RULES,
+                               json.dumps(self.token_rules)))
+
+    def _apply_token_rules(self, attr_dic):
+        """Replace stored values with tokens according to the rules.
+
+        A rule matches when its first field equals the entry's stored
+        nodeType, or fnmatches the stored node name (namespace-stripped).
+        """
+        for match, attr, token in self.token_rules:
+            if token not in SPECIAL_TOKENS:
+                logger.warning(f"Unknown token '{token}' in rule, skipped")
+                continue
+            for key, attrs in attr_dic.items():
+                if not isinstance(attrs, dict) or attr not in attrs:
+                    continue
+                if attrs.get('nodeType') == match or fnmatch.fnmatch(key, match):
+                    attrs[attr] = token
+
+    # ------------------------------------------------------------------
+    # UI
+    # ------------------------------------------------------------------
 
     def initUI(self):
         self.centralwidget = QtWidgets.QWidget(self)
@@ -81,28 +164,48 @@ class PresetManager(QtWidgets.QMainWindow):
         main_layout = QtWidgets.QVBoxLayout(self.centralwidget)
         central_layout = QtWidgets.QHBoxLayout()
 
+        # Menu bar
+        menu_file = self.menuBar().addMenu('File')
+        self.act_set_root = menu_file.addAction('Set Preset Root...')
+        self.act_set_root.triggered.connect(self.set_preset_root)
+        self.act_reset_root = menu_file.addAction('Reset Root to Default')
+        self.act_reset_root.triggered.connect(self.reset_preset_root)
+        menu_file.addSeparator()
+        self.act_tokens = menu_file.addAction('Special Tokens...')
+        self.act_tokens.triggered.connect(self.edit_token_rules)
+        if not isinstance(self.project, dw_pipe_project.DefaultProject):
+            # external studio adapter owns the paths
+            self.act_set_root.setEnabled(False)
+            self.act_reset_root.setEnabled(False)
+
         # Layout for saving presets
         vl_save = QtWidgets.QVBoxLayout()
         _width_01 = 180
 
-        # Types ComboBox
+        # Asset / Shot mode
+        self.cb_mode = QtWidgets.QComboBox()
+        self.cb_mode.setFixedWidth(_width_01)
+        self.cb_mode.addItems(['Asset', 'Shot (Maya project)'])
+        vl_save.addWidget(self.cb_mode)
+
+        # Types (asset category) ComboBox - editable for quick tests
         self.cb_types = QtWidgets.QComboBox()
         self.cb_types.setFixedWidth(_width_01)
-        self.cb_types.addItems(self.type_list)
+        self.cb_types.setEditable(True)
         vl_save.addWidget(self.cb_types)
 
-        # Assets ComboBox
+        # Assets ComboBox - editable so any name can be typed and saved
         self.cb_assets = QtWidgets.QComboBox()
         self.cb_assets.setFixedWidth(_width_01)
+        self.cb_assets.setEditable(True)
         vl_save.addWidget(self.cb_assets)
 
         # Preset Name Input
         self.le_preset_name = QtWidgets.QLineEdit()
         self.le_preset_name.setFixedWidth(_width_01)
         self.le_preset_name.setText('defaultPreset')
-        p_maya = QtCore.QRegularExpression("[A-Za-z_0-9]{1,20}")
-        from dw_utils.qt_utils import make_validator
-        validator_maya = make_validator(p_maya)
+        from dw_utils.qt_utils.core import make_validator
+        validator_maya = make_validator("[A-Za-z_0-9]{1,20}")
         self.le_preset_name.setValidator(validator_maya)
         vl_save.addWidget(self.le_preset_name)
 
@@ -149,29 +252,84 @@ class PresetManager(QtWidgets.QMainWindow):
         central_layout.addLayout(vl_load)
         main_layout.addLayout(central_layout)
 
+        # Status bar shows where a Save will actually write
+        self.statusBar()
+
         # Connections
-        self.cb_types.activated.connect(self.update_assets)
-        self.cb_assets.activated.connect(self.populate_presets)
+        self.cb_mode.activated.connect(self.on_mode_changed)
+        self.cb_types.activated.connect(self.on_category_changed)
+        self.cb_assets.activated.connect(self.on_asset_changed)
+        self.cb_assets.lineEdit().editingFinished.connect(self.on_asset_changed)
         self.pb_save.clicked.connect(self.save_preset)
         self.pb_load.clicked.connect(self.load_preset)
+
+    # ------------------------------------------------------------------
+    # Refresh / populate
+    # ------------------------------------------------------------------
+
+    def refresh_all(self):
+        self.populate_categories()
+        self.populate_assets()
+        self.populate_presets()
+        self.update_status()
+
+    def on_mode_changed(self):
+        self.cb_types.setEnabled(not self.shot_mode)
+        self.cb_assets.setEnabled(not self.shot_mode)
+        self.populate_presets()
+        self.update_status()
+
+    def on_category_changed(self):
+        self.populate_assets()
+        self.populate_presets()
+        self.update_status()
+
+    def on_asset_changed(self):
+        self.populate_presets()
+        self.update_status()
+
+    def update_status(self):
+        self.statusBar().showMessage(f"Presets: {self.path}")
+
+    def populate_categories(self):
+        """Fill the category ComboBox from the pipe adapter."""
+        current = self.category
+        self.cb_types.clear()
+        try:
+            categories = self.project.list_asset_categories()
+        except NotImplementedError:
+            categories = []
+        except Exception:
+            logger.error(f"list_asset_categories failed:\n{traceback.format_exc()}")
+            categories = []
+        self.cb_types.addItems(categories or self.type_list)
+        if current:
+            self.cb_types.setEditText(current)
+
+    def populate_assets(self):
+        """Fill the asset ComboBox from the pipe adapter."""
+        current = self.asset
+        self.cb_assets.clear()
+        try:
+            assets = self.project.list_assets(self.category)
+        except NotImplementedError:
+            assets = []
+        except Exception:
+            logger.error(f"list_assets failed:\n{traceback.format_exc()}")
+            assets = []
+        self.cb_assets.addItems(assets)
+        if current:
+            self.cb_assets.setEditText(current)
 
     def populate_nsfilter(self):
         """
         Populate namespace filter ComboBox.
         """
         self.cb_nsfilter.clear()
-        ns_list = cmds.namespaceInfo(lon=True)
-        asset_ns = [ns for ns in ns_list if ns.startswith(self._asset)]
+        ns_list = cmds.namespaceInfo(lon=True) or []
+        ns_list = [ns for ns in ns_list if ns not in ('UI', 'shared')]
         self.cb_nsfilter.addItem(':')
-        self.cb_nsfilter.addItems(asset_ns)
-
-    def update_assets(self):
-        """
-        Update asset list in ComboBox based on project and sequence.
-        """
-        self.cb_assets.clear()
-        asset_list = sorted(os.listdir(f'/work/{self._proj}/assets/{self.seq}'))
-        self.cb_assets.addItems(asset_list)
+        self.cb_nsfilter.addItems(ns_list)
 
     def populate_presets(self):
         """
@@ -214,6 +372,8 @@ class PresetManager(QtWidgets.QMainWindow):
 
             # Create attribute preset dictionary
             attr_dic = dwpreset.createAttrPreset(nodes)
+            # Swap rule-matched values for special tokens ($RFSTART, ...)
+            self._apply_token_rules(attr_dic)
             attr_dic['data_type'] = self.node_types
             full_path = os.path.join(self.path, f"{self.preset_name}.json")
 
@@ -238,29 +398,91 @@ class PresetManager(QtWidgets.QMainWindow):
 
     def load_preset(self):
         """
-        Load the selected preset and apply the saved attributes to the current scene nodes.
+        Load the selected preset: apply the saved attributes to the current
+        scene nodes and, when the Dynamic Constraint Rig checkbox is ticked,
+        rebuild the saved dynamicConstraint network from the dynC subfolder.
         """
         item = self.list_widget.currentItem()
-        if item:
-            preset_name = str(item.text())
-            nodes = cmds.ls(type=self.node_types)
-            full_path = self.path + preset_name + '.json'
-            if os.path.isfile(full_path):
-                data = dwpreset.load_json(full_path)
+        if not item:
+            return
+        preset_name = str(item.text())
+        loaded = False
 
-                for node in nodes:
-                    if node in data:
-                        for attr, value in data[node].items():
-                            cmds.setAttr(f'{node}.{attr}', value)
+        full_path = os.path.join(self.path, preset_name + '.json')
+        if os.path.isfile(full_path):
+            data = dwpreset.load_json(full_path)
+            for key, attrs in data.items():
+                if key == 'data_type' or not isinstance(attrs, dict):
+                    continue
+                node = self._resolve_preset_node(key)
+                if not node:
+                    continue
+                for attr, value in attrs.items():
+                    if attr == 'nodeType':
+                        continue
+                    # Expand special tokens ($RFSTART, ...) at load time
+                    if isinstance(value, str) and value in SPECIAL_TOKENS:
+                        value = SPECIAL_TOKENS[value]()
+                    plug = f'{node}.{attr}'
+                    try:
+                        if cmds.objExists(plug) and cmds.getAttr(plug, settable=True):
+                            if isinstance(value, str):
+                                cmds.setAttr(plug, value, type='string')
+                            else:
+                                cmds.setAttr(plug, value)
+                    except Exception as e:
+                        logger.warning(f'Could not set {plug}: {e}')
+            loaded = True
 
-                print('Preset loaded successfully!')
+        # Rebuild dynamic constraint rig if enabled
+        if self.dynCRig:
+            full_dyn_path = os.path.join(self.dynC_path, preset_name + '.json')
+            if os.path.isfile(full_dyn_path):
+                created = dwnx.createAllConstraintPresets(full_dyn_path,
+                                                          targ_ns=self.ns_filter)
+                print(f'Rebuilt {len(created)} dynamic constraint(s): {created}')
+                loaded = True
+            else:
+                cmds.warning(f'No dynamic constraint preset found: {full_dyn_path}')
+
+        if loaded:
+            print('Preset loaded successfully!')
+        else:
+            cmds.warning(f'Nothing loaded for preset {preset_name} in {self.path}')
+
+    def _resolve_preset_node(self, stored_name):
+        """Resolve a namespace-stripped stored node name to a scene node.
+
+        Tries the namespace filter first, then root, then an unambiguous
+        any-namespace lookup.
+        """
+        if self.ns_filter != ':':
+            candidate = f'{self.ns_filter}:{stored_name}'
+            if cmds.objExists(candidate):
+                return candidate
+        if cmds.objExists(stored_name):
+            return stored_name
+        hits = cmds.ls(stored_name, recursive=True) or []
+        if len(hits) == 1:
+            return hits[0]
+        if hits:
+            logger.warning(f"'{stored_name}' is ambiguous across namespaces "
+                           f"({hits}), skipped")
+        return None
 
     @property
-    def seq(self):
+    def shot_mode(self):
         """
-        Get the current sequence from the ComboBox.
+        True when presets are saved with the current Maya project (shot context).
         """
-        return str(self.cb_types.currentText())
+        return self.cb_mode.currentIndex() == 1
+
+    @property
+    def category(self):
+        """
+        Get the current asset category from the ComboBox.
+        """
+        return str(self.cb_types.currentText()).strip()
 
     @property
     def ns_filter(self):
@@ -279,23 +501,35 @@ class PresetManager(QtWidgets.QMainWindow):
     @property
     def path(self):
         """
-        Get the current path for saving/loading presets based on the project, sequence, and asset.
+        Get the current preset directory.
+
+        Shot mode: current Maya project + data/attr_presets (zero config).
+        Asset mode: asked to the pipe adapter; a broken adapter falls back
+        to the DefaultProject filesystem layout instead of failing.
         """
-        return self._path.format(self.seq, self.asset)
+        if self.shot_mode:
+            workspace = cmds.workspace(query=True, rootDirectory=True)
+            return os.path.join(workspace, *self.SHOT_SUBDIR.split('/'))
+        try:
+            return self.project.get_preset_dir(self.asset, category=self.category)
+        except Exception:
+            logger.error(f"get_preset_dir failed:\n{traceback.format_exc()}")
+            fallback = dw_pipe_project.DefaultProject()
+            return fallback.get_preset_dir(self.asset, category=self.category)
 
     @property
     def dynC_path(self):
         """
         Get the dynamic constraint rig path for saving/loading presets.
         """
-        return self._dynC_path.format(self.seq, self.asset)
+        return os.path.join(self.path, 'dynC')
 
     @property
     def asset(self):
         """
         Get the selected asset from the ComboBox.
         """
-        return str(self.cb_assets.currentText())
+        return str(self.cb_assets.currentText()).strip()
 
     @property
     def preset_name(self):
@@ -303,6 +537,87 @@ class PresetManager(QtWidgets.QMainWindow):
         Get the preset name entered in the line edit widget.
         """
         return self.le_preset_name.text() or 'defaultPreset'
+
+
+class TokenRulesDialog(QtWidgets.QDialog):
+    """Edit the save-time tokenization rules.
+
+    Each row is (node type or name pattern, attribute, token): at save time a
+    stored value whose node matches the first field gets replaced by the
+    token, expanded back to a scene value on load (SPECIAL_TOKENS).
+    """
+
+    HEADERS = ['Node type / pattern', 'Attribute', 'Token']
+
+    def __init__(self, rules, parent=None):
+        super(TokenRulesDialog, self).__init__(parent)
+        self.setWindowTitle('Special Token Rules')
+        self.resize(420, 220)
+
+        layout = QtWidgets.QVBoxLayout(self)
+
+        self.table = QtWidgets.QTableWidget(0, 3, self)
+        self.table.setHorizontalHeaderLabels(self.HEADERS)
+        self.table.horizontalHeader().setStretchLastSection(True)
+        layout.addWidget(self.table)
+
+        for rule in rules:
+            self._add_row(rule)
+
+        hl_buttons = QtWidgets.QHBoxLayout()
+        pb_add = QtWidgets.QPushButton('Add')
+        pb_remove = QtWidgets.QPushButton('Remove')
+        pb_add.clicked.connect(self._on_add)
+        pb_remove.clicked.connect(self._on_remove)
+        hl_buttons.addWidget(pb_add)
+        hl_buttons.addWidget(pb_remove)
+        hl_buttons.addStretch()
+        layout.addLayout(hl_buttons)
+
+        buttons = QtWidgets.QDialogButtonBox(
+            QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel,
+            parent=self)
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+    def _add_row(self, rule=None):
+        rule = rule or ['', '', list(SPECIAL_TOKENS.keys())[0]]
+        row = self.table.rowCount()
+        self.table.insertRow(row)
+
+        item_match = QtWidgets.QTableWidgetItem(rule[0])
+        item_attr = QtWidgets.QTableWidgetItem(rule[1])
+        self.table.setItem(row, 0, item_match)
+        self.table.setItem(row, 1, item_attr)
+
+        cb_token = QtWidgets.QComboBox()
+        cb_token.addItems(list(SPECIAL_TOKENS.keys()))
+        index = cb_token.findText(rule[2])
+        if index >= 0:
+            cb_token.setCurrentIndex(index)
+        self.table.setCellWidget(row, 2, cb_token)
+
+    def _on_add(self):
+        self._add_row()
+
+    def _on_remove(self):
+        row = self.table.currentRow()
+        if row >= 0:
+            self.table.removeRow(row)
+
+    def rules(self):
+        """Return the edited rules, dropping incomplete rows."""
+        result = []
+        for row in range(self.table.rowCount()):
+            match_item = self.table.item(row, 0)
+            attr_item = self.table.item(row, 1)
+            cb_token = self.table.cellWidget(row, 2)
+            match = match_item.text().strip() if match_item else ''
+            attr = attr_item.text().strip() if attr_item else ''
+            if match and attr and cb_token:
+                result.append([match, attr, str(cb_token.currentText())])
+        return result
 
 
 '''

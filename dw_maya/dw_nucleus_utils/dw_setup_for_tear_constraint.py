@@ -1,12 +1,6 @@
 import sys, os
 import maya.cmds as cmds
 
-# ----- Edit sysPath -----#
-rdPath = 'E:\\dw_coding\\dw_open_tools'
-if not rdPath in sys.path:
-    print(f"Add {rdPath} to sysPath")
-    sys.path.insert(0, rdPath)
-
 from .dw_nx_mel import *
 import dw_maya.dw_maya_utils as dwu
 

@@ -21,12 +21,6 @@
 # built-in
 import sys, os, re
 
-# ----- Edit sysPath -----#
-rdPath = 'E:\\dw_coding\\dw_open_tools'
-if not rdPath in sys.path:
-    print(f"Add {rdPath} to sysPath")
-    sys.path.insert(0, rdPath)
-
 # internal
 from maya import cmds, mel
 import maya.OpenMayaUI as omui

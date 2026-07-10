@@ -33,8 +33,8 @@ out = [n for n in out if not n.endswith('_GRO')]
 
 
 gneh = dwnx.create_loca_cluster(_in=nodes,
-                    _out=out,
-                    matrix_node='body_CON',
-                    cam='shotCamera:master',
-                    prefix=CHARACTER,
-                    ctrl=ctrl)
+                                _out=out,
+                                matrix_node='body_CON',
+                                cam='shotCamera:master',
+                                prefix=CHARACTER,
+                                ctrl=ctrl)

@@ -357,9 +357,12 @@ def test_multi_shape_indexing():
                 f"node[2] = '{second}', expected '{expected[1]}'")
         _assert(first != second, "node[1] and node[2] must differ")
 
-        # .sh stays the first shape regardless of index history.
-        _assert(mn.sh.split('|')[-1] == expected[0].split('|')[-1],
-                f".sh = '{mn.sh}', expected first shape '{expected[0]}'")
+        # .sh follows the current item selection: after node[2] it is the
+        # second shape, after node[1] the first again.
+        _assert(mn[2].sh.split('|')[-1] == expected[1].split('|')[-1],
+                f"node[2].sh = '{mn.sh}', expected second shape '{expected[1]}'")
+        _assert(mn[1].sh.split('|')[-1] == expected[0].split('|')[-1],
+                f"node[1].sh = '{mn.sh}', expected first shape '{expected[0]}'")
     finally:
         for n in [crv1, crv2]:
             if n and cmds.objExists(n):

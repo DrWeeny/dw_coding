@@ -1,12 +1,6 @@
 import sys, os
 from math import sqrt
 
-# ----- Edit sysPath -----#
-rdPath = 'E:\\dw_coding\\dw_open_tools'
-if not rdPath in sys.path:
-    print(f"Add {rdPath} to sysPath")
-    sys.path.insert(0, rdPath)
-
 from maya import cmds, mel
 from dw_maya.dw_nx_mel import *
 from dw_maya.dw_nucleus_utils import create_nucleus

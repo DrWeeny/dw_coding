@@ -1,16 +1,11 @@
-import sys, os
-
-# ----- Edit sysPath -----#
-rdPath = 'E:\\dw_coding\\dw_open_tools'
-if not rdPath in sys.path:
-    print(f"Add {rdPath} to sysPath")
-    sys.path.insert(0, rdPath)
-
+import os
+from dw_ressources import get_resource_path
 import maya.cmds as cmds
 from dw_maya.dw_create import pointOnPolyConstraint
 import dw_maya.dw_maya_utils as dwu
 import dw_maya.dw_duplication as dwdup
 
+rdPath = get_resource_path('cfx_ctrl_crv.abc')
 
 def create_curve_ctrl(asset_name=None, attach=None):
     """
@@ -27,7 +22,7 @@ def create_curve_ctrl(asset_name=None, attach=None):
     name = f'{asset_name}_cfx_ctrl_crv' if asset_name else base
 
     if not cmds.objExists(name):
-        path = os.path.join(rdPath, '.files', 'cfx_ctrl_crv.abc')
+        path = str(rdPath)
         print(f"Importing Alembic file from: {path}")
         cmds.AbcImport(path)
 
@@ -106,8 +101,8 @@ def create_hierarchy(asset='characterName', rigname='rigName'):
     for grp_name, visibility in zip(grps, visibilities):
         full_name = f'{grp_name}_{rigname}_grp'
         created_grp = create_group(full_name, parent=grp_rig[0])
-        cmds.setAttr(f'{created_grp}.visibility', visibility)
-        output.append(created_grp)
+        cmds.setAttr(f'{created_grp[0]}.visibility', visibility)
+        output.append(created_grp[0])
 
     return output
 
