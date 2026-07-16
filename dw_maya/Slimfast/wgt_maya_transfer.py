@@ -100,6 +100,41 @@ def _maya_main_window() -> QtWidgets.QWidget:
     ptr = omui.MQtUtil.mainWindow()
     return wrapInstance(int(ptr), QtWidgets.QWidget)
 
+
+class _RowCombo(QtWidgets.QComboBox):
+    """Combo for narrow tree columns: shrinkable, self-tooltipping, wide popup.
+
+    The closed combo may clip long mesh/map names to the column width, so the
+    tooltip always shows the full current text and the dropdown expands to fit
+    the longest item instead of the column.
+    """
+
+    def __init__(self, parent: Optional[QtWidgets.QWidget] = None) -> None:
+        super().__init__(parent)
+        # Let the column, not the longest item, drive the closed width.
+        self.setSizeAdjustPolicy(QtWidgets.QComboBox.AdjustToMinimumContentsLengthWithIcon)
+        self.setMinimumContentsLength(6)
+
+    def event(self, e: "QtCore.QEvent") -> bool:
+        # Dynamic tooltip: always the current value, no sync bookkeeping.
+        if e.type() == QtCore.QEvent.ToolTip:
+            text = self.currentText()
+            if text and text != "-":
+                QtWidgets.QToolTip.showText(e.globalPos(), text, self)
+            else:
+                QtWidgets.QToolTip.hideText()
+            return True
+        return super().event(e)
+
+    def showPopup(self) -> None:
+        fm = self.fontMetrics()
+        measure = getattr(fm, "horizontalAdvance", fm.width)
+        width = self.width()
+        for i in range(self.count()):
+            width = max(width, measure(self.itemText(i)) + 28)
+        self.view().setMinimumWidth(width)
+        super().showPopup()
+
 class MayaMapTransferWidget(QtWidgets.QWidget):
     """Two-tree UI to store weight maps and transfer them onto a target."""
 
@@ -225,6 +260,9 @@ class MayaMapTransferWidget(QtWidgets.QWidget):
         self._match_tree.setHeaderLabels(["On", "Target map", "From source mesh", "From source map"])
         self._match_tree.setRootIsDecorated(False)
         self._match_tree.setContextMenuPolicy(Qt.CustomContextMenu)
+        # Multi-selection enables bulk edits: editing a combo on a row that is
+        # part of a 2+ selection applies the pick to every selected row.
+        self._match_tree.setSelectionMode(QtWidgets.QAbstractItemView.ExtendedSelection)
         header = self._match_tree.header()
         header.resizeSection(0, 36)
         header.resizeSection(1, 150)
@@ -311,20 +349,31 @@ class MayaMapTransferWidget(QtWidgets.QWidget):
     # ------------------------------------------------------------------
 
     def _on_add(self) -> None:
-        mesh = transfer_cmds.selected_mesh()
-        if not mesh:
-            self._warn("Select a mesh first, then click +.")
+        meshes = transfer_cmds.selected_meshes()
+        if not meshes:
+            self._warn("Select one or more meshes first, then click +.")
             return
-        snap = transfer_cmds.snapshot_mesh(mesh)
-        if not snap["maps"]:
-            self._warn(f"'{snap['mesh']}' has no paintable weight maps.")
+        added: List[str] = []
+        no_maps: List[str] = []
+        for mesh in meshes:
+            snap = transfer_cmds.snapshot_mesh(mesh)
+            if not snap["maps"]:
+                no_maps.append(snap["mesh"])
+                continue
+            for entry in snap["maps"]:
+                entry.setdefault("enabled", True)
+            self._storage.append(snap)
+            added.append(f"{snap['mesh']} ({len(snap['maps'])} maps)")
+        if added:
+            self._rebuild_store_tree()
+            self._rebuild_match_tree()
+        if not added:
+            self._warn(f"No paintable weight maps on: {', '.join(no_maps)}.")
             return
-        for entry in snap["maps"]:
-            entry.setdefault("enabled", True)
-        self._storage.append(snap)
-        self._rebuild_store_tree()
-        self._rebuild_match_tree()
-        self._set_status(f"Stored '{snap['mesh']}' ({len(snap['maps'])} maps).")
+        msg = f"Stored {', '.join(added)}."
+        if no_maps:
+            msg += f" Skipped (no maps): {', '.join(no_maps)}."
+        self._set_status(msg)
 
     def _on_remove(self) -> None:
         index = self._selected_store_index()
@@ -398,7 +447,7 @@ class MayaMapTransferWidget(QtWidgets.QWidget):
         disable_action.triggered.connect(partial(self._set_store_checks, False))
         _menu_exec(menu, self._store_tree.viewport().mapToGlobal(pos))
 
-    def _set_store_checks(self, checked: bool) -> None:
+    def _set_store_checks(self, checked: bool, *args) -> None:
         """Check / uncheck every stored map (data first, then one rebuild)."""
         for snap in self._storage:
             for entry in snap["maps"]:
@@ -436,7 +485,16 @@ class MayaMapTransferWidget(QtWidgets.QWidget):
         self._target_maps = target_maps
         short = mesh.split("|")[-1]
         self._target_edit.setText(short)
-        self._map_count_label.setText(f"{len(target_maps)} maps")
+        # vtx count mirrors the one shown on stored meshes, so a count
+        # mismatch with the intended source is visible before Apply.
+        try:
+            vtx_count = cmds.polyEvaluate(mesh, vertex=True)
+        except Exception:
+            vtx_count = None
+        counts = f"{len(target_maps)} maps"
+        if isinstance(vtx_count, int):
+            counts += f", {vtx_count} vtx"
+        self._map_count_label.setText(counts)
         self._rebuild_filter_bar()
         self._rebuild_match_tree()
         self._set_status(f"Target set to '{short}'.")
@@ -478,19 +536,21 @@ class MayaMapTransferWidget(QtWidgets.QWidget):
     def _auto_match(self, key: str) -> Tuple[Optional[int], Optional[int]]:
         """Return (mesh index, map index) of the preferred source for *key*.
 
-        Preference order: the mesh selected in the store tree, then a stored
-        mesh with the same (namespace-stripped) name as the target, then the
-        first stored mesh holding the map.
+        Preference order: a stored mesh with the same (namespace-stripped)
+        name as the target, then the mesh selected in the store tree, then
+        the first stored mesh holding the map. The name match outranks the
+        selection so picking a stored target-twin never loses to whatever
+        row happens to be highlighted on the left.
         """
         order: List[int] = []
-        selected = self._selected_store_index()
-        if selected >= 0:
-            order.append(selected)
         if self._target_mesh:
             tgt_short = self._target_mesh.split("|")[-1].split(":")[-1]
             for i, snap in enumerate(self._storage):
-                if snap["mesh"].split(":")[-1] == tgt_short and i not in order:
+                if snap["mesh"].split(":")[-1] == tgt_short:
                     order.append(i)
+        selected = self._selected_store_index()
+        if selected >= 0 and selected not in order:
+            order.append(selected)
         for i in range(len(self._storage)):
             if i not in order:
                 order.append(i)
@@ -524,11 +584,11 @@ class MayaMapTransferWidget(QtWidgets.QWidget):
                 item.setData(0, _ROLE_DATA, tgt)
                 item.setForeground(1, _color_for(tgt))
 
-                mesh_combo = QtWidgets.QComboBox(self._match_tree)
+                mesh_combo = _RowCombo(self._match_tree)
                 mesh_combo.addItem("-", None)
                 for m_idx, snap in enumerate(self._storage):
                     mesh_combo.addItem(snap["mesh"], m_idx)
-                map_combo = QtWidgets.QComboBox(self._match_tree)
+                map_combo = _RowCombo(self._match_tree)
                 map_combo.addItem("-", None)
 
                 match_mesh, match_map = self._auto_match(tgt["key"])
@@ -587,12 +647,26 @@ class MayaMapTransferWidget(QtWidgets.QWidget):
         self._type_filters[type_name] = checked
         self._rebuild_match_tree()
 
-    def _on_mesh_combo_changed(self, item: QtWidgets.QTreeWidgetItem, _index: int) -> None:
-        """Refill the row's map combo for the newly picked source mesh."""
-        mesh_combo, map_combo = self._row_combos(item)
-        if mesh_combo is None or map_combo is None:
+    def _bulk_targets(self, item: QtWidgets.QTreeWidgetItem) -> List[QtWidgets.QTreeWidgetItem]:
+        """Return the other rows a combo edit should propagate to.
+
+        Implicit bulk rule: only when the edited row belongs to a selection of
+        two or more rows (ctrl-clicking rows reads as bulk intent). Editing a
+        row outside the selection stays local to that row.
+        """
+        try:
+            selected = self._match_tree.selectedItems()
+        except RuntimeError:
+            return []
+        if len(selected) < 2 or item not in selected:
+            return []
+        return [other for other in selected if other is not item]
+
+    def _refill_row_maps(self, item: QtWidgets.QTreeWidgetItem, m_idx: Optional[int]) -> None:
+        """Repopulate a row's map combo for mesh *m_idx*, auto-matching by name."""
+        _mesh_combo, map_combo = self._row_combos(item)
+        if map_combo is None:
             return
-        m_idx = mesh_combo.currentData()
         map_combo.blockSignals(True)
         try:
             map_combo.clear()
@@ -609,8 +683,51 @@ class MayaMapTransferWidget(QtWidgets.QWidget):
             map_combo.blockSignals(False)
         self._update_row_check(item)
 
+    def _set_row_mesh(self, item: QtWidgets.QTreeWidgetItem, m_idx: Optional[int]) -> None:
+        """Set a row's source mesh programmatically (no handler re-entry)."""
+        mesh_combo, map_combo = self._row_combos(item)
+        if mesh_combo is None or map_combo is None:
+            return
+        mesh_combo.blockSignals(True)
+        try:
+            mesh_combo.setCurrentIndex(0 if m_idx is None else m_idx + 1)
+        finally:
+            mesh_combo.blockSignals(False)
+        self._refill_row_maps(item, m_idx)
+
+    def _set_row_map_by_key(self, item: QtWidgets.QTreeWidgetItem, key: Optional[str]) -> None:
+        """Pick *key* in a row's map combo; rows lacking that map keep theirs."""
+        _mesh_combo, map_combo = self._row_combos(item)
+        if map_combo is None:
+            return
+        index = 0 if key is None else map_combo.findText(key)
+        if index < 0:
+            return
+        map_combo.blockSignals(True)
+        try:
+            map_combo.setCurrentIndex(index)
+        finally:
+            map_combo.blockSignals(False)
+        self._update_row_check(item)
+
+    def _on_mesh_combo_changed(self, item: QtWidgets.QTreeWidgetItem, _index: int) -> None:
+        """Refill the row's map combo; propagate to a multi-selection."""
+        mesh_combo, _map_combo = self._row_combos(item)
+        if mesh_combo is None:
+            return
+        m_idx = mesh_combo.currentData()
+        self._refill_row_maps(item, m_idx)
+        for other in self._bulk_targets(item):
+            self._set_row_mesh(other, m_idx)
+
     def _on_map_combo_changed(self, item: QtWidgets.QTreeWidgetItem, _index: int) -> None:
         self._update_row_check(item)
+        _mesh_combo, map_combo = self._row_combos(item)
+        if map_combo is None:
+            return
+        key = map_combo.currentText() if map_combo.currentData() is not None else None
+        for other in self._bulk_targets(item):
+            self._set_row_map_by_key(other, key)
 
     def _update_row_check(self, item: QtWidgets.QTreeWidgetItem) -> None:
         """Auto-enable a row when a real source map is picked, untick otherwise."""
@@ -624,13 +741,59 @@ class MayaMapTransferWidget(QtWidgets.QWidget):
 
     def _on_match_menu(self, pos: QtCore.QPoint) -> None:
         menu = QtWidgets.QMenu(self)
+        selected = self._match_tree.selectedItems()
+
+        enable_sel = menu.addAction("Enable selected")
+        disable_sel = menu.addAction("Disable selected")
+        enable_sel.triggered.connect(partial(self._set_selected_checks, True))
+        disable_sel.triggered.connect(partial(self._set_selected_checks, False))
+
+        mesh_menu = menu.addMenu("Set source mesh (selected rows)")
+        none_action = mesh_menu.addAction("-")
+        none_action.triggered.connect(partial(self._set_selected_mesh, None))
+        for m_idx, snap in enumerate(self._storage):
+            action = mesh_menu.addAction(snap["mesh"])
+            action.triggered.connect(partial(self._set_selected_mesh, m_idx))
+
+        map_menu = menu.addMenu("Set source map (selected rows)")
+        none_action = map_menu.addAction("-")
+        none_action.triggered.connect(partial(self._set_selected_map, None))
+        keys = sorted({entry["key"] for snap in self._storage for entry in snap["maps"]})
+        for key in keys:
+            action = map_menu.addAction(key)
+            action.triggered.connect(partial(self._set_selected_map, key))
+
+        for action in (enable_sel, disable_sel):
+            action.setEnabled(bool(selected))
+        mesh_menu.setEnabled(bool(selected) and bool(self._storage))
+        map_menu.setEnabled(bool(selected) and bool(keys))
+
+        menu.addSeparator()
         enable_action = menu.addAction("Enable all")
         disable_action = menu.addAction("Disable all")
         enable_action.triggered.connect(partial(self._set_match_checks, True))
         disable_action.triggered.connect(partial(self._set_match_checks, False))
         _menu_exec(menu, self._match_tree.viewport().mapToGlobal(pos))
 
-    def _set_match_checks(self, checked: bool) -> None:
+    def _set_selected_checks(self, checked: bool, *_) -> None:
+        """Enable (rows with a source only) / disable the selected rows."""
+        for item in self._match_tree.selectedItems():
+            if not checked:
+                item.setCheckState(0, Qt.Unchecked)
+                continue
+            _mesh_combo, map_combo = self._row_combos(item)
+            has_source = map_combo is not None and map_combo.currentData() is not None
+            item.setCheckState(0, Qt.Checked if has_source else Qt.Unchecked)
+
+    def _set_selected_mesh(self, m_idx: Optional[int], *_) -> None:
+        for item in self._match_tree.selectedItems():
+            self._set_row_mesh(item, m_idx)
+
+    def _set_selected_map(self, key: Optional[str], *_) -> None:
+        for item in self._match_tree.selectedItems():
+            self._set_row_map_by_key(item, key)
+
+    def _set_match_checks(self, checked: bool, *_) -> None:
         """Enable rows that have a source picked / disable every row."""
         for i in range(self._match_tree.topLevelItemCount()):
             item = self._match_tree.topLevelItem(i)

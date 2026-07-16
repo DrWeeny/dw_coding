@@ -100,6 +100,12 @@ class MAttr(object):
         Returns:
             cls : MAttr is updated with the chosen index/slice
         """
+        # warning: this mutates the MAttr in place and returns self. Safe in
+        # normal chains because MayaNode.__getattr__ hands out a fresh MAttr
+        # per access, but a *stored* wrapper accumulates indices:
+        #   w = mn.weightList; w[0]; w[1]  ->  'weightList[0][1]'
+        # todo: return a new MAttr(self._node, indexed_attr) instead of
+        # mutating self (behavior change - audit chained callers first).
         if isinstance(item, int):
             self.__dict__['attribute'] = f'{self.attr}[{item}]'
         else:
@@ -109,6 +115,53 @@ class MAttr(object):
                 item = ':'.join([str(i) for i in [item.start, item.stop, item.step] if i != None])
             self.__dict__['attribute'] = f'{self.attr}[{item}]'
         return self
+
+    def __setitem__(self, item, value):
+        """Assign values through index/slice notation.
+
+        Enables the natural counterpart of the sliced read::
+
+            node.weightList[0].weights[0:7] = values   # multi of scalars
+            node.weightList[0].weights[:] = values     # explicit range rewrite
+            node.myArrays[2] = values                  # doubleArray element
+
+        Maya cannot expand an unbounded ``:`` when the multi holds no element
+        plug yet (unpainted deformer weights), so a full or open-ended slice
+        is rewritten to an explicit ``[start:stop]`` computed from the value
+        count - which also lets ``setAttr`` create the missing elements.
+
+        Note:
+            Slice bounds follow Maya's *inclusive* plug ranges, matching what
+            ``__getitem__`` builds (``[0:7]`` is 8 elements), not Python's
+            exclusive slicing.
+        """
+        if isinstance(item, int):
+            MAttr(self._node, f'{self.attr}[{item}]').setAttr(value)
+            return
+        if not isinstance(item, slice):
+            raise TypeError(
+                f'MAttr indices must be int or slice, not {type(item).__name__}'
+            )
+        if item.step not in (None, 1):
+            raise ValueError('MAttr slice assignment does not support a step')
+
+        values = list(value) if isinstance(value, (list, tuple)) else [value]
+        if not values:
+            return
+
+        start = item.start if item.start is not None else 0
+        stop = item.stop if item.stop is not None else start + len(values) - 1
+
+        # Elements that are themselves sequences (multi of doubleArray etc.)
+        # need one type-dispatched setAttr per element.
+        if isinstance(values[0], (list, tuple)):
+            for offset, element in enumerate(values):
+                MAttr(self._node, f'{self.attr}[{start + offset}]').setAttr(element)
+            return
+
+        cmds.setAttr(f'{self._node}.{self.attr}[{start}:{stop}]',
+                     *values,
+                     size=len(values))
 
     def __getattr__(self, attr):
         """
@@ -430,8 +483,32 @@ class MAttr(object):
             ``[(x, y, z)]`` list-of-tuple, so arithmetic and assignment work
             naturally without extra unwrapping.
         """
-        if self.attr in self.listAttr(self.attr) or self._COMPOUND_PATTERN.search(self.attr):
-            result = cmds.getAttr(f'{self._node}.{self.attr}', **kwargs)
+        # Pattern check first: it is free, and cmds.listAttr raises on a
+        # slice plug whose elements do not exist yet (virgin multi).
+        if self._COMPOUND_PATTERN.search(self.attr) or self.attr in self.listAttr(self.attr):
+            try:
+                result = cmds.getAttr(f'{self._node}.{self.attr}', **kwargs)
+            except (RuntimeError, ValueError):
+                # Maya expands '[:]' over *existing* element plugs; a sparse
+                # multi with no element yet (e.g. unpainted deformer weights)
+                # matches nothing and errors. An empty multi reads as [].
+                if self.attr.endswith('[:]'):
+                    base = self.attr[:-3]
+                    try:
+                        if not cmds.getAttr(f'{self._node}.{base}', size=True):
+                            return []
+                    except (RuntimeError, ValueError):
+                        # The parent element can itself be unmaterialized
+                        # (weightList[0] on a virgin cluster), failing the
+                        # size probe. If the leaf attribute exists on the
+                        # node, the path is valid but empty - not a typo.
+                        leaf = re.sub(r'\[[^\]]*\]', '', base).split('.')[-1]
+                        try:
+                            if cmds.attributeQuery(leaf, node=self._node, exists=True):
+                                return []
+                        except RuntimeError:
+                            pass
+                raise
             # Normalize Maya compound format: [(x, y, z)] → (x, y, z)
             if (isinstance(result, list) and len(result) == 1
                     and isinstance(result[0], tuple)):
@@ -518,7 +595,11 @@ class MAttr(object):
             return cached
         result = cmds.getAttr(cache_key, type=True)
         if isinstance(result, (list, tuple)):
-            result = list(set(result))
+            # Sliced/multi plugs report one type per element; a homogeneous
+            # list collapses to its scalar string so setAttr's set-membership
+            # dispatch works (a list is unhashable).
+            dedup = list(set(result))
+            result = dedup[0] if len(dedup) == 1 else dedup
         MAttr._type_cache[cache_key] = result
         return result
 

@@ -64,6 +64,7 @@ def _reload():
     import dw_maya.Slimfast.wgt_deformer_panel
     import dw_maya.Slimfast.main_ui
     import dw_maya.Slimfast.wgt_skin_panel
+    import dw_maya.Slimfast.wgt_splitter_arrow
     import dw_maya.Slimfast.wgt_maya_transfer
 
     importlib.reload(dw_maya.Slimfast.wgt_signals)
@@ -74,4 +75,5 @@ def _reload():
     importlib.reload(dw_maya.Slimfast.wgt_deformer_panel)
     importlib.reload(dw_maya.Slimfast.wgt_skin_panel)
     importlib.reload(dw_maya.Slimfast.main_ui)
+    importlib.reload(dw_maya.Slimfast.wgt_splitter_arrow)
     importlib.reload(dw_maya.Slimfast.wgt_maya_transfer)

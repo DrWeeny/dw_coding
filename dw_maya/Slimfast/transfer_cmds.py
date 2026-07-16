@@ -59,20 +59,29 @@ _SKIP_NODE_TYPES = ("skinCluster",)
 # Scene helpers
 # ---------------------------------------------------------------------------
 
-def selected_mesh() -> Optional[str]:
-    """Return the first selected mesh transform (long name), or None."""
+def selected_meshes() -> List[str]:
+    """Return every selected mesh transform (long names), selection order."""
+    out: List[str] = []
     for node in cmds.ls(selection=True, long=True) or []:
         if cmds.nodeType(node) == "mesh":
             parents = cmds.listRelatives(node, parent=True, fullPath=True) or []
-            return parents[0] if parents else node
-        shapes = cmds.listRelatives(node,
-                                    shapes=True,
-                                    fullPath=True,
-                                    type="mesh",
-                                    noIntermediate=True) or []
-        if shapes:
-            return node
-    return None
+            mesh = parents[0] if parents else node
+        else:
+            shapes = cmds.listRelatives(node,
+                                        shapes=True,
+                                        fullPath=True,
+                                        type="mesh",
+                                        noIntermediate=True) or []
+            mesh = node if shapes else None
+        if mesh and mesh not in out:
+            out.append(mesh)
+    return out
+
+
+def selected_mesh() -> Optional[str]:
+    """Return the first selected mesh transform (long name), or None."""
+    meshes = selected_meshes()
+    return meshes[0] if meshes else None
 
 
 def selected_vertex_indices(mesh: str) -> List[int]:
