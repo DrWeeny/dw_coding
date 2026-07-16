@@ -69,13 +69,16 @@ def create_group(name, parent=None, mset=True):
         return name
 
 
-def create_hierarchy(asset='characterName', rigname='rigName'):
+def create_hierarchy(asset='characterName', rigname='rigName', groups=None):
     """
     Create a default simulation hierarchy for a given asset and rig.
 
     Args:
         asset (str): The name of the asset. Defaults to 'longlclaw'.
         rigname (str): The name of the simulation rig. Defaults to 'wings'.
+        groups (list, optional): Stage group names. Defaults to the
+            standard six (presim/utils/collider/sim/postsim/exp); custom
+            names default to visible.
 
     Returns:
         list: List of group names created for the hierarchy.
@@ -95,8 +98,10 @@ def create_hierarchy(asset='characterName', rigname='rigName'):
     output.append(grp_rig)
 
     # Create additional groups with specific visibility settings
-    grps = ['presim', 'utils', 'collider', 'sim', 'postsim', 'exp']
-    visibilities = [0, 0, 1, 1, 0, 0]
+    default_vis = {'presim': 0, 'utils': 0, 'collider': 1, 'sim': 1,
+                   'postsim': 0, 'exp': 0}
+    grps = list(groups) if groups else list(default_vis)
+    visibilities = [default_vis.get(g, 1) for g in grps]
 
     for grp_name, visibility in zip(grps, visibilities):
         full_name = f'{grp_name}_{rigname}_grp'
@@ -135,7 +140,8 @@ def add_to_group(obj, name):
 
 
 def build_sim_step(step_name: str, step_ind: int, obj: list,
-                   insert: bool = False, parent: str = None, connection: bool = True) -> list:
+                   insert: bool = False, parent: str = None, connection: bool = True,
+                   method: str = 'outmesh') -> list:
     """Create outmeshes for a whole group of meshes with optional parenting and connection.
 
     Args:
@@ -145,6 +151,9 @@ def build_sim_step(step_name: str, step_ind: int, obj: list,
         insert (bool, optional): Whether to insert the step name at the step index instead of replacing it. Defaults to False.
         parent (str, optional): Name of the parent to group the new objects under. Defaults to None.
         connection (bool, optional): If True, connects original and duplicated objects. Defaults to True.
+        method (str, optional): Mesh copy strategy - 'outmesh' (default, live
+            connected copy) or 'duplicate' (plain static duplicate, e.g.
+            nucleus presim meshes).
 
     Returns:
         list: List of newly created nodes.
@@ -174,7 +183,7 @@ def build_sim_step(step_name: str, step_ind: int, obj: list,
 
             # Duplicate the object
             node_type = cmds.nodeType(shape_node)
-            if node_type == 'mesh':
+            if node_type == 'mesh' and method != 'duplicate':
                 # Duplicate using outmesh logic for mesh types
                 duplicated_object = dwdup.outmesh([o], fresh=False)
                 duplicated_object = cmds.rename(duplicated_object[0], new_transform_name)

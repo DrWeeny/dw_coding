@@ -259,33 +259,52 @@ def list_target_maps(mesh: str) -> List[Dict[str, Any]]:
 def copy_weights(src_weights: List[float],
                  target_source: "Any",
                  target_map: Optional[str] = None,
-                 mask: Optional[List[int]] = None) -> int:
-    """Index-for-index copy onto a same-topology target. Returns vtx count.
+                 mask: Optional[List[int]] = None,
+                 preserve_unmapped: bool = True) -> int:
+    """Index-for-index copy onto the target. Returns the vtx count written.
+
+    Vertex counts may differ (lenient copy): the overlapping index range is
+    copied 1:1, which stays exact as long as the shared range kept its vertex
+    ids (tail edits). Target vertices beyond the source range keep their
+    current weight when ``preserve_unmapped`` is True, or get 0 otherwise.
 
     Args:
-        mask: When given, only these target vertex indices are overwritten;
-              every other vertex keeps its original weight.
-
-    Raises:
-        ValueError: when source and target vertex counts differ.
+        mask:              When given, only these target vertex indices are
+                           overwritten; every other vertex keeps its original
+                           weight.
+        preserve_unmapped: Tail-fill policy when the source is shorter than
+                           the target (keep existing weights vs. 0).
     """
     if target_map:
         target_source.use_map(target_map)
     n = target_source.vtx_count
-    if len(src_weights) != n:
-        raise ValueError(
-            f"Vertex count mismatch: source {len(src_weights)} vs target {n}. "
-            f"Use 'Transfer (nearest)' for different topology."
-        )
+    src_n = len(src_weights)
+    overlap = min(n, src_n)
+
     if mask:
         result = target_source.get_weights()
         for i in mask:
-            if 0 <= i < n:
+            if not 0 <= i < n:
+                continue
+            if i < src_n:
                 result[i] = float(src_weights[i])
+            elif not preserve_unmapped:
+                result[i] = 0.0
         target_source.set_weights(result)
-    else:
+        return overlap
+
+    if src_n == n:
         target_source.set_weights([float(w) for w in src_weights])
-    return n
+        return n
+
+    head = [float(w) for w in src_weights[:overlap]]
+    if preserve_unmapped:
+        result = list(target_source.get_weights())
+        result[:overlap] = head
+    else:
+        result = head + [0.0] * (n - overlap)
+    target_source.set_weights(result)
+    return overlap
 
 
 def transfer_weights(src_weights: List[float],
