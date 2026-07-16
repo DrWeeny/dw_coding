@@ -69,11 +69,6 @@ def get_resource_path(resource_name: str) -> Path:
 
     return direct
 
-
-# Deprecated: typo alias kept for backward compatibility.
-get_ressource_path = get_resource_path
-
-
 def get_icon_path(resource_name: str, ext: str = None) -> Path:
     if ext and not Path(resource_name).suffix:
         resource_name = f"{resource_name}{ext if ext.startswith('.') else '.' + ext}"
