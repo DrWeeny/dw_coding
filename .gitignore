@@ -3,3 +3,4 @@
 /.idea
 /dw_maya/.idea/
 .local_data/
+.venv/
