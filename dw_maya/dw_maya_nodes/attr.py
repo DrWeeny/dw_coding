@@ -1,6 +1,6 @@
 from maya import cmds
 import maya.api.OpenMaya as om
-from typing import Any, Dict, Optional, List
+from typing import Optional, List
 from dw_maya.dw_decorators import acceptString
 import re
 
@@ -77,7 +77,7 @@ class MAttr(object):
     # Attribute types are immutable in Maya (you cannot change a double to a
     # string after creation).  Caching is therefore safe for the full session.
     # Cleared on file new/open via MayaNode._clear_all_caches().
-    _type_cache: Dict[str, Any] = {}
+    _type_cache: dict = {}
 
     def __init__(self, node: str, attr:str ='result'):
         self.__dict__['node'] = node  #: str: current priority node evaluated
@@ -578,7 +578,7 @@ class MAttr(object):
         return f'{self.node}.{self.attr}'
 
     @property
-    def _type(self) -> Any:
+    def _type(self):
         """
         Return the attribute's type string, using a class-level cache.
 
