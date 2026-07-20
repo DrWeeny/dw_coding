@@ -117,6 +117,9 @@ def install_mel_procs() -> None:
     mel.eval(mel_code)
     _MEL_PROCS_INSTALLED = True
 
+def get_icon():
+    from dw_ressources import get_resource_path
+    return get_resource_path("vertex_alpha_icon.png")
 
 # ---------------------------------------------------------------------------
 # Artisan paint controller — stored in __main__ for MEL access
@@ -455,6 +458,10 @@ class VertexColorSet(WeightSource):
         """One map per channel — alpha first (the historical default)."""
         return ['alpha', 'red', 'green', 'blue']
 
+    def get_artisan_name(self) -> str:
+        """This source paints through ``artUserPaintCtx``, not ``artAttrContext``."""
+        return _CTX_NAME
+
     def _resolve_attr(self, map_name: str) -> str:
         # Not used — we override get/set directly.
         return ''
@@ -495,7 +502,7 @@ class VertexColorSet(WeightSource):
             stampProfile='solid',
             selectedattroper='absolute',
             wst='userPaint',
-            image1='userPaint.png',
+            image1=get_icon(),
             initializeCmd=f'{_CTX_NAME}_init_cmd',
             toolOnProc=f'{_CTX_NAME}_on_cmd',
             toolOffProc=f'{_CTX_NAME}_off_cmd',
