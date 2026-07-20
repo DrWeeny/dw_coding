@@ -888,6 +888,57 @@ class SlimfastController:
         except Exception as e:
             logger.error(f"Radial weights failed: {e}")
 
+    @singleUndoChunk
+    def apply_mirror_weights(self,
+                             axis: str = 'x',
+                             direction: str = 'positive',
+                             tolerance: float = 0.001) -> None:
+        """Mirror weights across an axis, driven by one half of the mesh.
+
+        Restricted to the Advanced-ops mask (see
+        :meth:`set_advanced_mask_from_selection`) if one is set — only the
+        masked vertices are overwritten with their mirrored counterpart,
+        otherwise the whole mesh is mirrored.
+
+        Vertices with no geometric counterpart within *tolerance* (a mesh
+        that is not fully symmetrical on this axis) keep their existing
+        weight and are reported via a logger warning.
+
+        Args:
+            axis:      ``'x'`` | ``'y'`` | ``'z'``.
+            direction: ``'positive'`` | ``'negative'`` — which half drives.
+            tolerance: Position-matching tolerance for pairing vertices.
+        """
+        if not self._require_active():
+            return
+        try:
+            mask = self._mask_vtx_ids
+            weights = list(self._active.get_weights())
+            from dw_maya.dw_paint.operations import mirror_weights
+            mirrored = mirror_weights(
+                self._active.mesh_name, weights,
+                axis=axis, tolerance=tolerance, direction=direction,
+            )
+            if mirrored is None:
+                logger.warning("Mirror weights operation returned no data.")
+                return
+
+            if mask is None:
+                self._active.set_weights(mirrored)
+                logger.debug(f"Mirror weights applied to all vertices (axis={axis}, direction={direction}).")
+            else:
+                result = list(weights)
+                for idx in mask:
+                    if idx < len(mirrored):
+                        result[idx] = mirrored[idx]
+                self._active.set_weights(result)
+                logger.debug(f"Mirror weights applied to {len(mask)} selected vertices (axis={axis}, direction={direction}).")
+
+            self._clamp_weights_post(mask)
+            self._restore_wear_paint()
+        except Exception as e:
+            logger.error(f"Mirror weights failed: {e}")
+
     def get_soft_select_radius(self) -> float:
         """Return the current Maya soft-selection radius, or 0.0 if disabled."""
         try:

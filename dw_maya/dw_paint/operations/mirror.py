@@ -57,6 +57,15 @@ class MirrorOperation:
             # Find mirror pairs
             pairs = self._find_mirror_pairs(positions, axis, tolerance)
 
+            unmatched = len(positions) - len(pairs)
+            if unmatched:
+                logger.warning(
+                    f"Mirror '{self.mesh_name}': {unmatched} vertex/vertices have no "
+                    f"geometric counterpart within tolerance={tolerance} on axis '{axis}' "
+                    f"— their weights were left unchanged. The mesh is not fully "
+                    f"symmetrical on this axis (or the tolerance is too tight)."
+                )
+
             # Apply mirroring based on direction
             new_weights = np.array(original_weights, dtype=np.float32)
             axis_idx = {'x': 0, 'y': 1, 'z': 2}[axis.lower()]
@@ -90,7 +99,9 @@ class MirrorOperation:
     def mirror_selected(self,
                         weights: WeightList,
                         axis: Literal['x', 'y', 'z'] = 'x',
-                        tolerance: float = 0.001) -> Optional[WeightList]:
+                        tolerance: float = 0.001,
+                        direction: Literal['positive', 'negative'] = 'positive',
+                        ) -> Optional[WeightList]:
         """Mirror weights for selected vertices only"""
         try:
             selected = self.mesh_data.get_selected_components()
@@ -110,11 +121,15 @@ class MirrorOperation:
             pairs = self._find_mirror_pairs(positions, axis, tolerance)
 
             # Apply mirroring only to selected vertices and their pairs
+            axis_idx = {'x': 0, 'y': 1, 'z': 2}[axis.lower()]
             new_weights = np.array(weights, dtype=np.float32)
             for idx in selected_indices:
                 if idx in pairs:
                     pair_idx = pairs[idx]
-                    if positions[idx][{'x': 0, 'y': 1, 'z': 2}[axis.lower()]] > 0:
+                    on_driving_side = (positions[idx][axis_idx] > 0
+                                       if direction == 'positive'
+                                       else positions[idx][axis_idx] < 0)
+                    if on_driving_side:
                         new_weights[pair_idx] = weights[idx]
 
             return new_weights.tolist()

@@ -189,6 +189,10 @@ def apply_operation(source: WeightSource,
         mirror:
             axis (str):         ``'x'`` | ``'y'`` | ``'z'``. Default ``'x'``.
             world_space (bool): Use world space. Default True.
+            direction (str):    ``'positive'`` | ``'negative'`` — which half
+                                 drives the other. Default ``'positive'``.
+            tolerance (float):  Position-matching tolerance for pairing
+                                 vertices. Default ``0.001``.
 
         smooth:
             iterations (int):   Smoothing passes. Default 1.
@@ -237,7 +241,9 @@ def apply_operation(source: WeightSource,
             mesh,
             weights,
             kwargs.get('axis', 'x'),
+            tolerance=kwargs.get('tolerance', 0.001),
             world_space=kwargs.get('world_space', True),
+            direction=kwargs.get('direction', 'positive'),
         )
 
     elif operation == 'smooth':

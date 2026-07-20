@@ -335,19 +335,21 @@ class SlimfastWidget(QtWidgets.QWidget):
         mode_row = QtWidgets.QHBoxLayout()
         mode_row.addWidget(QtWidgets.QLabel('Mode'))
         self._adv_mode_combo = QtWidgets.QComboBox()
-        self._adv_mode_combo.addItems(['vector', 'radial'])
+        self._adv_mode_combo.addItems(['vector', 'radial', 'mirror'])
         mode_row.addWidget(self._adv_mode_combo)
         mode_row.addStretch()
         lay.addLayout(mode_row)
 
         # --- Falloff ---
-        falloff_row = QtWidgets.QHBoxLayout()
+        self._adv_falloff_widget = QtWidgets.QWidget()
+        falloff_row = QtWidgets.QHBoxLayout(self._adv_falloff_widget)
+        falloff_row.setContentsMargins(0, 0, 0, 0)
         falloff_row.addWidget(QtWidgets.QLabel('Falloff'))
         self._adv_falloff_combo = QtWidgets.QComboBox()
         self._adv_falloff_combo.addItems(['linear', 'quadratic', 'smooth', 'smooth2'])
         falloff_row.addWidget(self._adv_falloff_combo)
         falloff_row.addStretch()
-        lay.addLayout(falloff_row)
+        lay.addWidget(self._adv_falloff_widget)
 
         # ---- Vector sub-widget ----------------------------------------
         self._adv_vector_widget = QtWidgets.QWidget()
@@ -447,6 +449,57 @@ class SlimfastWidget(QtWidgets.QWidget):
 
         lay.addWidget(self._adv_radial_widget)
 
+        # ---- Mirror sub-widget -----------------------------------------
+        self._adv_mirror_widget = QtWidgets.QWidget()
+        mir_lay = QtWidgets.QVBoxLayout(self._adv_mirror_widget)
+        mir_lay.setContentsMargins(0, 0, 0, 0)
+        mir_lay.setSpacing(4)
+        self._adv_mirror_widget.setVisible(False)
+
+        mir_axis_row = QtWidgets.QHBoxLayout()
+        mir_axis_row.addWidget(QtWidgets.QLabel('Axis'))
+        self._adv_mirror_axis_group = QtWidgets.QButtonGroup(self)
+        for axis in ('x', 'y', 'z'):
+            btn = QtWidgets.QRadioButton(axis)
+            btn.setProperty('axis', axis)
+            if axis == 'x':
+                btn.setChecked(True)
+            self._adv_mirror_axis_group.addButton(btn)
+            mir_axis_row.addWidget(btn)
+        mir_axis_row.addStretch()
+        mir_lay.addLayout(mir_axis_row)
+
+        mir_dir_row = QtWidgets.QHBoxLayout()
+        mir_dir_row.addWidget(QtWidgets.QLabel('Drive from'))
+        self._adv_mirror_dir_group = QtWidgets.QButtonGroup(self)
+        for direction in ('positive', 'negative'):
+            btn = QtWidgets.QRadioButton(direction)
+            btn.setProperty('direction', direction)
+            if direction == 'positive':
+                btn.setChecked(True)
+            self._adv_mirror_dir_group.addButton(btn)
+            mir_dir_row.addWidget(btn)
+        mir_dir_row.addStretch()
+        mir_lay.addLayout(mir_dir_row)
+
+        mir_tol_row = QtWidgets.QHBoxLayout()
+        mir_tol_row.addWidget(QtWidgets.QLabel('Tolerance'))
+        self._adv_mirror_tolerance_spin = QtWidgets.QDoubleSpinBox()
+        self._adv_mirror_tolerance_spin.setRange(0.0001, 10.0)
+        self._adv_mirror_tolerance_spin.setDecimals(4)
+        self._adv_mirror_tolerance_spin.setSingleStep(0.001)
+        self._adv_mirror_tolerance_spin.setValue(0.001)
+        self._adv_mirror_tolerance_spin.setToolTip(
+            'Max distance to match a vertex with its geometric mirror.\n'
+            'Raise this on meshes with slightly off-symmetry vertices — '
+            'unmatched vertices keep their current weight and are logged.'
+        )
+        mir_tol_row.addWidget(self._adv_mirror_tolerance_spin)
+        mir_tol_row.addStretch()
+        mir_lay.addLayout(mir_tol_row)
+
+        lay.addWidget(self._adv_mirror_widget)
+
         # ---- Mask (shared by vector & radial) --------------------------
         mask_row = QtWidgets.QHBoxLayout()
         self._adv_mask_label = QtWidgets.QLabel('Mask: whole mesh')
@@ -466,18 +519,18 @@ class SlimfastWidget(QtWidgets.QWidget):
         mask_row.addWidget(mask_clear_btn)
         lay.addLayout(mask_row)
 
-        # ---- Shared controls ------------------------------------------
+        # ---- Shared controls (vector / radial only) --------------------
         # Operation selector (replace / add / subtract / multiply)
-        op_row = QtWidgets.QHBoxLayout()
+        self._adv_op_widget = QtWidgets.QWidget()
+        op_row = QtWidgets.QHBoxLayout(self._adv_op_widget)
+        op_row.setContentsMargins(0, 0, 0, 0)
         op_row.addWidget(QtWidgets.QLabel('Op'))
         self._adv_op_combo = QtWidgets.QComboBox()
         self._adv_op_combo.addItems(['replace', 'add', 'subtract', 'multiply'])
         op_row.addWidget(self._adv_op_combo)
         op_row.addStretch()
-        lay.addLayout(op_row)
+        lay.addWidget(self._adv_op_widget)
 
-
-        # ---- Shared controls ------------------------------------------
         self._adv_invert_check = QtWidgets.QCheckBox('Invert')
         lay.addWidget(self._adv_invert_check)
 
@@ -2085,12 +2138,25 @@ class SlimfastWidget(QtWidgets.QWidget):
             radius = self._adv_radius_spin.value() or None
             self._ctrl.apply_radial_weights(falloff=falloff, invert=invert,
                                             center=center, radius=radius, op=op)
+        elif mode == 'mirror':
+            axis_btn = self._adv_mirror_axis_group.checkedButton()
+            axis = axis_btn.property('axis') if axis_btn else 'x'
+            dir_btn = self._adv_mirror_dir_group.checkedButton()
+            direction = dir_btn.property('direction') if dir_btn else 'positive'
+            tolerance = self._adv_mirror_tolerance_spin.value()
+            self._ctrl.apply_mirror_weights(axis=axis, direction=direction,
+                                            tolerance=tolerance)
 
     @Slot(str)
     def _on_adv_mode_changed(self, mode: str) -> None:
         """Show the relevant sub-widget for the selected advanced mode."""
         self._adv_vector_widget.setVisible(mode == 'vector')
         self._adv_radial_widget.setVisible(mode == 'radial')
+        self._adv_mirror_widget.setVisible(mode == 'mirror')
+        # Mirror has no falloff / op / invert — it's a straight overwrite
+        self._adv_falloff_widget.setVisible(mode != 'mirror')
+        self._adv_op_widget.setVisible(mode != 'mirror')
+        self._adv_invert_check.setVisible(mode != 'mirror')
 
     def _toggle_axis_buttons(self, checked: bool, enable: bool = False) -> None:
         """Enable or disable axis radio buttons (used when custom vector is active)."""
