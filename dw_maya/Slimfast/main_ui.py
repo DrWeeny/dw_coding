@@ -94,7 +94,7 @@ class SlimfastWidget(QtWidgets.QWidget):
         'cluster':            '#cccccc',
         'softMod':            '#cccccc',
         'wire':               '#cccccc',
-        'VertexColorAlpha':   '#cc88dd',
+        'VertexColorSet':     '#cc88dd',
         'vtxColor':           '#cc88dd',
     }
 
@@ -864,11 +864,11 @@ class SlimfastWidget(QtWidgets.QWidget):
         lay = QtWidgets.QVBoxLayout(grp)
         lay.setSpacing(4)
 
-        # Warning label shown only for VertexColorAlpha (slow path)
+        # Warning label shown only for VertexColorSet (slow path)
         self._smooth_warn_label = QtWidgets.QLabel(
             '⚠'
         )
-        self._smooth_warn_label.setToolTip("vertex alpha smooth is slow (~8 s per call)")
+        self._smooth_warn_label.setToolTip("vertex color smooth is slow (~8 s per call)")
         self._smooth_warn_label.setStyleSheet('color: #e8a838; font-size: 11px;')
         self._smooth_warn_label.setWordWrap(True)
         self._smooth_warn_label.hide()
@@ -1059,6 +1059,18 @@ class SlimfastWidget(QtWidgets.QWidget):
 
         # Mode toggle
         self._mode_group.buttonClicked.connect(self._on_mode_changed)
+        # Sync the controller with the restored radio state: the saved mode
+        # only checks the button, and buttonClicked never fires
+        # programmatically — without this the first "mesh picker" refresh
+        # resolves in the controller's default 'all' mode and lands on the
+        # first deformer (usually the skinCluster) instead of the filtered
+        # backend the radio shows.
+        checked_mode = self._mode_group.checkedButton()
+        if checked_mode is not None:
+            self._ctrl.set_mode(
+                wgt_deformer_panel.get_ctrl_mode(checked_mode.property('mode')),
+                refresh=False,
+            )
 
         # Flat source combo
         self._source_combo.currentIndexChanged.connect(self._on_source_combo_changed)
@@ -1493,7 +1505,7 @@ class SlimfastWidget(QtWidgets.QWidget):
         default_val = 0.0 if item.startswith('0') else 1.0
 
         try:
-            from dw_maya.dw_paint.vertex_color_alpha import create_alpha_map
+            from dw_maya.dw_paint.vertex_color import create_alpha_map
             create_alpha_map(mesh, color_set=name.strip(), default_value=default_val)
             logger.info(f"Alpha map '{name}' created on '{mesh}'.")
         except Exception as e:
@@ -1541,8 +1553,8 @@ class SlimfastWidget(QtWidgets.QWidget):
             ``'vtxColor'``, ``'nucleus'`` or ``'deformer'``.
         """
         src = self._ctrl.active_source
-        from dw_maya.dw_paint.vertex_color_alpha import VertexColorAlpha as _VCA
-        if isinstance(src, _VCA):
+        from dw_maya.dw_paint.vertex_color import VertexColorSet as _VCS
+        if isinstance(src, _VCS):
             return 'vtxColor'
         if isinstance(src, NClothMap):
             return 'nucleus'
@@ -1737,7 +1749,10 @@ class SlimfastWidget(QtWidgets.QWidget):
         - Single-map deformers (cluster, softMod, wire, …) -> one row.
         - BlendShape -> one row; panel switches to BlendShapePanel automatically.
         - NClothMap -> one row per map (nucleus maps are numerous).
-        - A disabled separator row separates deformer and nucleus groups.
+        - VertexColorSet -> one row per colorSet; the channel is picked via
+          the A/R/G/B radios on VtxColorPanel.
+        - Disabled separator rows separate the deformer, nucleus and
+          vertex-color groups.
 
         UserRole  stores (source_idx, default_map_name).
         UserRole+1 stores (node_type, all_maps_list) for downstream logic.
@@ -1761,8 +1776,9 @@ class SlimfastWidget(QtWidgets.QWidget):
             return ''
 
         types = [_type_from_label(lbl) for lbl in node_labels]
-        has_deformer = any(t not in nucleus_types for t in types)
+        has_deformer = any(t not in nucleus_types and t != 'vtxColor' for t in types)
         separator_inserted = False
+        vtxcolor_separator_inserted = False
         first_selectable_row = None
 
         for source_idx, (label, maps, node_type) in enumerate(
@@ -1801,6 +1817,23 @@ class SlimfastWidget(QtWidgets.QWidget):
                     self._source_model.appendRow(item)
                     if first_selectable_row is None:
                         first_selectable_row = self._source_model.rowCount() - 1
+
+            elif node_type == 'vtxColor':
+                # Vertex color set: one row per colorSet — the channel is
+                # picked via the A/R/G/B radios on VtxColorPanel.
+                if not vtxcolor_separator_inserted and self._source_model.rowCount():
+                    sep = QtGui.QStandardItem('─── vertex color ───')
+                    sep.setEnabled(False)
+                    sep.setForeground(QtGui.QBrush(QtGui.QColor('#555555')))
+                    self._source_model.appendRow(sep)
+                    vtxcolor_separator_inserted = True
+                item = QtGui.QStandardItem(node_name)
+                item.setData((source_idx, maps[0] if maps else 'alpha'), QtCore.Qt.UserRole)
+                item.setData((node_type, maps), QtCore.Qt.UserRole + 1)
+                item.setForeground(QtGui.QBrush(QtGui.QColor(color)))
+                self._source_model.appendRow(item)
+                if first_selectable_row is None:
+                    first_selectable_row = self._source_model.rowCount() - 1
 
             else:
                 # Single-map deformer: one row, just the node name

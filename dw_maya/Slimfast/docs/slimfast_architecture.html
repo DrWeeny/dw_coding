@@ -315,14 +315,14 @@ classDiagram
     class BlendShape
     class SkinCluster
     class NClothMap
-    class VertexColorAlpha
+    class VertexColorSet
 
     WeightSource <|-- Deformer
     Deformer <|-- Cluster
     Deformer <|-- BlendShape
     Deformer <|-- SkinCluster
     WeightSource <|-- NClothMap
-    WeightSource <|-- VertexColorAlpha</code></pre>
+    WeightSource <|-- VertexColorSet</code></pre>
 
 <p>Because they all share the contract, the entry-point factory returns them in one flat
 list with no type checks needed by the caller:</p>

@@ -79,10 +79,19 @@ class SlimfastController:
     # Source / map management
     # ------------------------------------------------------------------
 
-    def set_mode(self, mode: str) -> None:
-        """Switch between 'deformer', 'nucleus', and 'all' backends."""
+    def set_mode(self,
+                 mode: str,
+                 refresh: bool = True) -> None:
+        """Switch between 'deformer', 'nucleus', 'vtxColor' and 'all' backends.
+
+        Args:
+            mode: Backend filter passed to resolve_weight_sources.
+            refresh: Re-resolve sources immediately. Pass False at UI startup
+                when restoring the saved radio state before any mesh is picked.
+        """
         self._mode = mode
-        self.refresh()
+        if refresh:
+            self.refresh()
 
     def refresh(self) -> None:
         """Re-resolve weight sources from the current Maya selection."""
@@ -162,8 +171,8 @@ class SlimfastController:
 
     def _source_label(self, source: WeightSource) -> str:
         """Human-readable label for a WeightSource node."""
-        from dw_maya.dw_paint.vertex_color_alpha import VertexColorAlpha
-        if isinstance(source, VertexColorAlpha):
+        from dw_maya.dw_paint.vertex_color import VertexColorSet
+        if isinstance(source, VertexColorSet):
             return f"[vtxColor] {source.color_set}"
         try:
             node_type = cmds.nodeType(source.node_name)
@@ -489,7 +498,7 @@ class SlimfastController:
         smooth floods the whole mesh regardless of selection, which is the
         expected behaviour when the user explicitly chooses 'artisan' mode.
         """
-        from dw_maya.dw_paint.vertex_color_alpha import VertexColorAlpha
+        from dw_maya.dw_paint.vertex_color import VertexColorSet
         from dw_maya.dw_paint.artisan_maya import _CTX_ALPHA, flood_smooth_vtx_map, _CTX_NUCLEUS
 
         if not self._require_active():
@@ -506,8 +515,8 @@ class SlimfastController:
                     f"Click \"Paint\" before using artisan smooth. Detail: {e}"
                 )
 
-        # ── VertexColorAlpha ─────────────────────────────────────────────
-        elif isinstance(self._active, VertexColorAlpha):
+        # ── VertexColorSet — active channel ─────────────────────────────
+        elif isinstance(self._active, VertexColorSet):
             ctx = _CTX_ALPHA
             if cmds.currentCtx() != ctx:
                 self._active.paint()
@@ -521,9 +530,9 @@ class SlimfastController:
             cmds.artUserPaintCtx(ctx, edit=True, selectedattroper='additive')
             if controller:
                 controller._batch_mode = False
-                self._active.set_weights(controller._alphas)
+                self._active.set_weights(controller._values)
             self._clamp_weights_post()
-            logger.info(f"Alpha artisan smooth x{iterations}.")
+            logger.info(f"Vertex color artisan smooth x{iterations}.")
 
         # ── Standard deformers ────────────────────────────────
         else:
@@ -1078,9 +1087,9 @@ class SlimfastController:
             except Exception as e:
                 logger.debug(f"set_cfx_brush_val failed (paint tool not active?): {e}")
             return
-        # ── VertexColorAlpha — artUserPaintCtx ──────────────────────────
-        from dw_maya.dw_paint.vertex_color_alpha import VertexColorAlpha
-        if isinstance(self._active, VertexColorAlpha):
+        # ── VertexColorSet — artUserPaintCtx ────────────────────────────
+        from dw_maya.dw_paint.vertex_color import VertexColorSet
+        if isinstance(self._active, VertexColorSet):
             try:
                 if cmds.artUserPaintCtx(_CTX_ALPHA, exists=True):
                     cmds.artUserPaintCtx(_CTX_ALPHA, edit=True, value=value)
@@ -1114,10 +1123,10 @@ class SlimfastController:
         :func:`~artisan_maya.set_artisan_operation`. This is one-way
         (UI -> artisan) — the artisan context is not read back to sync the UI.
         """
-        from dw_maya.dw_paint.vertex_color_alpha import VertexColorAlpha
+        from dw_maya.dw_paint.vertex_color import VertexColorSet
         if not self._require_active():
             return
-        if isinstance(self._active, VertexColorAlpha):
+        if isinstance(self._active, VertexColorSet):
             ctx = CTX_ALPHA
         else:
             ctx = self._resolve_paint_ctx()

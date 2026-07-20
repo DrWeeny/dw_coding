@@ -378,21 +378,52 @@ class NucleusPanel(DeformerPanelBase):
 
 
 # ---------------------------------------------------------------------------
-# VtxAlphaPanel
+# VtxColorPanel
 # ---------------------------------------------------------------------------
 
-class VtxAlphaPanel(DeformerPanelBase):
-    """Greyscale preview toggle for VertexColorAlpha sources."""
+class VtxColorPanel(DeformerPanelBase):
+    """Channel picker (A/R/G/B radios) + greyscale preview for VertexColorSet.
+
+    The source combo shows one row per colorSet; the channel is selected
+    here so the combo stays short. A radio click emits ``map_selected``,
+    which main_ui routes to ``SlimfastController.select_map``.
+    """
 
     _has_envelope      = False
     _has_paint         = False
     _has_artisan_clamp = False
-    _min_size = 50
-    _max_size = 50
+    _min_size = 62
+    _max_size = 62
+
+    # Radio order mirrors VertexColorSet.available_maps()
+    _CHANNEL_ORDER = ('alpha', 'red', 'green', 'blue')
 
     def build_header(self) -> Optional[QtWidgets.QWidget]:
         self._source = None
-        btn = QtWidgets.QPushButton('👁  Alpha B&W preview')
+        container = QtWidgets.QWidget()
+        lay = QtWidgets.QVBoxLayout(container)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(2)
+
+        # --- channel radio row ---
+        ch_row = QtWidgets.QHBoxLayout()
+        ch_row.setSpacing(8)
+        self._channel_group = QtWidgets.QButtonGroup(container)
+        self._channel_btns = {}
+        for channel in self._CHANNEL_ORDER:
+            radio = QtWidgets.QRadioButton(channel[0].upper())
+            radio.setProperty('channel', channel)
+            radio.setToolTip(f'Paint the {channel} channel')
+            self._channel_group.addButton(radio)
+            ch_row.addWidget(radio)
+            self._channel_btns[channel] = radio
+        self._channel_btns['alpha'].setChecked(True)
+        self._channel_group.buttonClicked.connect(self._on_channel_clicked)
+        ch_row.addStretch()
+        lay.addLayout(ch_row)
+
+        # --- preview toggle ---
+        btn = QtWidgets.QPushButton('👁  Channel B&W preview')
         btn.setCheckable(True)
         btn.setFixedHeight(32)
         btn.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed)
@@ -401,22 +432,45 @@ class VtxAlphaPanel(DeformerPanelBase):
             'QPushButton:hover { background-color: #554466; }'
             'QPushButton:checked { background-color: #775599; color: white; }'
         )
-        btn.setToolTip('Toggle greyscale preview of the alpha channel in the viewport')
+        btn.setToolTip('Toggle greyscale preview of the active channel in the viewport')
         btn.toggled.connect(self._on_toggled)
         self._preview_btn = btn
-        return btn
+        lay.addWidget(btn)
+
+        return container
 
     def on_source_changed(self,
                           source: Optional['WeightSource'],
                           active_map: str,
                           ctrl: 'SlimfastController') -> None:
-        from dw_maya.dw_paint.vertex_color_alpha import VertexColorAlpha
-        is_alpha = isinstance(source, VertexColorAlpha)
-        self._source = source if is_alpha else None
-        if not is_alpha and self._preview_btn.isChecked():
-            self._preview_btn.blockSignals(True)
-            self._preview_btn.setChecked(False)
-            self._preview_btn.blockSignals(False)
+        from dw_maya.dw_paint.vertex_color import VertexColorSet
+        is_vtx_color = isinstance(source, VertexColorSet)
+        self._source = source if is_vtx_color else None
+        if not is_vtx_color:
+            if self._preview_btn.isChecked():
+                self._preview_btn.blockSignals(True)
+                self._preview_btn.setChecked(False)
+                self._preview_btn.blockSignals(False)
+            return
+        channel = active_map or 'channel'
+        # Sync the radios without re-emitting map_selected
+        radio = self._channel_btns.get(channel)
+        if radio is not None and not radio.isChecked():
+            for b in self._channel_btns.values():
+                b.blockSignals(True)
+            radio.setChecked(True)
+            for b in self._channel_btns.values():
+                b.blockSignals(False)
+        self._preview_btn.setText(f'👁  {channel} B&W preview')
+        # Re-render the preview so it follows the newly selected channel.
+        if self._preview_btn.isChecked():
+            self._source.enable_preview()
+
+    @Slot(QtWidgets.QAbstractButton)
+    def _on_channel_clicked(self, radio: QtWidgets.QAbstractButton) -> None:
+        channel = radio.property('channel')
+        if channel:
+            self.map_selected.emit(channel)
 
     @Slot(bool)
     def _on_toggled(self, checked: bool) -> None:
@@ -469,8 +523,8 @@ register_deformer_panel(
 
 register_deformer_panel(
     mode_key    = 'vtxColor',
-    label       = 'vtxAlpha',
-    panel_class = VtxAlphaPanel,
+    label       = 'vtxColor',
+    panel_class = VtxColorPanel,
     ctrl_mode   = 'vtxColor',
     node_types  = ['vtxColor'],
     order       = 40,

@@ -35,7 +35,7 @@ _GROUP = "type_colors"
 
 # Bumped whenever _SEED changes; a mismatch wipes the cached colours once so the
 # new scheme takes effect without the user having to hit "Reset all".
-_PALETTE_VERSION = 2
+_PALETTE_VERSION = 3
 _VERSION_KEY = "type_colors_version"
 
 # Default colour for any type not in the scheme (mesh / unknown).
@@ -59,7 +59,7 @@ _SEED = {
     "DeltaMush":        "#f2b86b",
     "Tension":          "#c2702a",
     # vertex colour
-    "VertexColorAlpha": "#b884d0",   # mauve
+    "VertexColorSet":   "#b884d0",   # mauve
     # geometry
     "mesh":             "#ffffff",   # white
 }

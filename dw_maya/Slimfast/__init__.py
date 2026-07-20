@@ -12,7 +12,7 @@ _SOURCE_COLORS = {
     'cluster': '#cccccc',
     'softMod': '#cccccc',
     'wire': '#cccccc',
-    'VertexColorAlpha': '#cc88dd',
+    'VertexColorSet': '#cc88dd',
     'vtxColor': '#cc88dd',
 }
 

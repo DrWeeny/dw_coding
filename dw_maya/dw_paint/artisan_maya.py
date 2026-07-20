@@ -349,15 +349,23 @@ def inject_ramp_into_artattr(use_ramp=1):
         return
 
     # Check ramp not already injected
-    if cmds.checkBoxGrp('artisanRampUseRamp', exists=True):
+    if  cmds.checkBoxGrp('artisanRampUseRamp', exists=True):
         mel.eval(f'artisanRampCallback("{artisan_command}")')
-        cmds.checkBoxGrp('artisanRampUseRamp', edit=True, value1=use_ramp)
+        # cmds.checkBoxGrp('artisanRampUseRamp', edit=True, value1=use_ramp)
+        mel.eval(f"{artisan_command} -e -useColorRamp {str(bool(use_ramp)).lower()} artAttrContext ;")
 
-    # Inject inside the operation frame
-    cmds.setParent(target_frame)
-    mel.eval('source "artisanRampCallback.mel"')
-    mel.eval(f'artisanCreateRamp("{target_frame}", 1)')
-    mel.eval(f'artisanRampCallback("{artisan_command}")')
-    cmds.checkBoxGrp('artisanRampUseRamp', edit=True, value1=use_ramp)
+    else:
+        # Inject inside the operation frame
+        cmds.setParent(target_frame)
+        mel.eval('source "artisanRampCallback.mel"')
+        mel.eval(f'artisanCreateRamp("{target_frame}", 1)')
+        mel.eval(f'artisanRampCallback("{artisan_command}")')
+        # cmds.checkBoxGrp('artisanRampUseRamp', edit=True, value1=use_ramp)
+        mel.eval(f"{artisan_command} -e -useColorRamp {str(bool(use_ramp)).lower()} artAttrContext ;")
 
-    print("Ramp injected successfully to artisan tool")
+        print("Ramp injected successfully to artisan tool")
+    # mel.eval(f"""
+    # {artisan_command} -e -useColorRamp {bool(use_ramp)} artAttrContext ; artisanUpdateRampColorEnable;
+    # artAttrValues artAttrContext;
+    # toolPropertyShow;
+    # """)

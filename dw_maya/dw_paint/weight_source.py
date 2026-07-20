@@ -81,7 +81,7 @@ def resolve_weight_sources(
               ``'all'``      — deformers + nucleus maps + vertex colors (default)
               ``'deformer'`` — standard Maya deformers only
               ``'nucleus'``  — nCloth/nRigid per-vertex maps only
-              ``'vtxColor'`` — vertex color alpha maps only
+              ``'vtxColor'`` — vertex color channel maps only (RGBA)
 
     Returns:
         List of :class:`~dw_maya.dw_paint.protocol.WeightMap` instances:
@@ -116,15 +116,15 @@ def resolve_weight_sources(
         except Exception as e:
             logger.debug(f"No nucleus node found for '{mesh}': {e}")
 
-    # Vertex color alpha
+    # Vertex color channels (one source per colorSet, RGBA maps)
     if mode in ('all', 'vtxColor'):
         try:
-            from dw_maya.dw_paint.vertex_color_alpha import VertexColorAlpha
+            from dw_maya.dw_paint.vertex_color import VertexColorSet
             color_sets = cmds.polyColorSet(mesh, q=True, allColorSets=True) or []
             for cs in color_sets:
-                sources.append(VertexColorAlpha(mesh, color_set=cs))
+                sources.append(VertexColorSet(mesh, color_set=cs))
         except Exception as e:
-            logger.debug(f"No vertex color alpha for '{mesh}': {e}")
+            logger.debug(f"No vertex color sets for '{mesh}': {e}")
 
     return sources
 

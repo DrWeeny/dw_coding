@@ -237,7 +237,7 @@ stats = mesh_cache.get_stats()
 
 ### 6.1 In a WeightSource / paint tool
 
-`VertexColorAlpha` and `AlphaPaintController` follow this pattern:
+`VertexColorSet` and `ChannelPaintController` follow this pattern:
 
 ```python
 from dw_maya.dw_paint_utils.core import MeshDataFactory

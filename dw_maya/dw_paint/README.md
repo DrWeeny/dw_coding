@@ -83,7 +83,7 @@ src.paint()   # ouvre artisan pour le map actif
 ```python
 resolve_weight_sources('pSphere1', mode='deformer')  # cluster, blendShape…
 resolve_weight_sources('pSphere1', mode='nucleus')   # nCloth, nRigid
-resolve_weight_sources('pSphere1', mode='vtxColor')  # vertex color alpha
+resolve_weight_sources('pSphere1', mode='vtxColor')  # vertex color RGBA
 ```
 
 ### Accéder directement à un déformer connu
@@ -119,4 +119,5 @@ de `rename()` : ce n'est pas un noeud, c'est une vue sur des attributs.
   per-influence est partiel. Pour les workflows skinning complexes,
   utiliser `dw_skincluster` directement.
 - Pas de support des noeuds `hairSystem` comme source de weights.
-- Les vertex colors (mode `vtxColor`) sont en lecture seule pour l'instant.
+- Les vertex colors (mode `vtxColor`) exposent les 4 canaux (alpha/red/green/blue)
+  en lecture/ecriture via `VertexColorSet` (`use_map('red')` etc.).

@@ -1,27 +1,32 @@
-"""WeightSource wrapper for vertex color alpha channel.
+"""WeightSource wrapper for vertex color channels (RGBA).
 
-Maya does not expose the alpha channel of a colorSet as a paintable scalar
-map.  This module treats the alpha values as a standard ``WeightSource``
-so bq_slimfast (and any other consumer) can read, write, smooth, remap,
-copy/paste, and visualise the alpha without touching the RGB channels.
+Maya does not expose the individual channels of a colorSet as paintable
+scalar maps.  This module treats each channel (red, green, blue, alpha)
+of a colorSet as a standard ``WeightSource`` map so Slimfast (and any
+other consumer) can read, write, smooth, remap, copy/paste, and visualise
+one channel at a time without touching the other three.
 
 Features:
-    - Read/write alpha per vertex (polyColorPerVertex).
-    - Preview mode: copies alpha → RGB on a temp colorSet for B&W viewport feedback.
-    - Interactive artisan painting via artUserPaintCtx (paint alpha in real-time).
-    - Compatible with apply_operation (flood, smooth, vector, radial …).
+    - Read/write any single channel per vertex (polyColorPerVertex).
+    - Four maps per colorSet: ``alpha`` (default), ``red``, ``green``, ``blue``.
+    - Preview mode: copies the active channel -> RGB on a temp colorSet for
+      B&W viewport feedback.
+    - Interactive artisan painting via artUserPaintCtx (paint one channel
+      in real-time).
+    - Compatible with apply_operation (flood, smooth, vector, radial ...).
 
 Classes:
-    VertexColorAlpha — WeightSource for vertex color alpha.
+    VertexColorSet — WeightSource exposing a colorSet's channels as maps.
 
 Functions:
     install_mel_procs — Register the MEL callbacks needed by artUserPaintCtx.
+    create_alpha_map — Create a colorSet and flood its alpha channel.
 
 Example::
 
-    from dw_maya.dw_paint.vertex_color_alpha import VertexColorAlpha
-    src = VertexColorAlpha('pSphere1', color_set='colorSet1')
-    src.use_map('alpha')
+    from dw_maya.dw_paint.vertex_color import VertexColorSet
+    src = VertexColorSet('pSphere1', color_set='colorSet1')
+    src.use_map('red')
     weights = src.get_weights()
     src.set_weights([w * 0.5 for w in weights])
 
@@ -41,9 +46,26 @@ import numpy as np
 logger = get_logger()
 
 # Name of the temporary colorSet used for B&W preview
-_PREVIEW_SET = '_alpha_preview_bw'
-# artUserPaintCtx context name (singleton)
+_PREVIEW_SET = '_channel_preview_bw'
+# artUserPaintCtx context name (singleton) — must match artisan_maya.CTX_ALPHA
 _CTX_NAME = 'dwAlphaPaintCtx'
+
+# channel map name -> (polyColorPerVertex flag, MColor component index)
+_CHANNELS = {
+    'red':   ('r', 0),
+    'green': ('g', 1),
+    'blue':  ('b', 2),
+    'alpha': ('a', 3),
+}
+
+# Maya returns MColor(-1,-1,-1,-1) for vertices that were never assigned a
+# color — that -1 is an "unset" sentinel, not a stored value (it would
+# otherwise leak into weight ranges as a negative minimum, and into sibling
+# channels on write). Unset vertices read as 0.0 (empty map). Stored values
+# are returned untouched — including genuine negatives / out-of-0-1 data
+# (debug or HDR colorSets): getVertexColors(defaultUnsetColor) substitutes
+# only truly unassigned vertices, so no clamping happens anywhere.
+_UNSET_VALUE = 0.0
 
 # ---------------------------------------------------------------------------
 # MEL callback installation
@@ -100,21 +122,27 @@ def install_mel_procs() -> None:
 # Artisan paint controller — stored in __main__ for MEL access
 # ---------------------------------------------------------------------------
 
-class AlphaPaintController:
-    """Manages the artisan paint session for a VertexColorAlpha source.
+class ChannelPaintController:
+    """Manages the artisan paint session for one VertexColorSet channel.
 
-    Stored in ``__main__`` as ``dwAlphaPaintCtx_obj`` so the MEL callbacks
+    Stored in ``__main__`` under the context name so the MEL callbacks
     can call its methods.  Follows the same pattern as the proven
     GenericPaint reference implementation.
+
+    The channel is captured at construction time (the source's active map);
+    the whole session paints that channel only, RGB(A) siblings are preserved.
     """
 
-    def __init__(self, source: 'VertexColorAlpha') -> None:
+    def __init__(self, source: 'VertexColorSet') -> None:
         self.source = source
         self.mesh = source.mesh_name
         self.color_set = source.color_set
+        self.channel = source.channel
+        self._channel_idx = _CHANNELS[self.channel][1]
+        self._channel_flag = _CHANNELS[self.channel][0]
 
-        # Read current alpha values as our working buffer (numpy array for fast ops)
-        self._alphas = np.array(source.get_weights(), dtype=np.float64)
+        # Read current channel values as our working buffer (numpy array for fast ops)
+        self._values = np.array(source.get_weights(), dtype=np.float64)
 
         self._stamp_hits = {}
         self._dirty_verts = set()
@@ -126,8 +154,8 @@ class AlphaPaintController:
         self._vtx_mask: Optional[Set[int]] = None
 
     def on_cmd(self) -> None:
-        """Context activated — refresh alpha cache."""
-        self._alphas = np.array(self.source.get_weights(), dtype=np.float64)
+        """Context activated — refresh channel cache."""
+        self._values = np.array(self.source.get_weights(), dtype=np.float64)
 
     def off_cmd(self) -> None:
         """Context deactivated."""
@@ -186,7 +214,7 @@ class AlphaPaintController:
         self._flush_dirty()
 
     def _apply_stamp(self) -> None:
-        """Apply accumulated stamp hits to the in-memory alpha buffer."""
+        """Apply accumulated stamp hits to the in-memory channel buffer."""
         if not self._stamp_hits:
             return
 
@@ -210,17 +238,18 @@ class AlphaPaintController:
         for v_id, opacity in self._stamp_hits.items():
             if self._vtx_mask is not None and v_id not in self._vtx_mask:
                 continue
-            if 0 <= v_id < len(self._alphas):
-                old = self._alphas[v_id]
+            if 0 <= v_id < len(self._values):
+                old = self._values[v_id]
                 effective_opacity = 1.0 if (abs(artisan_value) < 1e-6 and opacity == 0.0) else opacity
-                new = old + (artisan_value - old) * effective_opacity
-                self._alphas[v_id] = np.clip(new, 0.0, 1.0)
+                # No 0-1 clamp: colorSets can hold out-of-range data
+                # (negative debug values, HDR) and painting must not eat it.
+                self._values[v_id] = old + (artisan_value - old) * effective_opacity
                 self._dirty_verts.add(v_id)
 
         self._stamp_hits.clear()
 
     def _apply_smooth(self) -> None:
-        """Smooth the alpha values for hit vertices using neighbour averaging."""
+        """Smooth the channel values for hit vertices using neighbour averaging."""
         if not self._neighbour_cache:
             self._build_neighbour_cache()
 
@@ -232,17 +261,17 @@ class AlphaPaintController:
 
         hit_verts = list(self._stamp_hits.keys())
         # numpy copy is faster than list() for the snapshot
-        snapshot = self._alphas.copy()
+        snapshot = self._values.copy()
 
         for v_id in hit_verts:
             if self._vtx_mask is not None and v_id not in self._vtx_mask:
                 continue
-            if 0 <= v_id < len(self._alphas):
+            if 0 <= v_id < len(self._values):
                 neighbours = self._neighbour_cache.get(v_id, [])
                 avg = float(np.mean(snapshot[neighbours])) if neighbours else float(snapshot[v_id])
                 old = float(snapshot[v_id])
-                new = old + (avg - old) * opacity
-                self._alphas[v_id] = np.clip(new, 0.0, 1.0)
+                # No 0-1 clamp — see _apply_stamp
+                self._values[v_id] = old + (avg - old) * opacity
                 self._dirty_verts.add(v_id)
 
         self._stamp_hits.clear()
@@ -269,7 +298,7 @@ class AlphaPaintController:
             self._neighbour_cache = cache
         except Exception as e:
             logger.warning(f"API neighbour cache failed: {e}. Falling back to cmds.")
-            n = len(self._alphas)
+            n = len(self._values)
             mesh = self.mesh
             cache = {}
             for i in range(n):
@@ -299,17 +328,22 @@ class AlphaPaintController:
         color_set = self.color_set
         preview_active = self.source._preview_active
         dirty_list = list(self._dirty_verts)
+        idx = self._channel_idx
 
         try:
             import maya.api.OpenMaya as om2
             fn_mesh = MeshDataFactory.get(mesh)._fn_mesh
 
-            # Write alpha to the original colorSet
-            colors = fn_mesh.getVertexColors(color_set)
+            # Write the painted channel to the original colorSet.
+            # Unset vertices read as the empty value, never the -1 sentinel.
+            unset = om2.MColor((_UNSET_VALUE,) * 4)
+            colors = fn_mesh.getVertexColors(color_set, unset)
             new_colors = om2.MColorArray()
             for i in dirty_list:
-                c = colors[i] if i < len(colors) else om2.MColor((1.0, 1.0, 1.0, 1.0))
-                new_colors.append(om2.MColor((c.r, c.g, c.b, float(self._alphas[i]))))
+                c = colors[i] if i < len(colors) else unset
+                rgba = [c.r, c.g, c.b, c.a]
+                rgba[idx] = float(self._values[i])
+                new_colors.append(om2.MColor(rgba))
 
             cmds.polyColorSet(mesh, currentColorSet=True, colorSet=color_set)
             fn_mesh.setVertexColors(new_colors, dirty_list)
@@ -322,7 +356,7 @@ class AlphaPaintController:
                     cmds.polyColorSet(mesh, currentColorSet=True, colorSet=_PREVIEW_SET)
                     preview_colors = om2.MColorArray()
                     for i in dirty_list:
-                        v = float(self._alphas[i])
+                        v = float(self._values[i])
                         preview_colors.append(om2.MColor((v, v, v, 1.0)))
                     fn_mesh.setVertexColors(preview_colors, dirty_list)
                 # Restore: stay on preview set if active, else original
@@ -335,11 +369,12 @@ class AlphaPaintController:
             logger.warning(f"API flush failed, falling back to cmds. Error: {e}")
 
             cmds.polyColorSet(mesh, currentColorSet=True, colorSet=color_set)
+            flag = self._channel_flag
             for i in dirty_list:
                 cmds.polyColorPerVertex(
                     f'{mesh}.vtx[{i}]',
-                    a=float(self._alphas[i]),
                     colorDisplayOption=True, representation=4,
+                    **{flag: float(self._values[i])},
                 )
 
             if preview_active:
@@ -348,7 +383,7 @@ class AlphaPaintController:
                 if preview_set_exists:
                     cmds.polyColorSet(mesh, currentColorSet=True, colorSet=_PREVIEW_SET)
                     for i in dirty_list:
-                        v = float(self._alphas[i])
+                        v = float(self._values[i])
                         cmds.polyColorPerVertex(
                             f'{mesh}.vtx[{i}]',
                             r=v, g=v, b=v, a=1.0,
@@ -360,8 +395,12 @@ class AlphaPaintController:
         self._dirty_verts.clear()
 
 
-class VertexColorAlpha(WeightSource):
-    """Treat vertex-color alpha as a per-vertex weight map.
+class VertexColorSet(WeightSource):
+    """Treat each vertex-color channel of a colorSet as a per-vertex weight map.
+
+    Exposes four maps — ``alpha`` (default), ``red``, ``green``, ``blue`` —
+    selected via :meth:`use_map`.  Writing one channel never touches the
+    other three.
 
     Args:
         mesh_name:  Transform name of the mesh.
@@ -370,8 +409,9 @@ class VertexColorAlpha(WeightSource):
 
     Example::
 
-        node = VertexColorAlpha('pSphere1')
-        node.get_weights()          # alpha per vertex
+        node = VertexColorSet('pSphere1')
+        node.get_weights()                  # alpha per vertex (default map)
+        node.use_map('red').get_weights()   # red per vertex
         node.set_weights([1.0] * node.vtx_count)
     """
 
@@ -384,6 +424,8 @@ class VertexColorAlpha(WeightSource):
         self._color_set = color_set
         self._preview_active = False
         self._batch_mode = False
+        # Default to alpha so pre-RGB scripts keep working without use_map()
+        self._current_map = 'alpha'
 
     # ------------------------------------------------------------------
     # Identity helpers
@@ -393,6 +435,11 @@ class VertexColorAlpha(WeightSource):
     def color_set(self) -> str:
         """The colorSet this source operates on."""
         return self._color_set
+
+    @property
+    def channel(self) -> str:
+        """The active channel name (``red``/``green``/``blue``/``alpha``)."""
+        return self._require_map()
 
     @property
     def vtx_count(self) -> int:
@@ -405,15 +452,15 @@ class VertexColorAlpha(WeightSource):
     # ------------------------------------------------------------------
 
     def available_maps(self) -> List[str]:
-        """Only one map: ``'alpha'``."""
-        return ['alpha']
+        """One map per channel — alpha first (the historical default)."""
+        return ['alpha', 'red', 'green', 'blue']
 
     def _resolve_attr(self, map_name: str) -> str:
         # Not used — we override get/set directly.
         return ''
 
     def _paint(self) -> None:
-        """Open an interactive artisan brush that paints only the alpha channel.
+        """Open an interactive artisan brush that paints only the active channel.
 
         Uses ``artUserPaintCtx`` with the proven callback pattern:
         initializeCmd returns ``-path 1``, setValueCommand receives per-vertex
@@ -425,7 +472,7 @@ class VertexColorAlpha(WeightSource):
         install_mel_procs()
 
         # 2. Create controller and store in __main__ under context name
-        controller = AlphaPaintController(self)
+        controller = ChannelPaintController(self)
         __main__.__dict__[_CTX_NAME] = controller
 
         # 3. Ensure the correct colorSet is active
@@ -463,23 +510,28 @@ class VertexColorAlpha(WeightSource):
         cmds.select(self._mesh_name, replace=True)
         cmds.setToolTo(_CTX_NAME)
 
-        logger.info(f"Alpha paint brush active on '{self._color_set}'.")
+        logger.info(f"Paint brush active on '{self._color_set}' channel '{self.channel}'.")
 
     # ------------------------------------------------------------------
-    # get / set weights — alpha channel only
+    # get / set weights — active channel only
     # ------------------------------------------------------------------
 
     def get_weights(self) -> WeightList:
-        """Read per-vertex alpha values from the colorSet."""
+        """Read the active channel's per-vertex values from the colorSet.
+
+        Unset vertices (Maya's -1 sentinel) read as ``_UNSET_VALUE`` (0.0).
+        """
         n = self.vtx_count
-        alphas = [1.0] * n
+        flag, idx = _CHANNELS[self.channel]
+        values = [_UNSET_VALUE] * n
 
         try:
             import maya.api.OpenMaya as om2
             fn_mesh = MeshDataFactory.get(self._mesh_name)._fn_mesh
-            colors = fn_mesh.getVertexColors(self._color_set)
+            colors = fn_mesh.getVertexColors(self._color_set,
+                                             om2.MColor((_UNSET_VALUE,) * 4))
             if len(colors) == n:
-                return [c.a for c in colors]
+                return [c[idx] for c in colors]
         except Exception as e:
             logger.warning(f"API get_weights failed: {e}. Falling back to cmds.")
 
@@ -487,21 +539,25 @@ class VertexColorAlpha(WeightSource):
         cmds.polyColorSet(self._mesh_name, currentColorSet=True, colorSet=self._color_set)
 
         try:
-            colors = cmds.polyColorPerVertex(
+            raw = cmds.polyColorPerVertex(
                 f'{self._mesh_name}.vtx[0:{n - 1}]',
-                query=True, a=True, colorDisplayOption=True
+                query=True, colorDisplayOption=True,
+                **{flag: True}
             ) or []
-            if len(colors) == n:
-                alphas = [float(a) for a in colors]
-            elif colors:
-                alphas = self._face_vertex_to_vertex(colors, n)
+            if len(raw) == n:
+                values = [float(v) for v in raw]
+            elif raw:
+                values = self._face_vertex_to_vertex(raw, n)
+            # No sentinel mapping here: cmds cannot tell an unset vertex from
+            # a stored -1, and stored negatives must be preserved (the API
+            # path above is the primary one and does distinguish them).
         except Exception as e:
-            logger.warning(f"get_weights alpha failed: {e}")
+            logger.warning(f"get_weights '{self.channel}' failed: {e}")
 
-        return alphas
+        return values
 
     def set_weights(self, weights: WeightList, **kwargs) -> None:
-        """Write per-vertex alpha values, leaving RGB untouched.
+        """Write the active channel per vertex, leaving the other channels untouched.
 
         Args:
             weights: One float per vertex.
@@ -524,6 +580,8 @@ class VertexColorAlpha(WeightSource):
                 f"on '{self.node_name}'"
             )
 
+        flag = _CHANNELS[self.channel][0]
+
         cmds.polyColorSet(self._mesh_name, currentColorSet=True,
                           colorSet=self._color_set)
 
@@ -535,7 +593,7 @@ class VertexColorAlpha(WeightSource):
         except Exception as e:
             if maya_api:
                 logger.warning(f"OpenMaya API failed, falling back to cmds. Error: {e}")
-            
+
             # Fallback to cmds per-vertex
             if id_group:
                 from dw_maya.dw_maya_utils.dw_maya_components import create_maya_ranges
@@ -550,17 +608,17 @@ class VertexColorAlpha(WeightSource):
                     for r in ranges:
                         cmds.polyColorPerVertex(
                             f'{self._mesh_name}.vtx[{r}]',
-                            a=float(w_val),
                             colorDisplayOption=True,
                             representation=4,
+                            **{flag: float(w_val)},
                         )
             else:
-                for i, a in enumerate(weights):
+                for i, w in enumerate(weights):
                     cmds.polyColorPerVertex(
                         f'{self._mesh_name}.vtx[{i}]',
-                        a=float(a),
                         colorDisplayOption=True,
                         representation=4,
+                        **{flag: float(w)},
                     )
 
         # Refresh preview if active (skip during batch mode)
@@ -571,13 +629,15 @@ class VertexColorAlpha(WeightSource):
         self._sync_artisan_controller(weights)
 
     def _set_weights_api(self, weights: WeightList) -> None:
-        """Write alpha values using OpenMaya API for better performance."""
+        """Write the active channel using OpenMaya API for better performance."""
         import maya.api.OpenMaya as om2
 
         fn_mesh = MeshDataFactory.get(self._mesh_name)._fn_mesh
         color_set = self._color_set
+        idx = _CHANNELS[self.channel][1]
+        unset = om2.MColor((_UNSET_VALUE,) * 4)
         try:
-            colors = fn_mesh.getVertexColors(color_set)
+            colors = fn_mesh.getVertexColors(color_set, unset)
         except Exception:
             raise RuntimeError("No existing color data — fallback to cmds")
 
@@ -585,31 +645,32 @@ class VertexColorAlpha(WeightSource):
         vertex_list = list(range(n))
         new_colors = om2.MColorArray()
         for i in range(n):
-            c = colors[i] if i < len(colors) else om2.MColor((1.0, 1.0, 1.0, 1.0))
-            new_colors.append(om2.MColor((c.r, c.g, c.b, float(weights[i]))))
+            c = colors[i] if i < len(colors) else unset
+            rgba = [c.r, c.g, c.b, c.a]
+            rgba[idx] = float(weights[i])
+            new_colors.append(om2.MColor(rgba))
 
         fn_mesh.setVertexColors(new_colors, vertex_list)
 
     def _sync_artisan_controller(self, weights: WeightList) -> None:
-        """Update the artisan paint controller cache if it exists."""
+        """Update the artisan paint controller cache if it targets this channel."""
         import __main__
         controller = __main__.__dict__.get(_CTX_NAME)
-        if controller and isinstance(controller, AlphaPaintController):
-            if controller.source is self:
-                controller._alphas = np.array(weights, dtype=np.float64)
+        if controller and isinstance(controller, ChannelPaintController):
+            if controller.source is self and controller.channel == self.channel:
+                controller._values = np.array(weights, dtype=np.float64)
 
     # ------------------------------------------------------------------
-    # Alpha preview — B&W visualisation
+    # Channel preview — B&W visualisation
     # ------------------------------------------------------------------
 
     def enable_preview(self) -> None:
-        """Create a temp colorSet where R=G=B=alpha and display it.
+        """Create a temp colorSet where R=G=B=<active channel> and display it.
 
         The mesh's ``displayColors`` attribute is turned on so the viewport
-        shows the alpha channel as a greyscale image.
+        shows the active channel as a greyscale image.
         """
-        n = self.vtx_count
-        alphas = self.get_weights()
+        values = self.get_weights()
 
         # Ensure the preview colorSet exists
         existing = cmds.polyColorSet(self._mesh_name, q=True, allColorSets=True) or []
@@ -620,11 +681,11 @@ class VertexColorAlpha(WeightSource):
         cmds.polyColorSet(self._mesh_name, currentColorSet=True,
                           colorSet=_PREVIEW_SET)
 
-        self._update_preview(alphas)
+        self._update_preview(values)
 
         cmds.setAttr(f'{self._mesh_name}.displayColors', 1)
         self._preview_active = True
-        logger.info(f"Alpha preview enabled on '{self._mesh_name}'.")
+        logger.info(f"Channel preview enabled on '{self._mesh_name}' ({self.channel}).")
 
     def disable_preview(self) -> None:
         """Remove the temp colorSet and restore the original display."""
@@ -636,11 +697,11 @@ class VertexColorAlpha(WeightSource):
         cmds.polyColorSet(self._mesh_name, currentColorSet=True,
                           colorSet=self._color_set)
         self._preview_active = False
-        logger.info(f"Alpha preview disabled on '{self._mesh_name}'.")
+        logger.info(f"Channel preview disabled on '{self._mesh_name}'.")
 
-    def _update_preview(self, alphas: WeightList) -> None:
-        """Refresh the preview colorSet with current alpha values."""
-        n = len(alphas)
+    def _update_preview(self, values: WeightList) -> None:
+        """Refresh the preview colorSet with current channel values."""
+        n = len(values)
         existing = cmds.polyColorSet(self._mesh_name, q=True, allColorSets=True) or []
         if _PREVIEW_SET not in existing:
             return
@@ -653,11 +714,11 @@ class VertexColorAlpha(WeightSource):
             colors = om2.MColorArray()
             vertex_list = list(range(n))
             for i in range(n):
-                v = float(alphas[i])
+                v = float(values[i])
                 colors.append(om2.MColor((v, v, v, 1.0)))
             fn_mesh.setVertexColors(colors, vertex_list)
         except Exception:
-            for i, a in enumerate(alphas):
+            for i, a in enumerate(values):
                 v = float(a)
                 cmds.polyColorPerVertex(
                     f'{self._mesh_name}.vtx[{i}]',
@@ -669,7 +730,7 @@ class VertexColorAlpha(WeightSource):
     # ------------------------------------------------------------------
 
     def _face_vertex_to_vertex(self, fv_values: list, n: int) -> WeightList:
-        """Average per-face-vertex alpha values to per-vertex."""
+        """Average per-face-vertex channel values to per-vertex."""
         accum = [0.0] * n
         counts = [0] * n
         # Build a vtx-to-faceVertex mapping
@@ -695,7 +756,7 @@ class VertexColorAlpha(WeightSource):
 # Convenience factory
 # ---------------------------------------------------------------------------
 
-def create_alpha_map(mesh: str, color_set: str = '', default_value: float = 0.0) -> 'VertexColorAlpha':
+def create_alpha_map(mesh: str, color_set: str = '', default_value: float = 0.0) -> 'VertexColorSet':
     """Create a new colorSet on *mesh* and fill its alpha with *default_value*.
 
     Args:
@@ -704,7 +765,7 @@ def create_alpha_map(mesh: str, color_set: str = '', default_value: float = 0.0)
         default_value: Initial alpha value for all vertices (0.0 = black).
 
     Returns:
-        A ready-to-use :class:`VertexColorAlpha` instance.
+        A ready-to-use :class:`VertexColorSet` instance (alpha map active).
     """
     if not color_set:
         color_set = 'alphaMap'
@@ -722,8 +783,7 @@ def create_alpha_map(mesh: str, color_set: str = '', default_value: float = 0.0)
     else:
         logger.info(f"ColorSet '{color_set}' already exists on '{mesh}', reusing.")
 
-    source = VertexColorAlpha(mesh, color_set=color_set)
+    source = VertexColorSet(mesh, color_set=color_set)
     n = source.vtx_count
-    source.set_weights([float(default_value)] * n)
+    source.use_map('alpha').set_weights([float(default_value)] * n)
     return source
-
