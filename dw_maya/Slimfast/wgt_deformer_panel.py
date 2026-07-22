@@ -462,9 +462,8 @@ class VtxColorPanel(DeformerPanelBase):
             for b in self._channel_btns.values():
                 b.blockSignals(False)
         self._preview_btn.setText(f'👁  {channel} B&W preview')
-        # Re-render the preview so it follows the newly selected channel.
-        if self._preview_btn.isChecked():
-            self._source.enable_preview()
+        # VertexColorSet.use_map() already re-renders an active preview to
+        # follow the new channel -- nothing to do here.
 
     @Slot(QtWidgets.QAbstractButton)
     def _on_channel_clicked(self, radio: QtWidgets.QAbstractButton) -> None:

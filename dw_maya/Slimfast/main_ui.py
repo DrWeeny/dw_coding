@@ -1185,9 +1185,12 @@ class SlimfastWidget(QtWidgets.QWidget):
         )
         self._display_range_fit_btn.clicked.connect(self._refresh_display_range)
 
-        # Weights group — Set 0/1 share the same op mode as the slider
-        self._set0_btn.clicked.connect(partial(self._on_set_weight, 0.0))
-        self._set1_btn.clicked.connect(partial(self._on_set_weight, 1.0))
+        # Weights group — Set 0/1 share the same op mode as the slider.
+        # sync_artisan=False: these are quick clamp-to-bound shortcuts, not
+        # an explicit brush value choice — they shouldn't also retarget the
+        # artisan brush's paint value (only the custom weight set/flood).
+        self._set0_btn.clicked.connect(partial(self._on_set_weight, 0.0, False))
+        self._set1_btn.clicked.connect(partial(self._on_set_weight, 1.0, False))
         self.set_invert_btn.clicked.connect(self._on_weight_invert)
         self._op_group.buttonClicked.connect(self._on_op_mode_changed)
 
@@ -1744,23 +1747,29 @@ class SlimfastWidget(QtWidgets.QWidget):
         self._weight_slider.value = value
 
     @Slot()
-    def _on_set_weight(self, value: float = None) -> None:
+    def _on_set_weight(self, value: float = None, sync_artisan: bool = True) -> None:
         """Relay value and op mode to the controller.
 
-        Also syncs the artisan brush value so that the live paint tool and the
-        UI buttons stay coherent — clicking "Set 0.3" makes the artisan brush
-        also paint at 0.3 on the next stroke.
+        Optionally syncs the artisan brush value so that the live paint tool
+        and the UI buttons stay coherent — clicking a custom "Set 0.3" makes
+        the artisan brush also paint at 0.3 on the next stroke.
 
         Args:
             value: Explicit value (used by Set 0 / Set 1).
                    Falls back to the slider value when omitted.
+            sync_artisan: False for Set 0 / Set 1 — those are quick
+                   clamp-to-bound shortcuts, not a brush value choice, so
+                   they should only touch the custom weight set/flood, not
+                   the artisan brush's paint value.
         """
         if value is None:
             value = self._weight_slider.value
         self._ctrl.set_weight(value, self._current_op())
-        # Keep artisan brush in sync with the last-used value — the UI drives
-        # the artisan one-way, and only on an explicit Set (not on every edit).
-        self._ctrl.set_artisan_value(value)
+        if sync_artisan:
+            # Keep artisan brush in sync with the last-used value — the UI
+            # drives the artisan one-way, and only on an explicit Set (not
+            # on every edit).
+            self._ctrl.set_artisan_value(value)
 
     @Slot(int)
     def _on_tol_slider_changed(self, int_val: int) -> None:

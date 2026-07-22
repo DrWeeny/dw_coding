@@ -653,7 +653,7 @@ class VertexColorSet(WeightSource):
         return _CTX_NAME
 
     def use_map(self, map_name: str) -> 'VertexColorSet':
-        """Activate a channel, retargeting any live brush session to match.
+        """Activate a channel, retargeting any live brush/preview session to match.
 
         ``ChannelPaintController`` captures its channel once, at
         :meth:`_paint` time, and lives on as a singleton in ``__main__`` for
@@ -661,9 +661,17 @@ class VertexColorSet(WeightSource):
         session is already active would otherwise leave the brush silently
         painting the OLD channel while reads/preview correctly follow the
         new one.
+
+        Refreshing the B&W preview here (not only from the UI layer) means
+        any caller that switches channel -- the Slimfast radio, a script,
+        DynEval's paint handoff -- gets a preview that follows the active
+        channel, not just the one UI code path that happened to call
+        enable_preview() again.
         """
         super().use_map(map_name)
         self._sync_paint_controller()
+        if self._preview_active:
+            self.enable_preview()
         return self
 
     def _sync_paint_controller(self) -> None:
@@ -769,40 +777,55 @@ class VertexColorSet(WeightSource):
         """
         n = self.vtx_count
         flag, idx = _CHANNELS[self.channel]
-        values = [_UNSET_VALUE] * n
+        values = None
 
         try:
             import maya.api.OpenMaya as om2
             fn_mesh = MeshDataFactory.get(self._mesh_name)._fn_mesh
             # See _flush_dirty — a preview-active paint stroke can leave
-            # "current colorset" on the preview set; force it back to the
-            # real one before reading.
+            # "current colorset" on the scratch/preview set; force it back
+            # to the real one before reading.
             fn_mesh.setCurrentColorSetName(self._color_set)
             colors = fn_mesh.getVertexColors(self._color_set,
                                              om2.MColor((_UNSET_VALUE,) * 4))
             if len(colors) == n:
-                return [c[idx] for c in colors]
+                values = [c[idx] for c in colors]
         except Exception as e:
             logger.warning(f"API get_weights failed: {e}. Falling back to cmds.")
 
-        # Ensure we read from the real colorSet, not the B&W preview
-        cmds.polyColorSet(self._mesh_name, currentColorSet=True, colorSet=self._color_set)
+        if values is None:
+            # Ensure we read from the real colorSet, not the B&W preview
+            cmds.polyColorSet(self._mesh_name, currentColorSet=True, colorSet=self._color_set)
+            try:
+                raw = cmds.polyColorPerVertex(
+                    f'{self._mesh_name}.vtx[0:{n - 1}]',
+                    query=True, colorDisplayOption=True,
+                    **{flag: True}
+                ) or []
+                if len(raw) == n:
+                    values = [float(v) for v in raw]
+                elif raw:
+                    values = self._face_vertex_to_vertex(raw, n)
+                # No sentinel mapping here: cmds cannot tell an unset vertex
+                # from a stored -1, and stored negatives must be preserved
+                # (the API path above is the primary one and does
+                # distinguish them).
+            except Exception as e:
+                logger.warning(f"get_weights '{self.channel}' failed: {e}")
 
-        try:
-            raw = cmds.polyColorPerVertex(
-                f'{self._mesh_name}.vtx[0:{n - 1}]',
-                query=True, colorDisplayOption=True,
-                **{flag: True}
-            ) or []
-            if len(raw) == n:
-                values = [float(v) for v in raw]
-            elif raw:
-                values = self._face_vertex_to_vertex(raw, n)
-            # No sentinel mapping here: cmds cannot tell an unset vertex from
-            # a stored -1, and stored negatives must be preserved (the API
-            # path above is the primary one and does distinguish them).
-        except Exception as e:
-            logger.warning(f"get_weights '{self.channel}' failed: {e}")
+            if values is None:
+                values = [_UNSET_VALUE] * n
+
+        # The read above always forces 'current' onto the real colorSet --
+        # restore the scratch/preview set afterward so a B&W preview
+        # doesn't visually revert to true colors just because something
+        # (e.g. a select-by-range/select-by-value helper) called
+        # get_weights() outside of any active brush stroke.
+        if self._preview_active:
+            try:
+                MeshDataFactory.get(self._mesh_name)._fn_mesh.setCurrentColorSetName(_PREVIEW_SET)
+            except Exception:
+                cmds.polyColorSet(self._mesh_name, currentColorSet=True, colorSet=_PREVIEW_SET)
 
         return values
 
