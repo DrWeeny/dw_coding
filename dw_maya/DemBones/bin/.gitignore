@@ -1,0 +1,10 @@
+# DemBones binaries are not committed (BSD-3, large, platform specific).
+# Artists supply their own; see README.md. Keep this folder's docs tracked.
+Windows/
+Linux/
+MacOS/
+macOS/
+
+!.gitignore
+!README.md
+!LICENSE
