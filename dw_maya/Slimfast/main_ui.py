@@ -46,6 +46,7 @@ from dw_utils import data_hub
 import dw_maya.dw_paint
 import dw_maya.dw_pyqt_utils.dw_btn_storage
 from dw_maya.dw_pyqt_utils.wgt_slider import RangeSliderWithSpinbox, SliderWithButton
+from dw_maya.dw_pyqt_utils.wgt_ramp_curve import RampCurveWidget
 from dw_maya.dw_paint.protocol import WeightSource
 
 from dw_maya.dw_nucleus_utils import NClothMap
@@ -346,10 +347,18 @@ class SlimfastWidget(QtWidgets.QWidget):
         falloff_row.setContentsMargins(0, 0, 0, 0)
         falloff_row.addWidget(QtWidgets.QLabel('Falloff'))
         self._adv_falloff_combo = QtWidgets.QComboBox()
-        self._adv_falloff_combo.addItems(['linear', 'quadratic', 'smooth', 'smooth2'])
+        self._adv_falloff_combo.addItems(['linear', 'quadratic', 'smooth', 'smooth2', 'ramp'])
         falloff_row.addWidget(self._adv_falloff_combo)
         falloff_row.addStretch()
         lay.addWidget(self._adv_falloff_widget)
+
+        # ---- Ramp falloff curve editor (shown only when Falloff = ramp) ----
+        self._adv_ramp_widget = RampCurveWidget()
+        self._adv_ramp_widget.setVisible(False)
+        self._adv_falloff_combo.currentTextChanged.connect(
+            lambda f: self._adv_ramp_widget.setVisible(f == 'ramp')
+        )
+        lay.addWidget(self._adv_ramp_widget)
 
         # ---- Vector sub-widget ----------------------------------------
         self._adv_vector_widget = QtWidgets.QWidget()
@@ -361,7 +370,7 @@ class SlimfastWidget(QtWidgets.QWidget):
         vmode_row = QtWidgets.QHBoxLayout()
         vmode_row.addWidget(QtWidgets.QLabel('Type'))
         self._adv_vec_mode_combo = QtWidgets.QComboBox()
-        self._adv_vec_mode_combo.addItems(['vector', 'projection', 'distance', 'normal'])
+        self._adv_vec_mode_combo.addItems(['vector', 'projection', 'distance', 'normal', 'uv'])
         vmode_row.addWidget(self._adv_vec_mode_combo)
         vmode_row.addStretch()
         vec_lay.addLayout(vmode_row)
@@ -398,10 +407,25 @@ class SlimfastWidget(QtWidgets.QWidget):
         axis_lay.addLayout(custom_row)
         vec_lay.addWidget(self._adv_axis_widget)
 
-        # Hide axis controls in 'normal' mode
-        self._adv_vec_mode_combo.currentTextChanged.connect(
-            lambda m: self._adv_axis_widget.setVisible(m != 'normal')
-        )
+        # UV axis radio buttons (shown only in 'uv' mode)
+        self._adv_uv_axis_widget = QtWidgets.QWidget()
+        uv_axis_row = QtWidgets.QHBoxLayout(self._adv_uv_axis_widget)
+        uv_axis_row.setContentsMargins(0, 0, 0, 0)
+        uv_axis_row.addWidget(QtWidgets.QLabel('UV axis'))
+        self._adv_uv_axis_group = QtWidgets.QButtonGroup(self)
+        for uv_axis in ('u', 'v'):
+            btn = QtWidgets.QRadioButton(uv_axis)
+            btn.setProperty('uv_axis', uv_axis)
+            if uv_axis == 'u':
+                btn.setChecked(True)
+            self._adv_uv_axis_group.addButton(btn)
+            uv_axis_row.addWidget(btn)
+        uv_axis_row.addStretch()
+        self._adv_uv_axis_widget.setVisible(False)
+        vec_lay.addWidget(self._adv_uv_axis_widget)
+
+        # Show/hide axis controls per Type mode
+        self._adv_vec_mode_combo.currentTextChanged.connect(self._on_adv_vec_mode_changed)
         lay.addWidget(self._adv_vector_widget)
 
         # ---- Radial sub-widget ----------------------------------------
@@ -481,6 +505,7 @@ class SlimfastWidget(QtWidgets.QWidget):
             mir_dir_row.addWidget(btn)
         mir_dir_row.addStretch()
         mir_lay.addLayout(mir_dir_row)
+        self._adv_mirror_axis_group.buttonToggled.connect(self._sync_native_symmetry_if_active)
 
         mir_tol_row = QtWidgets.QHBoxLayout()
         mir_tol_row.addWidget(QtWidgets.QLabel('Tolerance'))
@@ -494,9 +519,20 @@ class SlimfastWidget(QtWidgets.QWidget):
             'Raise this on meshes with slightly off-symmetry vertices — '
             'unmatched vertices keep their current weight and are logged.'
         )
+        self._adv_mirror_tolerance_spin.valueChanged.connect(self._sync_native_symmetry_if_active)
         mir_tol_row.addWidget(self._adv_mirror_tolerance_spin)
         mir_tol_row.addStretch()
         mir_lay.addLayout(mir_tol_row)
+
+        self._adv_mirror_symmetry_btn = QtWidgets.QPushButton('Show symmetry (native)')
+        self._adv_mirror_symmetry_btn.setCheckable(True)
+        self._adv_mirror_symmetry_btn.setToolTip(
+            "Toggle Maya's native symmetry tool (world-space, matching axis "
+            "and tolerance above) to visually spot-check the mesh before "
+            "mirroring — does not touch weight data."
+        )
+        self._adv_mirror_symmetry_btn.toggled.connect(self._on_mirror_symmetry_toggled)
+        mir_lay.addWidget(self._adv_mirror_symmetry_btn)
 
         lay.addWidget(self._adv_mirror_widget)
 
@@ -969,6 +1005,15 @@ class SlimfastWidget(QtWidgets.QWidget):
         mode_row.addWidget(self._smooth_mode)
         mode_row.addStretch()
         lay.addLayout(mode_row)
+
+        self._shrink_check = QtWidgets.QCheckBox('Shrink (erode inward)')
+        self._shrink_check.setToolTip(
+            'Contract painted regions toward their core instead of blurring '
+            'them outward (neighbor MIN instead of neighbor mean).\n'
+            'No artisan equivalent — forces the numpy path regardless of "via".'
+        )
+        self._shrink_check.toggled.connect(self._on_shrink_toggled)
+        lay.addWidget(self._shrink_check)
 
         # Indeterminate busy bar — shown while smooth is computing
         self._smooth_busy_bar = QtWidgets.QProgressBar()
@@ -2097,25 +2142,38 @@ class SlimfastWidget(QtWidgets.QWidget):
     def _on_smooth(self, iterations: int) -> None:
         self._smooth_busy_bar.show()
         QtWidgets.QApplication.processEvents()
+        shrink = self._shrink_check.isChecked()
         try:
-            if self._smooth_mode.currentIndex() == 0:
+            # Artisan has no erode equivalent — shrink always forces numpy.
+            if self._smooth_mode.currentIndex() == 0 and not shrink:
                 try:
                     self._ctrl.smooth_artisan(iterations)
                 except RuntimeError as e:
                     QtWidgets.QMessageBox.warning(self, 'Smooth', str(e))
             else:
-                self._ctrl.smooth(iterations)
+                self._ctrl.smooth(iterations, mode='erode' if shrink else 'blur')
         finally:
             self._smooth_busy_bar.hide()
 
     def _on_smooth_flood(self) -> None:
         self._on_smooth(self._iter_spinbox.value())
 
+    @Slot(bool)
+    def _on_shrink_toggled(self, checked: bool) -> None:
+        """Grey out the artisan 'via' option — shrink/erode has no artisan equivalent."""
+        artisan_item = self._smooth_mode.model().item(0)
+        if artisan_item is not None:
+            artisan_item.setEnabled(not checked)
+        if checked and self._smooth_mode.currentIndex() == 0:
+            self._smooth_mode.setCurrentIndex(1)
+
     @Slot()
     def _on_advanced_apply(self) -> None:
         """Apply the selected advanced weight distribution operation."""
         mode = self._adv_mode_combo.currentText()
         falloff = self._adv_falloff_combo.currentText()
+        if falloff == 'ramp':
+            falloff = self._adv_ramp_widget.control_points
         invert = self._adv_invert_check.isChecked()
         op = self._adv_op_combo.currentText()
 
@@ -2123,6 +2181,9 @@ class SlimfastWidget(QtWidgets.QWidget):
             vec_mode = self._adv_vec_mode_combo.currentText()
             if vec_mode == 'normal':
                 direction = 'y+'  # unused but required
+            elif vec_mode == 'uv':
+                checked = self._adv_uv_axis_group.checkedButton()
+                direction = checked.property('uv_axis') if checked else 'u'
             elif self._adv_custom_check.isChecked():
                 direction = self._adv_custom_vec.text().strip()
             else:
@@ -2155,8 +2216,43 @@ class SlimfastWidget(QtWidgets.QWidget):
         self._adv_mirror_widget.setVisible(mode == 'mirror')
         # Mirror has no falloff / op / invert — it's a straight overwrite
         self._adv_falloff_widget.setVisible(mode != 'mirror')
+        self._adv_ramp_widget.setVisible(mode != 'mirror' and self._adv_falloff_combo.currentText() == 'ramp')
         self._adv_op_widget.setVisible(mode != 'mirror')
         self._adv_invert_check.setVisible(mode != 'mirror')
+        if mode != 'mirror':
+            # Leaving mirror mode — don't leave Maya's native symmetry lit up.
+            self._adv_mirror_symmetry_btn.setChecked(False)
+
+    @Slot(str)
+    def _on_adv_vec_mode_changed(self, vec_mode: str) -> None:
+        """Show the relevant direction control for the selected vector Type."""
+        self._adv_axis_widget.setVisible(vec_mode not in ('normal', 'uv'))
+        self._adv_uv_axis_widget.setVisible(vec_mode == 'uv')
+
+    def _current_mirror_axis(self) -> str:
+        btn = self._adv_mirror_axis_group.checkedButton()
+        return btn.property('axis') if btn else 'x'
+
+    @Slot(bool)
+    def _on_mirror_symmetry_toggled(self, checked: bool) -> None:
+        """Toggle Maya's native symmetry display, synced to the mirror axis/tolerance."""
+        self._adv_mirror_symmetry_btn.setText(
+            'Hide symmetry (native)' if checked else 'Show symmetry (native)'
+        )
+        self._ctrl.set_native_symmetry(
+            checked,
+            axis=self._current_mirror_axis(),
+            tolerance=self._adv_mirror_tolerance_spin.value(),
+        )
+
+    def _sync_native_symmetry_if_active(self, *_args) -> None:
+        """Re-apply native symmetry with the current axis/tolerance if it's showing."""
+        if self._adv_mirror_symmetry_btn.isChecked():
+            self._ctrl.set_native_symmetry(
+                True,
+                axis=self._current_mirror_axis(),
+                tolerance=self._adv_mirror_tolerance_spin.value(),
+            )
 
     def _toggle_axis_buttons(self, checked: bool, enable: bool = False) -> None:
         """Enable or disable axis radio buttons (used when custom vector is active)."""

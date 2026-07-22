@@ -116,32 +116,48 @@ class CustomFalloff(FalloffCurve):
 
 
 def apply_falloff(weights: WeightList,
-                  falloff_type: FalloffType = 'linear',
+                  falloff_type: Union[FalloffType, List[Tuple[float, float]]] = 'linear',
                   **kwargs) -> np.ndarray:
     """Apply falloff to weights.
 
     Args:
         weights: Input weight values
-        falloff_type: Type of falloff curve
-        **kwargs: Additional parameters for falloff function
+        falloff_type: Named falloff curve, or a list of ``(x, y)`` control
+                      points (0-1 range) for a custom ramp curve — e.g. from
+                      a UI curve editor. Routed to :func:`create_custom_falloff`.
+        **kwargs: Additional parameters for falloff function (named curves only)
 
     Returns:
         Modified weights
     """
-    curve = FalloffCurve(falloff_type, **kwargs)
+    if isinstance(falloff_type, (list, tuple)) and falloff_type and not isinstance(falloff_type[0], str):
+        curve = create_custom_falloff(list(falloff_type))
+    else:
+        curve = FalloffCurve(falloff_type, **kwargs)
     return curve.evaluate(weights)
 
 
-def create_custom_falloff(control_points: List[Tuple[float, float]]) -> FalloffCurve:
-    """Create custom falloff curve from control points using linear interpolation.
+def create_custom_falloff(
+        control_points: List[Union[Tuple[float, float], Tuple[float, float, str]]]
+) -> FalloffCurve:
+    """Create custom falloff curve from control points.
 
     Args:
-        control_points: List of (x, y) points defining the curve
+        control_points: List of ``(x, y)`` pairs (linear segments), or
+                        ``(x, y, interp)`` triples where *interp* is
+                        ``'linear'`` or ``'smooth'`` — the handle type
+                        applied to the segment starting at that point.
+                        ``'smooth'`` eases in/out (smoothstep) instead of
+                        a straight line to the next point.
     """
-    # Sort points by x coordinate to ensure proper interpolation
-    points = sorted(control_points)
+    # Normalize to (x, y, interp) triples so 2- and 3-tuples can mix freely,
+    # then sort by x (tuple-comparison sort would choke on a mixed length).
+    norm_points = [(float(p[0]), float(p[1]), p[2] if len(p) > 2 else 'linear')
+                  for p in control_points]
+    points = sorted(norm_points, key=lambda p: p[0])
     x_vals = np.array([p[0] for p in points])
     y_vals = np.array([p[1] for p in points])
+    interps = [p[2] for p in points]
 
     def custom_falloff(x: np.ndarray) -> np.ndarray:
         # Handle values outside the range of control points
@@ -157,8 +173,10 @@ def create_custom_falloff(control_points: List[Tuple[float, float]]) -> FalloffC
         for i in range(len(x_vals) - 1):
             mask = (x > x_vals[i]) & (x <= x_vals[i + 1])
             if np.any(mask):
-                # Linear interpolation formula: y = y1 + (x - x1) * (y2 - y1) / (x2 - x1)
                 t = (x[mask] - x_vals[i]) / (x_vals[i + 1] - x_vals[i])
+                if interps[i] == 'smooth':
+                    t = t * t * (3 - 2 * t)  # smoothstep ease
+                # y = y1 + t * (y2 - y1)
                 result[mask] = y_vals[i] + t * (y_vals[i + 1] - y_vals[i])
 
         return result

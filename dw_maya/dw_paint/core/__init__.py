@@ -21,6 +21,7 @@ from dw_maya.dw_paint.core.weights import (
     blend_weight_lists,
     modify_weights,
     smooth_weights,
+    erode_weights,
     select_vtx_info_on_mesh,
 )
 # Vector operations
@@ -58,6 +59,7 @@ __all__ = [
     'blend_weight_lists',
     'modify_weights',
     'smooth_weights',
+    'erode_weights',
     'select_vtx_info_on_mesh',
 
     # Vectors

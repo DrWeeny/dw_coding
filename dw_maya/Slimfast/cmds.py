@@ -1,5 +1,5 @@
 from maya import cmds, mel
-from typing import Callable, List, Optional, Tuple
+from typing import Callable, List, Optional, Tuple, Union
 
 from dw_maya.dw_decorators.dw_keep_selection import keep_selection
 from dw_maya.dw_decorators import singleUndoChunk, timeIt
@@ -477,13 +477,21 @@ class SlimfastController:
 
     @timeIt(track_stats=True)
     @singleUndoChunk
-    def smooth(self, iterations: int = 1) -> None:
-        """Topology-based smooth via numpy path, selection-aware."""
+    def smooth(self, iterations: int = 1, mode: str = 'blur') -> None:
+        """Topology-based smooth via numpy path, selection-aware.
+
+        Args:
+            iterations: Number of smoothing/erosion passes.
+            mode:       ``'blur'`` (neighbor mean, default) | ``'erode'``
+                        (neighbor min — shrinks painted regions inward).
+                        Artisan mode has no erode equivalent — ``smooth_artisan``
+                        always blurs regardless of *mode*.
+        """
         if not self._require_active():
             return
         mask = self._get_vtx_mask()
         try:
-            apply_operation(self._active, 'smooth', iterations=iterations, factor=0.5, mask=mask)
+            apply_operation(self._active, 'smooth', iterations=iterations, factor=0.5, mask=mask, mode=mode)
             self._clamp_weights_post(mask)
         except Exception as e:
             logger.error(f"Smooth failed: {e}")
@@ -703,7 +711,7 @@ class SlimfastController:
 
     @singleUndoChunk
     def apply_vector_weights(self, direction: str,
-                             falloff: str = 'linear',
+                             falloff: Union[str, List[Tuple[float, float]]] = 'linear',
                              invert: bool = False,
                              mode: str = 'vector',
                              op: str = 'replace') -> None:
@@ -717,9 +725,11 @@ class SlimfastController:
          direction: Predefined axis key (``'x+'``, ``'x-'``, ``'y+'``, ``'y-'``,
                     ``'z+'``, ``'z-'``) or a ``'x,y,z'`` custom vector string.
                     Ignored when mode is ``'normal'``.
-         falloff:   Curve type — ``'linear'``, ``'quadratic'``, ``'smooth'``, ``'smooth2'``.
+         falloff:   Curve type — ``'linear'``, ``'quadratic'``, ``'smooth'``, ``'smooth2'`` —
+                    or a list of ``(x, y)`` control points for a custom ramp curve.
          invert:    Invert the result.
-         mode:      ``'vector'`` | ``'projection'`` | ``'distance'`` | ``'normal'``.
+         mode:      ``'vector'`` | ``'projection'`` | ``'distance'`` | ``'normal'`` | ``'uv'``.
+                    In ``'uv'`` mode, *direction* is ``'u'`` or ``'v'``.
         """
         if not self._require_active():
             return
@@ -787,7 +797,7 @@ class SlimfastController:
 
     @singleUndoChunk
     def apply_radial_weights(self,
-                               falloff: str = 'linear',
+                               falloff: Union[str, List[Tuple[float, float]]] = 'linear',
                                invert: bool = False,
                                center: tuple = None,
                                radius: float = None,
@@ -803,7 +813,8 @@ class SlimfastController:
         2. Bounding-box centre / max extent of the current vertex selection.
 
         Args:
-            falloff: Curve type — ``'linear'``, ``'quadratic'``, ``'smooth'``, ``'smooth2'``.
+            falloff: Curve type — ``'linear'``, ``'quadratic'``, ``'smooth'``, ``'smooth2'`` —
+                     or a list of ``(x, y)`` control points for a custom ramp curve.
             invert:  Invert the result.
             center:  Explicit ``(x, y, z)`` world-space centre.  Auto if ``None``.
             radius:  Explicit max radius.  Auto if ``None``.
@@ -938,6 +949,28 @@ class SlimfastController:
             self._restore_wear_paint()
         except Exception as e:
             logger.error(f"Mirror weights failed: {e}")
+
+    def set_native_symmetry(self,
+                            enabled: bool,
+                            axis: str = 'x',
+                            tolerance: float = 0.001) -> None:
+        """Toggle Maya's native viewport symmetry display/tool.
+
+        Purely a visual/modeling aid to sanity-check a mesh for symmetry
+        breaks before running :meth:`apply_mirror_weights` — does not
+        affect weight data.
+
+        Args:
+            enabled:   Turn symmetry on/off.
+            axis:      ``'x'`` | ``'y'`` | ``'z'``.
+            tolerance: Position-matching tolerance, mirrored from the
+                       Advanced-ops mirror panel.
+        """
+        try:
+            cmds.symmetricModelling(symmetry=enabled, about='world',
+                                    axis=axis, tolerance=tolerance)
+        except Exception as e:
+            logger.error(f"Could not toggle native symmetry: {e}")
 
     def get_soft_select_radius(self) -> float:
         """Return the current Maya soft-selection radius, or 0.0 if disabled."""

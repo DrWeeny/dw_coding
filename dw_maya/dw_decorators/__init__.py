@@ -40,6 +40,7 @@ __all__: List[str] = [
     # Undo management
     "singleUndoChunk",
     "repeatable",
+    "push_undo",
 
     # Safety and validation
     "vtxAnimDetection",
@@ -63,6 +64,7 @@ from dw_maya.dw_decorators.dw_disable_solvers import tmp_disable_solver
 from dw_maya.dw_decorators.dw_load_plugin import load_plugin
 from dw_maya.dw_decorators.dw_returnNodeDiff import returnNodeDiff
 from dw_maya.dw_decorators.dw_undo import singleUndoChunk, repeatable
+from dw_maya.dw_decorators.dw_generic_undo import push_undo
 from dw_maya.dw_decorators.dw_viewportOff import viewportOff
 from dw_maya.dw_decorators.dw_decorators_other import evalManager_DG, evalManagerState
 from dw_maya.dw_decorators.dw_vtxAnimDetection import vtxAnimDetection
@@ -70,6 +72,6 @@ from dw_maya.dw_decorators.dw_is_maya_node import is_maya_node
 
 # Decorator categories for documentation and IDE support
 performance_decorators = [timeIt, viewportOff, tmp_disable_solver, evalManager_DG]
-undo_decorators = [singleUndoChunk, repeatable]
+undo_decorators = [singleUndoChunk, repeatable, push_undo]
 safety_decorators = [vtxAnimDetection, acceptString, load_plugin, is_maya_node]
 utility_decorators = [returnNodeDiff, printDate, complete_sound]

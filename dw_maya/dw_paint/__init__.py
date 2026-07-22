@@ -52,6 +52,7 @@ from dw_maya.dw_paint.core import (
     blend_weight_lists,
     modify_weights,
     smooth_weights,
+    erode_weights,
     select_vtx_info_on_mesh,
 
     # Vector operations
@@ -135,6 +136,7 @@ __all__ = [
     'MeshData', 'MeshDataFactory', 'get_vertex_shell', 'get_connected_vertices', 'find_vertex_pairs',
     'WeightData', 'WeightDataFactory', 'WeightList', 'WeightArray', 'blend_weight_lists', 'modify_weights', 'get_closest_vertex',
     'smooth_weights',
+    'erode_weights',
     'select_vtx_info_on_mesh',
     'VectorUtils', 'MayaVectorUtils', 'VectorDirection', 'Vector3D',
     'normalize_vector',

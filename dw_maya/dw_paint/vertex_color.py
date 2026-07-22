@@ -122,6 +122,70 @@ def get_icon():
     return get_resource_path("vertex_alpha_icon.png")
 
 # ---------------------------------------------------------------------------
+# Representation debug helper
+# ---------------------------------------------------------------------------
+
+# MFnMesh.getColorRepresentation() int constants (0=Alpha, 1=RGB, 2=RGBA).
+_REPRESENTATION_RGBA_INDEX = 2
+
+
+def check_channel_isolation(mesh: str, color_set: str) -> bool:
+    """Warn if *color_set* cannot store R/G/B/A independently.
+
+    A colorSet created with representation ``'A'`` or ``'RGB'`` only holds
+    that many floats per vertex -- Maya mirrors the single stored value
+    across the missing components on read/display. Painting or previewing
+    one channel on such a colorSet then appears to touch all four, which
+    looks like a channel-isolation bug in this module but is actually the
+    colorSet's storage shape (a leftover from the old alpha-only tool,
+    which always created 'A' colorSets). Call this before painting/preview
+    to tell the two cases apart.
+
+    Uses the OpenMaya API rather than ``cmds.polyColorSet(representation=True)``
+    -- that flag only reports the CURRENT colorSet's representation when
+    queried (``query=True`` demotes ``colorSet`` to a boolean), it cannot
+    take a colorSet name in query mode.
+
+    Returns:
+        True if the colorSet is RGBA (channels are independent), False if
+        it is a narrower representation (a warning is logged in that case).
+    """
+    try:
+        fn_mesh = MeshDataFactory.get(mesh)._fn_mesh
+        rep = fn_mesh.getColorRepresentation(color_set)
+    except Exception as e:
+        logger.warning(f"Could not query representation of '{color_set}' on '{mesh}': {e}")
+        return True  # unknown -- don't false-alarm
+
+    if rep != _REPRESENTATION_RGBA_INDEX:
+        logger.warning(
+            f"ColorSet '{color_set}' on '{mesh}' has representation '{rep}', "
+            f"not RGBA -- it cannot store R/G/B/A independently, so painting "
+            f"or previewing any single channel will appear on all four. "
+            f"This is Maya's storage shape, not a bug in VertexColorSet. "
+            f"Recreate the colorSet with representation='RGBA' "
+            f"(cmds.polyColorSet(mesh, create=True, colorSet=name, "
+            f"representation='RGBA')) to isolate channels."
+        )
+        return False
+    return True
+
+def _ensure_scratch_colorset(mesh: str) -> None:
+    """Create the internal scratch colorSet (``_PREVIEW_SET``) if missing.
+
+    Doubles as both the B&W preview canvas and the interactive-paint
+    scratch buffer that keeps the real colorSet out of 'current' during a
+    brush stroke (see ChannelPaintController.on_cmd). Creating it does not
+    force the viewport to display it -- that's still controlled separately
+    by ``VertexColorSet._preview_active`` / ``displayColors``.
+    """
+    existing = cmds.polyColorSet(mesh, q=True, allColorSets=True) or []
+    if _PREVIEW_SET not in existing:
+        cmds.polyColorSet(mesh, create=True, colorSet=_PREVIEW_SET, representation='RGBA')
+        MeshDataFactory.get(mesh).refresh()
+
+
+# ---------------------------------------------------------------------------
 # Artisan paint controller — stored in __main__ for MEL access
 # ---------------------------------------------------------------------------
 
@@ -155,10 +219,33 @@ class ChannelPaintController:
         self._batch_mode = False
         # Vertex selection mask — None means all vertices are paintable
         self._vtx_mask: Optional[Set[int]] = None
+        # Whole-stroke undo tracking: _flush_dirty writes live (raw API, not
+        # undoable per-call, needed for viewport feedback during the drag) —
+        # one single undo entry covering the whole stroke is pushed instead,
+        # from the values snapshotted here at stroke start.
+        self._stroke_start_values: Optional[np.ndarray] = None
+        self._stroke_dirty_verts: Set[int] = set()
+        # Sibling (non-active) channel snapshot of the REAL colorSet, read
+        # ONCE per stroke in before_stroke_cmd — see _flush_dirty for why
+        # this must never come from re-reading Maya's 'current' mid-stroke.
+        self._sibling_snapshot: Optional[np.ndarray] = None
 
     def on_cmd(self) -> None:
-        """Context activated — refresh channel cache."""
+        """Context activated — refresh channel cache and pin 'current' off the real colorSet.
+
+        ``artUserPaintCtx`` paints its own grayscale visual feedback
+        straight into whatever colorSet is 'current' at the moment of each
+        stamp -- that is Maya's native per-vertex paint behavior, not
+        something ``setValueCommand`` controls or can suppress. If the real
+        colorSet were left 'current' during a drag, that native write would
+        clobber the sibling channels; our own read-modify-write would then
+        just re-save that corruption as if it were legitimate data. Keeping
+        a dedicated scratch colorSet 'current' for the whole session
+        confines any native bleed to a set nothing ever reads as real data.
+        """
         self._values = np.array(self.source.get_weights(), dtype=np.float64)
+        _ensure_scratch_colorset(self.mesh)
+        MeshDataFactory.get(self.mesh)._fn_mesh.setCurrentColorSetName(_PREVIEW_SET)
 
     def off_cmd(self) -> None:
         """Context deactivated."""
@@ -168,6 +255,26 @@ class ChannelPaintController:
         self._stamp_hits = {}
         self._stroke_completed = False
         self._vtx_mask = self._read_selection_mask()
+        self._stroke_start_values = self._values.copy()
+        self._stroke_dirty_verts = set()
+        self._sibling_snapshot = self._read_sibling_snapshot()
+
+    def _read_sibling_snapshot(self) -> 'np.ndarray':
+        """Read the real colorSet's full RGBA once, before any stamp can taint it.
+
+        Momentarily switches 'current' to the real colorSet for this one
+        read, then immediately restores the scratch set -- 'current' must
+        never sit on the real colorSet outside of this controlled window
+        (see on_cmd).
+        """
+        import maya.api.OpenMaya as om2
+
+        fn_mesh = MeshDataFactory.get(self.mesh)._fn_mesh
+        fn_mesh.setCurrentColorSetName(self.color_set)
+        unset = om2.MColor((_UNSET_VALUE,) * 4)
+        colors = fn_mesh.getVertexColors(self.color_set, unset)
+        fn_mesh.setCurrentColorSetName(_PREVIEW_SET)
+        return np.array([[c.r, c.g, c.b, c.a] for c in colors], dtype=np.float64)
 
     def _read_selection_mask(self) -> Optional[Set[int]]:
         """Read current vertex selection on this mesh.
@@ -212,9 +319,77 @@ class ChannelPaintController:
         self._stroke_completed = True
 
     def final_cmd(self, shape: str = '') -> None:
-        """Called on release — apply remaining stamp and flush."""
+        """Called on release — apply remaining stamp, flush, commit undo.
+
+        No more stamps can land until the next ``before_stroke_cmd``, so
+        it's safe here (and only here) to leave 'current' on the real
+        colorSet when the user isn't in B&W preview -- they get true colors
+        back between strokes; ``before_stroke_cmd`` re-pins to the scratch
+        set before the next drag can begin.
+        """
         self._apply_stamp()
         self._flush_dirty()
+        self._commit_stroke_undo()
+
+        target = _PREVIEW_SET if self.source._preview_active else self.color_set
+        MeshDataFactory.get(self.mesh)._fn_mesh.setCurrentColorSetName(target)
+
+    def _commit_stroke_undo(self) -> None:
+        """Register one undo-queue entry covering the whole just-finished stroke.
+
+        ``_flush_dirty`` already wrote every stamp straight to Maya via the
+        raw OpenMaya API (not undoable on its own). This replays that final
+        state through :func:`push_undo` so Ctrl+Z reverts the touched
+        vertices back to their value at ``before_stroke_cmd``, in one step.
+        """
+        if not self._stroke_dirty_verts or self._stroke_start_values is None:
+            return
+
+        try:
+            import maya.api.OpenMaya as om2
+            from dw_maya.dw_decorators import push_undo
+
+            mesh = self.mesh
+            color_set = self.color_set
+            idx = self._channel_idx
+            dirty_list = list(self._stroke_dirty_verts)
+            final_values = self._values
+            start_values = self._stroke_start_values
+
+            fn_mesh = MeshDataFactory.get(mesh)._fn_mesh
+            # _flush_dirty's last write pinned 'current' back to the
+            # scratch set — force it onto the real one to read the final
+            # baked-in state this stroke actually wrote.
+            fn_mesh.setCurrentColorSetName(color_set)
+            unset = om2.MColor((_UNSET_VALUE,) * 4)
+            colors = fn_mesh.getVertexColors(color_set, unset)
+
+            def _build(values) -> 'om2.MColorArray':
+                arr = om2.MColorArray()
+                for i in dirty_list:
+                    c = colors[i] if i < len(colors) else unset
+                    rgba = [c.r, c.g, c.b, c.a]
+                    rgba[idx] = float(values[i])
+                    arr.append(om2.MColor(rgba))
+                return arr
+
+            redo_colors = _build(final_values)
+            undo_colors = _build(start_values)
+
+            def _redo():
+                fn_mesh.setCurrentColorSetName(color_set)
+                fn_mesh.setVertexColors(redo_colors, dirty_list)
+
+            def _undo():
+                fn_mesh.setCurrentColorSetName(color_set)
+                fn_mesh.setVertexColors(undo_colors, dirty_list)
+
+            push_undo(_redo, _undo)
+        except Exception as e:
+            logger.warning(f"Could not register stroke undo: {e}")
+        finally:
+            self._stroke_dirty_verts = set()
+            self._stroke_start_values = None
 
     def _apply_stamp(self) -> None:
         """Apply accumulated stamp hits to the in-memory channel buffer."""
@@ -319,7 +494,17 @@ class ChannelPaintController:
             self._neighbour_cache = cache
 
     def _flush_dirty(self) -> None:
-        """Write only the changed vertices to Maya (incremental update)."""
+        """Write only the changed vertices to Maya (incremental update).
+
+        'current' is only ever pointed at the real colorSet for the brief
+        moment of the write below, then immediately pinned back to the
+        scratch/preview set (see on_cmd) so no native artUserPaintCtx stamp
+        can land on the real data between flushes. Sibling channels come
+        from the once-per-stroke snapshot (``_read_sibling_snapshot``),
+        never from re-reading Maya's 'current' mid-stroke -- that 'current'
+        can be the scratch set's uniform grayscale, or real data Maya's own
+        paint feedback already bled into, depending on timing.
+        """
         if not self._dirty_verts:
             return
 
@@ -329,44 +514,39 @@ class ChannelPaintController:
 
         mesh = self.mesh
         color_set = self.color_set
-        preview_active = self.source._preview_active
         dirty_list = list(self._dirty_verts)
         idx = self._channel_idx
+        self._stroke_dirty_verts.update(dirty_list)
 
         try:
             import maya.api.OpenMaya as om2
             fn_mesh = MeshDataFactory.get(mesh)._fn_mesh
 
-            # Write the painted channel to the original colorSet.
-            # Unset vertices read as the empty value, never the -1 sentinel.
-            unset = om2.MColor((_UNSET_VALUE,) * 4)
-            colors = fn_mesh.getVertexColors(color_set, unset)
             new_colors = om2.MColorArray()
             for i in dirty_list:
-                c = colors[i] if i < len(colors) else unset
-                rgba = [c.r, c.g, c.b, c.a]
+                if self._sibling_snapshot is not None and i < len(self._sibling_snapshot):
+                    rgba = list(self._sibling_snapshot[i])
+                else:
+                    rgba = [_UNSET_VALUE] * 4
                 rgba[idx] = float(self._values[i])
                 new_colors.append(om2.MColor(rgba))
+                # Keep the snapshot in sync so a later flush in this same
+                # stroke builds on this write, not stale pre-stroke data.
+                if self._sibling_snapshot is not None and i < len(self._sibling_snapshot):
+                    self._sibling_snapshot[i][idx] = float(self._values[i])
 
-            cmds.polyColorSet(mesh, currentColorSet=True, colorSet=color_set)
+            fn_mesh.setCurrentColorSetName(color_set)
             fn_mesh.setVertexColors(new_colors, dirty_list)
+            fn_mesh.setCurrentColorSetName(_PREVIEW_SET)
 
-            # Update B&W preview — query allColorSets once
-            if preview_active:
-                existing = cmds.polyColorSet(mesh, q=True, allColorSets=True) or []
-                preview_set_exists = _PREVIEW_SET in existing
-                if preview_set_exists:
-                    cmds.polyColorSet(mesh, currentColorSet=True, colorSet=_PREVIEW_SET)
-                    preview_colors = om2.MColorArray()
-                    for i in dirty_list:
-                        v = float(self._values[i])
-                        preview_colors.append(om2.MColor((v, v, v, 1.0)))
-                    fn_mesh.setVertexColors(preview_colors, dirty_list)
-                # Restore: stay on preview set if active, else original
-                target_set = _PREVIEW_SET if preview_set_exists else color_set
-                cmds.polyColorSet(mesh, currentColorSet=True, colorSet=target_set)
-            else:
-                cmds.polyColorSet(mesh, currentColorSet=True, colorSet=color_set)
+            # Live grayscale feedback on the scratch/preview colorSet --
+            # this is what the viewport shows during the drag (if
+            # displayColors is on), independent of the preview toggle.
+            preview_colors = om2.MColorArray()
+            for i in dirty_list:
+                v = float(self._values[i])
+                preview_colors.append(om2.MColor((v, v, v, 1.0)))
+            fn_mesh.setVertexColors(preview_colors, dirty_list)
 
         except Exception as e:
             logger.warning(f"API flush failed, falling back to cmds. Error: {e}")
@@ -380,22 +560,32 @@ class ChannelPaintController:
                     **{flag: float(self._values[i])},
                 )
 
-            if preview_active:
-                existing = cmds.polyColorSet(mesh, q=True, allColorSets=True) or []
-                preview_set_exists = _PREVIEW_SET in existing
-                if preview_set_exists:
-                    cmds.polyColorSet(mesh, currentColorSet=True, colorSet=_PREVIEW_SET)
-                    for i in dirty_list:
-                        v = float(self._values[i])
-                        cmds.polyColorPerVertex(
-                            f'{mesh}.vtx[{i}]',
-                            r=v, g=v, b=v, a=1.0,
-                            colorDisplayOption=True, representation=4,
-                        )
-                target_set = _PREVIEW_SET if preview_set_exists else color_set
-                cmds.polyColorSet(mesh, currentColorSet=True, colorSet=target_set)
+            cmds.polyColorSet(mesh, currentColorSet=True, colorSet=_PREVIEW_SET)
+            for i in dirty_list:
+                v = float(self._values[i])
+                cmds.polyColorPerVertex(
+                    f'{mesh}.vtx[{i}]',
+                    r=v, g=v, b=v, a=1.0,
+                    colorDisplayOption=True, representation=4,
+                )
 
         self._dirty_verts.clear()
+
+
+def _has_active_paint_session(mesh: str) -> bool:
+    """True if a ``ChannelPaintController`` is currently live for *mesh*.
+
+    Used to keep :meth:`VertexColorSet.disable_preview` from deleting the
+    scratch colorSet out from under an in-progress interactive paint
+    session -- it doubles as that session's scratch canvas (see
+    ``ChannelPaintController.on_cmd``); deleting it mid-session would break
+    the invariant that 'current' never idles on the real colorSet between
+    stamps.
+    """
+    import __main__
+
+    controller = __main__.__dict__.get(_CTX_NAME)
+    return isinstance(controller, ChannelPaintController) and controller.mesh == mesh
 
 
 class VertexColorSet(WeightSource):
@@ -462,6 +652,53 @@ class VertexColorSet(WeightSource):
         """This source paints through ``artUserPaintCtx``, not ``artAttrContext``."""
         return _CTX_NAME
 
+    def use_map(self, map_name: str) -> 'VertexColorSet':
+        """Activate a channel, retargeting any live brush session to match.
+
+        ``ChannelPaintController`` captures its channel once, at
+        :meth:`_paint` time, and lives on as a singleton in ``__main__`` for
+        MEL callback access — switching the channel radio while a brush
+        session is already active would otherwise leave the brush silently
+        painting the OLD channel while reads/preview correctly follow the
+        new one.
+        """
+        super().use_map(map_name)
+        self._sync_paint_controller()
+        return self
+
+    def _sync_paint_controller(self) -> None:
+        """Retarget the live paint controller (if any, and if it's ours) to this channel."""
+        import __main__
+
+        controller = __main__.__dict__.get(_CTX_NAME)
+        if not isinstance(controller, ChannelPaintController):
+            return
+        src = controller.source
+        if not (isinstance(src, VertexColorSet)
+                and src.mesh_name == self.mesh_name
+                and src.color_set == self.color_set):
+            return
+        if controller.channel == self.channel:
+            return
+
+        controller.source = self
+        controller.channel = self.channel
+        controller._channel_idx = _CHANNELS[self.channel][1]
+        controller._channel_flag = _CHANNELS[self.channel][0]
+        controller._values = np.array(self.get_weights(), dtype=np.float64)
+        # get_weights() leaves 'current' on the real colorSet to do its
+        # read -- pin it back to the scratch set immediately, same
+        # invariant as on_cmd/before_stroke_cmd (current must never idle
+        # on the real colorSet between stamps).
+        MeshDataFactory.get(self.mesh_name)._fn_mesh.setCurrentColorSetName(_PREVIEW_SET)
+        # Any in-flight stroke/undo state belongs to the OLD channel.
+        controller._stamp_hits = {}
+        controller._dirty_verts = set()
+        controller._stroke_dirty_verts = set()
+        controller._stroke_start_values = None
+        controller._sibling_snapshot = None
+        logger.info(f"Paint brush retargeted to channel '{self.channel}'.")
+
     def _resolve_attr(self, map_name: str) -> str:
         # Not used — we override get/set directly.
         return ''
@@ -473,6 +710,8 @@ class VertexColorSet(WeightSource):
         initializeCmd returns ``-path 1``, setValueCommand receives per-vertex
         opacity, and finalizeCmd flushes changes to the real colorSet.
         """
+        check_channel_isolation(self._mesh_name, self._color_set)
+
         import __main__
 
         # 1. Install MEL procs
@@ -535,6 +774,10 @@ class VertexColorSet(WeightSource):
         try:
             import maya.api.OpenMaya as om2
             fn_mesh = MeshDataFactory.get(self._mesh_name)._fn_mesh
+            # See _flush_dirty — a preview-active paint stroke can leave
+            # "current colorset" on the preview set; force it back to the
+            # real one before reading.
+            fn_mesh.setCurrentColorSetName(self._color_set)
             colors = fn_mesh.getVertexColors(self._color_set,
                                              om2.MColor((_UNSET_VALUE,) * 4))
             if len(colors) == n:
@@ -636,28 +879,59 @@ class VertexColorSet(WeightSource):
         self._sync_artisan_controller(weights)
 
     def _set_weights_api(self, weights: WeightList) -> None:
-        """Write the active channel using OpenMaya API for better performance."""
+        """Write the active channel using OpenMaya API for better performance.
+
+        ``MFnMesh.setVertexColors`` is a raw API call — it never registers
+        with Maya's undo queue on its own, unlike ``cmds.polyColorPerVertex``.
+        Routed through :func:`push_undo` so Ctrl+Z still works.
+        """
         import maya.api.OpenMaya as om2
+        from dw_maya.dw_decorators import push_undo
 
         fn_mesh = MeshDataFactory.get(self._mesh_name)._fn_mesh
         color_set = self._color_set
         idx = _CHANNELS[self.channel][1]
         unset = om2.MColor((_UNSET_VALUE,) * 4)
         try:
+            # See _flush_dirty — set current to the REAL set before reading,
+            # in case a prior preview-active paint stroke left current on
+            # the preview colorset.
+            fn_mesh.setCurrentColorSetName(color_set)
             colors = fn_mesh.getVertexColors(color_set, unset)
         except Exception:
             raise RuntimeError("No existing color data — fallback to cmds")
 
         n = len(weights)
         vertex_list = list(range(n))
+        old_colors = om2.MColorArray()
         new_colors = om2.MColorArray()
         for i in range(n):
             c = colors[i] if i < len(colors) else unset
+            old_colors.append(om2.MColor((c.r, c.g, c.b, c.a)))
             rgba = [c.r, c.g, c.b, c.a]
             rgba[idx] = float(weights[i])
             new_colors.append(om2.MColor(rgba))
 
+        # Write immediately — correctness must never depend on the undo
+        # bridge. push_undo() is registered separately as a best-effort
+        # add-on; if it misbehaves, only undoability is affected.
+        # setCurrentColorSetName (API) rather than cmds.polyColorSet keeps
+        # the "current colorset" state synchronous with this same fn_mesh.
+        fn_mesh.setCurrentColorSetName(color_set)
         fn_mesh.setVertexColors(new_colors, vertex_list)
+
+        def _redo():
+            fn_mesh.setCurrentColorSetName(color_set)
+            fn_mesh.setVertexColors(new_colors, vertex_list)
+
+        def _undo():
+            fn_mesh.setCurrentColorSetName(color_set)
+            fn_mesh.setVertexColors(old_colors, vertex_list)
+
+        try:
+            push_undo(_redo, _undo)
+        except Exception as e:
+            logger.warning(f"Could not register undo for vertex color write: {e}")
 
     def _sync_artisan_controller(self, weights: WeightList) -> None:
         """Update the artisan paint controller cache if it targets this channel."""
@@ -677,6 +951,8 @@ class VertexColorSet(WeightSource):
         The mesh's ``displayColors`` attribute is turned on so the viewport
         shows the active channel as a greyscale image.
         """
+        check_channel_isolation(self._mesh_name, self._color_set)
+
         values = self.get_weights()
 
         # Ensure the preview colorSet exists
@@ -684,6 +960,11 @@ class VertexColorSet(WeightSource):
         if _PREVIEW_SET not in existing:
             cmds.polyColorSet(self._mesh_name, create=True, colorSet=_PREVIEW_SET,
                               representation='RGBA')
+            # Adding a colorSet via cmds changes the mesh's colorSet list —
+            # MeshDataFactory's cached MFnMesh handle doesn't know that on
+            # its own and can misbehave on subsequent get/setVertexColors
+            # calls (wrong colorset targeted) until rebuilt.
+            MeshDataFactory.get(self._mesh_name).refresh()
 
         cmds.polyColorSet(self._mesh_name, currentColorSet=True,
                           colorSet=_PREVIEW_SET)
@@ -695,10 +976,29 @@ class VertexColorSet(WeightSource):
         logger.info(f"Channel preview enabled on '{self._mesh_name}' ({self.channel}).")
 
     def disable_preview(self) -> None:
-        """Remove the temp colorSet and restore the original display."""
+        """Remove the temp colorSet and restore the original display.
+
+        Keeps the colorSet around (just switches 'current' back to the
+        real one) while an interactive paint session is live on this mesh
+        -- see ``_has_active_paint_session``.
+        """
+        if _has_active_paint_session(self._mesh_name):
+            cmds.polyColorSet(self._mesh_name, currentColorSet=True,
+                              colorSet=self._color_set)
+            self._preview_active = False
+            logger.info(
+                f"Channel preview disabled on '{self._mesh_name}' "
+                f"(scratch colorSet kept -- paint session still active)."
+            )
+            return
+
         existing = cmds.polyColorSet(self._mesh_name, q=True, allColorSets=True) or []
         if _PREVIEW_SET in existing:
             cmds.polyColorSet(self._mesh_name, delete=True, colorSet=_PREVIEW_SET)
+            # Same reasoning as enable_preview — removing a colorSet also
+            # changes the mesh's colorSet list out from under the cached
+            # MFnMesh handle.
+            MeshDataFactory.get(self._mesh_name).refresh()
 
         # Restore original colorSet
         cmds.polyColorSet(self._mesh_name, currentColorSet=True,
@@ -784,7 +1084,8 @@ def create_alpha_map(mesh: str, color_set: str = '', default_value: float = 0.0)
 
     # Create the colorSet if it doesn't exist
     existing = cmds.polyColorSet(mesh, q=True, allColorSets=True) or []
-    if color_set not in existing:
+    is_new = color_set not in existing
+    if is_new:
         cmds.polyColorSet(mesh, create=True, colorSet=color_set, representation='RGBA')
         logger.info(f"Created colorSet '{color_set}' on '{mesh}'.")
     else:
@@ -792,5 +1093,23 @@ def create_alpha_map(mesh: str, color_set: str = '', default_value: float = 0.0)
 
     source = VertexColorSet(mesh, color_set=color_set)
     n = source.vtx_count
-    source.use_map('alpha').set_weights([float(default_value)] * n)
+
+    if is_new:
+        # Establish a genuine full-RGBA baseline in one call. Writing only
+        # the alpha channel on a brand-new colorSet (polyColorPerVertex
+        # with just `a=`) leaves per-vertex color records ambiguously
+        # "not really assigned" in Maya's storage — later reads through
+        # getVertexColors can then fall back to Maya's own internal default
+        # instead of the values actually painted. A single full-channel
+        # flood right after creation avoids that ambiguity entirely.
+        cmds.polyColorSet(mesh, currentColorSet=True, colorSet=color_set)
+        cmds.polyColorPerVertex(
+            f'{mesh}.vtx[0:{n - 1}]',
+            r=0.0, g=0.0, b=0.0, a=float(default_value),
+            colorDisplayOption=True, representation=4,
+        )
+        source.use_map('alpha')
+    else:
+        source.use_map('alpha').set_weights([float(default_value)] * n)
+
     return source

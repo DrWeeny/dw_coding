@@ -109,6 +109,51 @@ class DirectionalOperation:
             logger.error(f"Between points weight operation failed: {e}")
             return None
 
+    def set_weights_by_uv(self,
+                          axis: Literal['u', 'v'] = 'u',
+                          remap_range: Optional[Tuple[float, float]] = None,
+                          falloff: Literal['linear', 'quadratic', 'smooth', 'smooth2'] = 'linear',
+                          invert: bool = False) -> Optional[WeightList]:
+        """Set weights based on a vertex's U or V texture coordinate.
+
+        Args:
+            axis: ``'u'`` or ``'v'`` — which UV coordinate drives the weight.
+            remap_range: Optional ``(min, max)`` to remap the raw U/V value
+                         to before falloff. Defaults to the mesh's actual
+                         U/V min/max (so the full 0-1 range is used even
+                         when the UVs don't cover the whole unit square).
+            falloff: Type of falloff curve.
+            invert: Invert the resulting weights.
+
+        Returns:
+            Weight list or None if failed.
+        """
+        try:
+            uvs = self.mesh_data.vertex_uvs
+            if uvs is None:
+                return None
+
+            col = 0 if axis == 'u' else 1
+            values = uvs[:, col].astype(np.float32)
+
+            if remap_range is None:
+                remap_range = (float(np.min(values)), float(np.max(values)))
+            min_val, max_val = remap_range
+            span = max_val - min_val
+            weights = (np.zeros_like(values) if span == 0
+                      else np.clip((values - min_val) / span, 0, 1))
+
+            weights = apply_falloff(weights, falloff)
+
+            if invert:
+                weights = 1.0 - weights
+
+            return weights.tolist()
+
+        except Exception as e:
+            logger.error(f"UV weight operation failed: {e}")
+            return None
+
     def set_weights_by_normal(self,
                               falloff: Literal['linear', 'quadratic', 'smooth', 'smooth2'] = 'linear',
                               invert: bool = False) -> Optional[WeightList]:
@@ -146,23 +191,27 @@ class DirectionalOperation:
 def set_directional_weights(mesh_name: str,
                             direction: Union[str, Vector3D],
                             remap_range: Optional[Tuple[float, float]] = None,
-                            falloff: Literal['linear', 'quadratic', 'smooth', 'smooth2'] = 'linear',
+                            falloff: Union[Literal['linear', 'quadratic', 'smooth', 'smooth2'],
+                                           List[Tuple[float, float]]] = 'linear',
                             origin: Optional[Vector3D] = None,
                             invert: bool = False,
-                            mode: Literal['vector', 'normal', 'projection', 'distance'] = 'vector') -> Optional[WeightList]:
+                            mode: Literal['vector', 'normal', 'projection', 'distance', 'uv'] = 'vector') -> Optional[WeightList]:
     """High-level function for setting directional weights.
 
     Args:
         mesh_name:   Name of mesh.
         direction:   Direction vector or predefined direction string
-                     ('x', '-x', 'y', '-y', 'z', '-z', 'xy', …).
+                     ('x', '-x', 'y', '-y', 'z', '-z', 'xy', …). When
+                     ``mode='uv'``, ``'u'`` or ``'v'`` selects the UV axis.
         remap_range: Optional ``(min, max)`` to remap weights to.
-        falloff:     Type of falloff curve.
+        falloff:     Named falloff curve, or a list of ``(x, y)`` control
+                     points (0-1 range) for a custom ramp curve.
         origin:      Optional origin point; defaults to mesh centre.
         invert:      Invert the resulting weights (1-w).
         mode:        ``'vector'`` / ``'projection'`` — signed projection along direction;
                      ``'distance'`` — unsigned distance from the direction axis;
-                     ``'normal'`` — based on vertex normals (ignores *direction*).
+                     ``'normal'`` — based on vertex normals (ignores *direction*);
+                     ``'uv'`` — based on the vertex's U or V texture coordinate.
 
     Returns:
         Weight list or None if failed.
@@ -171,6 +220,9 @@ def set_directional_weights(mesh_name: str,
 
     if mode == 'normal':
         result = dir_op.set_weights_by_normal(falloff, invert)
+    elif mode == 'uv':
+        axis = 'v' if isinstance(direction, str) and direction.lower().startswith('v') else 'u'
+        result = dir_op.set_weights_by_uv(axis, remap_range, falloff, invert)
     else:
         # 'vector', 'projection' and 'distance' all route through set_weights_by_vector
         proj_mode = 'distance' if mode == 'distance' else 'projection'

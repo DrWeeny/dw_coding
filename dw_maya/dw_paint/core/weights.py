@@ -138,6 +138,29 @@ class WeightData:
 
         return self
 
+    def erode(self, iterations: int = 1, factor: float = 0.5) -> 'WeightData':
+        """Shrink painted (high-weight) regions inward, instead of smooth's blur.
+
+        Each vertex moves toward the MIN of its neighbors rather than their
+        mean — a vertex with any lower-weight neighbor gets pulled down, so
+        a painted island contracts toward its own core instead of bleeding
+        into surrounding vertices. Standard morphological erosion, the
+        counterpart to :meth:`smooth`'s averaging.
+        """
+        neighbors = self._mesh_data.neighbors
+        current = self._weights.copy()
+
+        for _ in range(iterations):
+            neighbor_min = current.copy()
+            for i, neighbor_indices in neighbors.items():
+                if neighbor_indices:
+                    neighbor_min[i] = np.min(current[neighbor_indices])
+
+            self._weights = current * (1.0 - factor) + neighbor_min * factor
+            current = self._weights.copy()
+
+        return self
+
     def get_selected_weights(self) -> WeightArray:
         """Get weights for selected components"""
         selected = self._mesh_data.get_selected_components()
@@ -345,6 +368,35 @@ def smooth_weights(mesh_name: str,
         return wd.as_list
     except Exception as e:
         logger.error(f"smooth_weights failed on '{mesh_name}': {e}")
+        return list(weights)
+
+
+def erode_weights(mesh_name: str,
+                  weights: WeightList,
+                  iterations: int = 1,
+                  factor: float = 0.5) -> WeightList:
+    """Topology-based weight erosion — shrinks painted regions inward.
+
+    Wraps :class:`WeightData`.erode so callers never instantiate the class.
+    Counterpart to :func:`smooth_weights`: neighbor MIN instead of neighbor
+    mean, so high-weight islands contract instead of blurring outward.
+
+    Args:
+        mesh_name:  Mesh transform name.
+        weights:    Per-vertex weight list aligned to vertex order.
+        iterations: Number of erosion passes.
+        factor:     Blend strength per pass (0 = no change, 1 = full erosion).
+
+    Returns:
+        Eroded weight list of the same length as *weights*.
+        Returns the original list unchanged on error.
+    """
+    try:
+        wd = WeightData(weights, mesh_name)
+        wd.erode(iterations, factor)
+        return wd.as_list
+    except Exception as e:
+        logger.error(f"erode_weights failed on '{mesh_name}': {e}")
         return list(weights)
 
 

@@ -208,7 +208,8 @@ class RadialOperation:
 def set_radial_weights(mesh_name: str,
                        center: Optional[Tuple[float, float, float]] = None,
                        radius: Optional[float] = None,
-                       falloff: Literal['linear', 'quadratic', 'smooth', 'smooth2'] = 'linear',
+                       falloff: Union[Literal['linear', 'quadratic', 'smooth', 'smooth2'],
+                                      List[Tuple[float, float]]] = 'linear',
                        mode: Literal['radial', 'spherical', 'cylindrical'] = 'radial',
                        axis: Literal['x', 'y', 'z'] = 'y',
                        invert: bool = False) -> Optional[WeightList]:
@@ -218,7 +219,8 @@ def set_radial_weights(mesh_name: str,
         mesh_name: Name of mesh
         center: Center point (defaults to mesh center)
         radius: Maximum radius (defaults to auto-calculate)
-        falloff: Type of falloff curve
+        falloff: Named falloff curve, or a list of ``(x, y)`` control points
+                 (0-1 range) for a custom ramp curve.
         mode: Type of radial calculation
         axis: Main axis for spherical/cylindrical modes
         invert: Invert the resulting weights (1-w)

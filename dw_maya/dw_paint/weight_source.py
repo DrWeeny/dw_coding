@@ -197,6 +197,9 @@ def apply_operation(source: WeightSource,
         smooth:
             iterations (int):   Smoothing passes. Default 1.
             factor (float):     Smoothing strength 0–1. Default 0.5.
+            mode (str):         ``'blur'`` (neighbor mean, default) | ``'erode'``
+                                 (neighbor min — shrinks painted regions
+                                 inward instead of spreading them).
 
         vector:
             direction:          Predefined key or ``(x, y, z)`` tuple. Required.
@@ -247,7 +250,10 @@ def apply_operation(source: WeightSource,
         )
 
     elif operation == 'smooth':
-        new_weights = dw_maya.dw_paint.core.smooth_weights(
+        smooth_fn = (dw_maya.dw_paint.core.erode_weights
+                    if kwargs.get('mode') == 'erode'
+                    else dw_maya.dw_paint.core.smooth_weights)
+        new_weights = smooth_fn(
             mesh,
             weights,
             kwargs.get('iterations', 1),

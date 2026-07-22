@@ -48,6 +48,7 @@ class MeshData:
         self._vertex_positions: Optional[np.ndarray] = None
         self._vertex_count: Optional[int] = None
         self._neighbors: Optional[Dict[int, List[int]]] = None
+        self._vertex_uvs: Optional[np.ndarray] = None
         # Lazy API cache — reset by refresh()
         self._dag_path_obj: Optional[om.MDagPath] = None
         self._fn_mesh_obj: Optional[om.MFnMesh] = None
@@ -98,6 +99,37 @@ class MeshData:
     def neighbors(self) -> Dict[int, List[int]]:
         """Get vertex neighbor mapping"""
         return self._neighbors or {}
+
+    @property
+    def vertex_uvs(self) -> np.ndarray:
+        """Per-vertex UV coordinates (Nx2, columns are U, V).
+
+        A vertex on a UV seam is assigned to more than one UV shell —
+        its U and V are averaged across every face-vertex that shares it.
+        Vertices with no assigned UVs read as (0.0, 0.0).
+        """
+        if self._vertex_uvs is None:
+            self._compute_vertex_uvs()
+        return self._vertex_uvs
+
+    def _compute_vertex_uvs(self) -> None:
+        n = self.vertex_count
+        uvs = np.zeros((n, 2), dtype=np.float32)
+        try:
+            it_vtx = om.MItMeshVertex(self._dag)
+            while not it_vtx.isDone():
+                idx = it_vtx.index()
+                try:
+                    u_arr, v_arr, _face_ids = it_vtx.getUVs()
+                    if len(u_arr):
+                        uvs[idx, 0] = float(np.mean(u_arr))
+                        uvs[idx, 1] = float(np.mean(v_arr))
+                except RuntimeError:
+                    pass  # vertex has no UVs assigned on the current UV set
+                it_vtx.next()
+        except Exception as e:
+            logger.warning(f"vertex_uvs computation failed on '{self.mesh_name}': {e}")
+        self._vertex_uvs = uvs
 
     def get_components(self, component_type: str = 'vtx') -> List[str]:
         """Get mesh components of specified type.
