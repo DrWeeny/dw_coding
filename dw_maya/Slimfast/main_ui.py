@@ -75,7 +75,6 @@ def _maya_main_window() -> QtWidgets.QMainWindow:
 # ---------------------------------------------------------------------------
 
 class SlimfastWidget(QtWidgets.QWidget):
-    """PySide6 replacement for the legacy Slimfast cmds UI."""
 
     _instance: Optional['SlimfastWidget'] = None
     _HUB_KEY = "slimfast.storage_buttons"
@@ -101,7 +100,7 @@ class SlimfastWidget(QtWidgets.QWidget):
 
     def __init__(self, parent: Optional[QtWidgets.QWidget] = None):
         super().__init__(parent or _maya_main_window())
-        self.setWindowTitle('Slimfast 2.0')
+        self.setWindowTitle('Slimfast 3.0')
         self.setWindowFlags(Qt.Window)
         self.setMinimumWidth(280)
 
@@ -854,16 +853,14 @@ class SlimfastWidget(QtWidgets.QWidget):
         dr_label.setToolTip(
             'Weights outside [0, 1] detected.\n'
             'The artisan color range will be set automatically on Paint.\n'
-            'Adjust manually here if needed.'
-        )
+            'Adjust manually here if needed.')
         dr_header.addWidget(dr_label)
         dr_header.addStretch()
         self._display_range_fit_btn = QtWidgets.QPushButton('Fit')
         self._display_range_fit_btn.setFixedSize(34, 18)
         self._display_range_fit_btn.setStyleSheet(
             'QPushButton { background-color: #3a3a2a; color: #cccc88; font-size: 10px; }'
-            'QPushButton:hover { background-color: #4a4a32; }'
-        )
+            'QPushButton:hover { background-color: #4a4a32; }')
         self._display_range_fit_btn.setToolTip('Fit range to actual weight min/max')
         dr_header.addWidget(self._display_range_fit_btn)
         dr_lay.addLayout(dr_header)
@@ -950,6 +947,7 @@ class SlimfastWidget(QtWidgets.QWidget):
 
     def _build_smooth_group(self) -> QtWidgets.QGroupBox:
         grp = QtWidgets.QGroupBox('Smooth  (paint tool must be active)')
+        self._smooth_grp = grp
         lay = QtWidgets.QVBoxLayout(grp)
         lay.setSpacing(4)
 
@@ -1167,8 +1165,7 @@ class SlimfastWidget(QtWidgets.QWidget):
         if checked_mode is not None:
             self._ctrl.set_mode(
                 wgt_deformer_panel.get_ctrl_mode(checked_mode.property('mode')),
-                refresh=False,
-            )
+                refresh=False,)
 
         # Flat source combo
         self._source_combo.currentIndexChanged.connect(self._on_source_combo_changed)
@@ -1180,9 +1177,7 @@ class SlimfastWidget(QtWidgets.QWidget):
         self._envelope_slider.valueChanged.connect(self._on_envelope_changed)
 
         # Display range slider — live-push to artisan color range
-        self._display_range_slider.range_changed.connect(
-            lambda lo, hi: self._ctrl.set_artisan_color_range(lo, hi)
-        )
+        self._display_range_slider.range_changed.connect(lambda lo, hi: self._ctrl.set_artisan_color_range(lo, hi))
         self._display_range_fit_btn.clicked.connect(self._refresh_display_range)
 
         # Weights group — Set 0/1 share the same op mode as the slider.
@@ -1195,9 +1190,7 @@ class SlimfastWidget(QtWidgets.QWidget):
         self._op_group.buttonClicked.connect(self._on_op_mode_changed)
 
         self._weight_slider.button_clicked.connect(self._on_set_weight)
-        self._weight_slider.sliderReleased.connect(
-            lambda: self._ctrl.set_artisan_value(self._weight_slider.value)
-        )
+        self._weight_slider.sliderReleased.connect(lambda: self._ctrl.set_artisan_value(self._weight_slider.value))
         self._weight_slider.value_changed.connect(self._on_weight_slider_changed)
         self._pb_picker.clicked.connect(self._on_pb_picker_clicked)
 
@@ -1848,8 +1841,11 @@ class SlimfastWidget(QtWidgets.QWidget):
             attr_exists = False
         self._envelope_row_widget.setVisible(attr_exists)
 
-    @Slot(list, list)
-    def _on_sources_changed(self, node_labels: list, map_lists: list) -> None:
+    @Slot(list, list, list)
+    def _on_sources_changed(self,
+                            node_labels: list,
+                            map_lists: list,
+                            has_weight:list) -> None:
         """Rebuild the flat source combo from (node_labels, map_lists).
 
         Layout rules:
@@ -1888,8 +1884,8 @@ class SlimfastWidget(QtWidgets.QWidget):
         vtxcolor_separator_inserted = False
         first_selectable_row = None
 
-        for source_idx, (label, maps, node_type) in enumerate(
-                zip(node_labels, map_lists, types)):
+        for source_idx, (label, maps, node_type, is_mod) in enumerate(
+                zip(node_labels, map_lists, types, has_weight)):
 
             node_name = label.split('] ', 1)[-1] if '] ' in label else label
             node_name = node_name.split(":")[-1]
@@ -2175,6 +2171,14 @@ class SlimfastWidget(QtWidgets.QWidget):
             artisan_item.setEnabled(not checked)
         if checked and self._smooth_mode.currentIndex() == 0:
             self._smooth_mode.setCurrentIndex(1)
+
+        # Shrink mode is easy to miss (just a checkbox) -- tint the whole
+        # group so it's obvious at a glance that Smooth is currently
+        # eroding inward instead of blurring outward.
+        self._smooth_grp.setStyleSheet(
+            'QGroupBox { background-color: rgba(230, 150, 60, 40); }'
+            if checked else ''
+        )
 
     @Slot()
     def _on_advanced_apply(self) -> None:
