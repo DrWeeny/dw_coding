@@ -23,11 +23,19 @@ class _CycleCheckSuppressed:
 
 
 @singleUndoChunk
-def createSticky(componentSel=None, parent=None, _type='softMod', before=True):
+def createSticky(componentSel=None,
+                 parent=None,
+                 _type='softMod',
+                 before=True,
+                 falloffRadius:float=.5,
+                 **kwargs):
     """
     Args:
-
+    Kwargs :
+        ctrl_radius : default equal to falloffRadius but ctrl size can be set to another value
     """
+    ctrl_radius = kwargs.get('ctrl_radius', None)
+
     # Get the selected components if not provided
     if not componentSel:
         componentSel = cmds.ls(sl=True, fl=True)
@@ -47,15 +55,15 @@ def createSticky(componentSel=None, parent=None, _type='softMod', before=True):
         grp = parent
 
     # Create sticky deformers (softMod, cluster, etc.)
-    out = createStickyDeformers(_type, parent=grp, inputFaces=componentSel, before=before)
+    out = createStickyDeformers(_type, parent=grp, inputFaces=componentSel, before=before, ctrl_radius=ctrl_radius)
 
     # Set the falloff radius to 0.5 (adjust as needed)
-    cmds.setAttr("{}.falloffRadius".format(out[0][0]), 0.5)
+    cmds.setAttr("{}.falloffRadius".format(out[0][0]), falloffRadius)
 
     return out
 
 
-def createStickyDeformers(deformerType, name=None, parent=None, inputFaces=[], ssr=False, before=True):
+def createStickyDeformers(deformerType, name=None, parent=None, inputFaces=[], ssr=False, before=True, ctrl_radius=None):
     # Filter selection
     meshFaces, meshVerts, meshTransforms, nurbsSurfaceTransforms, nurbsCurvesTransforms = filterSelection(inputFaces)
 
@@ -86,6 +94,8 @@ def createStickyDeformers(deformerType, name=None, parent=None, inputFaces=[], s
 
     # Get the falloff radius for soft selection
     falloffRadius = getFalloffRadius(ssr)
+    if not ctrl_radius:
+        ctrl_radius = falloffRadius
 
     # Define parent group for controls if none exists
     stickyControlsParent = parent if parent else 'sticky_grp'
@@ -98,8 +108,9 @@ def createStickyDeformers(deformerType, name=None, parent=None, inputFaces=[], s
         componentType=componentType,
         createControlParentGroupsOnly=False,
         stickyControlsParent=stickyControlsParent,
-        radius=falloffRadius,
-        namePrefix=name
+        radius=ctrl_radius,
+        namePrefix=name,
+        before=before
     )
 
     # Create deformers
@@ -110,7 +121,8 @@ def createStickyDeformers(deformerType, name=None, parent=None, inputFaces=[], s
         members=deformerMembers,
         falloffRadius=falloffRadius,
         createOffsetCtrls=False,
-        before=before
+        before=before,
+        ctrl_radius=ctrl_radius
     )
 
     return stickyControls, deformer_output
@@ -118,10 +130,11 @@ def createStickyDeformers(deformerType, name=None, parent=None, inputFaces=[], s
 
 @acceptString('parents')
 def createDeformers(deformerType, name='', parents=[], members=[],
-                    falloffRadius=None, createOffsetCtrls=False, before=True):
+                    falloffRadius=None, createOffsetCtrls=False, before=True, ctrl_radius=None ):
 
 
     falloffRadius = falloffRadius or 1.0
+    ctrl_radius = ctrl_radius or falloffRadius
 
     if not members:
         print("No geometry provided. Nothing created")
@@ -138,10 +151,11 @@ def createDeformers(deformerType, name='', parents=[], members=[],
         name = getUniqueBaseName(srcObjName=parent, dstSuffixes=['_' + deformerType, '_ctrl'])
 
         # create a curve for control
-        ctrl = _create_control(deformerType, name, falloffRadius)
+        print(f"debug ctrl radius {ctrl_radius}")
+        ctrl = _create_control(deformerType, name, falloffRadius=ctrl_radius)
 
         # offset ctrl --------------------------------------------------------------------------------------------------
-        offsetCtrl = _create_offset_control(name, falloffRadius, createOffsetCtrls, parent)
+        offsetCtrl = _create_offset_control(name, ctrl_radius, createOffsetCtrls, parent)
 
         # Add locator shape to access worldPosition
         offsetCtrlLocatorShape = _add_locator_shape_to_offset_ctrl(offsetCtrl)
@@ -181,7 +195,10 @@ def createDeformers(deformerType, name='', parents=[], members=[],
         if createOffsetCtrls:
             cmds.parent(offsetCtrl, parent)
 
-    return offsetCtrls
+        deformers.append(deformer)
+        offsetCtrls.append(offsetCtrl)
+
+    return deformers, offsetCtrls
 
 # Helper functions
 def filterSelection(inputFaces=[]):
@@ -228,7 +245,7 @@ def create_control_group(name, radius=1.0, create_control=False):
 
     else:
         # create control parent groups (_zro) and control (_ctrl) objects
-        ctrl = cmds.circle(n=name + '_ctrl', ch=0, radius=radius * 0.5 + 0.1)[0]
+        ctrl = cmds.circle(n=name + '_ctrl', ch=0, radius=radius)[0]
         cmds.rotate(-90, 0, 0, ctrl + ".cv[0:7]", os=True, r=True)
         cmds.setAttr(ctrl + '.v', keyable=False, channelBox=False)
         ctrlShape = cmds.listRelatives(ctrl, shapes=True)[0]
@@ -401,15 +418,74 @@ def getUniqueBaseName(srcObjName, dstSuffixes=[]):
         count += 1
 
 
+def _resolve_history_source(mesh_shape, before):
+    """Return (in_mesh_con, temp_cluster) -- the mesh-typed plug to feed a
+    positioning follicle's inputMesh, and a throwaway cluster (or None) to
+    delete afterward if one had to be created.
+
+    When before is True, the new sticky deformer will sit upstream of
+    anything already in mesh_shape's history (an existing skinCluster, an
+    earlier sticky's softMod...). Tracking the CURRENT live output would
+    create a cycle once inserted -- that output would end up depending on
+    the new deformer, while the new deformer's positioning control depends
+    on that same output via the follicle. Track the shape's true
+    pre-deformation geometry instead: deformableShape's originalGeometry
+    query reports it directly if a deformer has already forced its
+    creation (confirmed: it does NOT depend on which deformer, so this is
+    safe even with an existing skinCluster). If no deformer has ever
+    touched this shape, Maya only creates the intermediate Orig shape when
+    a real deformer is added, so a throwaway cluster is used to force it --
+    deleting it afterward reconnects every listener of its output, not
+    just the main deformation chain, directly to the newly-created Orig
+    shape (verified empirically, not a guess).
+
+    When before is False, the new deformer goes downstream of whatever's
+    already there, so it's safe (and desired -- e.g. reacting to an
+    existing skinCluster's pose) to track the current live output.
+    """
+    temp_cluster = None
+
+    def _force_orig_shape():
+        cluster_nodes = cmds.cluster(mesh_shape, name='temp_cluster')
+        source = cmds.connectionInfo(mesh_shape + '.inMesh', sourceFromDestination=True)
+        return source, cluster_nodes
+
+    if before:
+        orig_plug = cmds.deformableShape(mesh_shape, originalGeometry=True)[0]
+        if orig_plug:
+            in_mesh_con = orig_plug
+        else:
+            in_mesh_con, temp_cluster = _force_orig_shape()
+    else:
+        in_mesh_con = cmds.connectionInfo(mesh_shape + '.inMesh', sourceFromDestination=True)
+        if not in_mesh_con:
+            orig_plug = cmds.deformableShape(mesh_shape, originalGeometry=True)[0]
+            if orig_plug:
+                in_mesh_con = orig_plug
+            else:
+                in_mesh_con, temp_cluster = _force_orig_shape()
+
+    return in_mesh_con, temp_cluster
+
+
 def createStickyControls(driverComponents=[], componentType='f', createControlParentGroupsOnly=False,
                          stickyControlsParent='', radius=1.0,
-                         namePrefix='', constrainViaFollicles=True):
+                         namePrefix='', constrainViaFollicles=True, before=True):
     """
     Creates sticky controls (or empty parent groups) constrained to a mesh surface, using follicles or pointOnPolyConstraint.
 
     Args:
         driverComponents: face ('mesh.f[N]') or vertex ('mesh.vtx[N]') component(s) driving each control's position.
         componentType: 'f' for faces (default) or 'vtx' for vertices -- selects the selectionMask/position lookup used.
+        before: Must match whatever `before` the caller will use when actually
+            inserting the deformer (see createSticky). When True, the new
+            deformer will sit upstream of anything already in the mesh's
+            history, so the follicle positioning each control MUST track the
+            true pre-deformation geometry -- tracking whatever currently
+            feeds inMesh would make that existing output depend on the new
+            deformer once inserted (a cycle). When False, the new deformer
+            goes downstream, so tracking the current live output is correct
+            and desired (e.g. reacting to an existing skinCluster's pose).
     """
     bGenerateName = not namePrefix
     sticky_controls = []
@@ -443,21 +519,19 @@ def createStickyControls(driverComponents=[], componentType='f', createControlPa
             cmds.addAttr(ctrl_zero, ln="following", dt="string")
             cmds.setAttr(ctrl_zero + ".following", driver, type="string")
 
+        # Maya reports vertex component selections either transform-qualified
+        # ('pSphere1.vtx[0]') or shape-qualified ('pSphere1Shape.vtx[0]')
+        # depending on scene state (e.g. merely having a joint in the scene
+        # can flip it) -- resolve to the shape only when geo_name isn't
+        # already one.
         mesh_shape = geo_name
-        if cmds.nodeType(geo_name) == 'mesh':
+        if cmds.nodeType(geo_name) != 'mesh':
             mesh_shape = cmds.listRelatives(geo_name, noIntermediate=1, shapes=1, fullPath=1)[0]
-        # check the meshShape's input connection, if none is found force the creation of an origShape node through
-        # the generation of a temporary deformer
-        in_mesh_con = cmds.connectionInfo(mesh_shape + '.inMesh', sourceFromDestination=True)
 
-        temp_cluster = None
-        if not in_mesh_con:
-            temp_cluster = cmds.cluster(mesh_shape, name='temp_cluster')
-            # avoid cycle by guessing where would be the input connection
-            in_mesh_con = cmds.connectionInfo(mesh_shape + '.inMesh', sourceFromDestination=True)
+        in_mesh_con, temp_cluster = _resolve_history_source(mesh_shape, before)
 
         # Get UVs and setup follicle or pointOnPoly constraint
-        sh_only = cmds.listRelatives(mesh_shape.split("|")[-1], shapes=1)[0]  # key is only the shape
+        sh_only = mesh_shape.split("|")[-1]  # key is only the shape's short name (matches partialPathName())
         component_m_point = d_component_position[f'{sh_only}.{comp_num}']
         # delay import to avoid circular call
         from dw_maya.dw_maya_utils import closest_uv_on_mesh
@@ -592,7 +666,7 @@ def _create_offset_control(name: str, falloffRadius: float, createOffsetCtrls: b
         str: The name of the created or reused offset control.
     """
     if createOffsetCtrls:
-        offsetCtrl = cmds.circle(n=name + '_offset_ctrl', ch=False, radius=falloffRadius * 0.5)[0]
+        offsetCtrl = cmds.circle(n=name + '_offset_ctrl', ch=False, radius=falloffRadius * 0.5 * 0.1)[0]
         cmds.rotate(-90, 0, 0, offsetCtrl + ".cv[0:7]", os=True, r=True)
         cmds.setAttr(offsetCtrl + '.v', keyable=False, channelBox=False)
         offsetCtrlShape = cmds.listRelatives(offsetCtrl, shapes=True)[0]
