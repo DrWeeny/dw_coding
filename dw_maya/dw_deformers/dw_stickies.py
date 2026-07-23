@@ -6,8 +6,28 @@ from dw_maya.dw_decorators import acceptString, singleUndoChunk
 from dw_maya.dw_create import pointOnPolyConstraint
 
 
+class _CycleCheckSuppressed:
+    """Temporarily disable Maya's cycle check.
+       During the creation setup, a cycle warning is resolved so lets not print it
+       in the console
+    """
+
+    def __enter__(self):
+        self._was_on = cmds.cycleCheck(query=True, evaluation=True)
+        cmds.cycleCheck(evaluation=False)
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        cmds.cycleCheck(evaluation=self._was_on)
+        return False
+
+
 @singleUndoChunk
-def createSticky(componentSel=None, parent=None, _type='softMod'):
+def createSticky(componentSel=None, parent=None, _type='softMod', before=True):
+    """
+    Args:
+
+    """
     # Get the selected components if not provided
     if not componentSel:
         componentSel = cmds.ls(sl=True, fl=True)
@@ -27,7 +47,7 @@ def createSticky(componentSel=None, parent=None, _type='softMod'):
         grp = parent
 
     # Create sticky deformers (softMod, cluster, etc.)
-    out = createStickyDeformers(_type, parent=grp, inputFaces=componentSel)
+    out = createStickyDeformers(_type, parent=grp, inputFaces=componentSel, before=before)
 
     # Set the falloff radius to 0.5 (adjust as needed)
     cmds.setAttr("{}.falloffRadius".format(out[0][0]), 0.5)
@@ -35,20 +55,28 @@ def createSticky(componentSel=None, parent=None, _type='softMod'):
     return out
 
 
-def createStickyDeformers(deformerType, name=None, parent=None, inputFaces=[], ssr=False):
+def createStickyDeformers(deformerType, name=None, parent=None, inputFaces=[], ssr=False, before=True):
     # Filter selection
-    meshFaces, meshTransforms, nurbsSurfaceTransforms, nurbsCurvesTransforms = filterSelection(inputFaces)
+    meshFaces, meshVerts, meshTransforms, nurbsSurfaceTransforms, nurbsCurvesTransforms = filterSelection(inputFaces)
+
+    # Vertex input takes precedence when present; otherwise fall back to faces.
+    if meshVerts:
+        driverComponents = meshVerts
+        componentType = 'vtx'
+    else:
+        driverComponents = meshFaces
+        componentType = 'f'
 
     # Multi-face selection handling (Currently commented out logic for UI multi-mode)
     multiFaceMode = False
-    driverFaces = meshFaces[-1] if meshFaces else None  # Default to last face selected
+    driverComponent = driverComponents[-1] if driverComponents else None  # Default to last selected
 
     # Check user preferences for selection order tracking
     if not multiFaceMode:
         cmds.selectPref(trackSelectionOrder=True)
 
     # Find deformer members (geometry to which deformer will be applied)
-    obj = cmds.ls(driverFaces, o=True)
+    obj = cmds.ls(driverComponent, o=True)
     meshTransforms = cmds.listRelatives(obj, p=True)
     deformerMembers = list(set(meshTransforms + nurbsSurfaceTransforms + nurbsCurvesTransforms))
 
@@ -66,7 +94,8 @@ def createStickyDeformers(deformerType, name=None, parent=None, inputFaces=[], s
 
     # Create sticky controls
     stickyControls = createStickyControls(
-        driverMeshFaces=driverFaces,
+        driverComponents=driverComponent,
+        componentType=componentType,
         createControlParentGroupsOnly=False,
         stickyControlsParent=stickyControlsParent,
         radius=falloffRadius,
@@ -80,7 +109,8 @@ def createStickyDeformers(deformerType, name=None, parent=None, inputFaces=[], s
         parents=stickyControls,
         members=deformerMembers,
         falloffRadius=falloffRadius,
-        createOffsetCtrls=False
+        createOffsetCtrls=False,
+        before=before
     )
 
     return stickyControls, deformer_output
@@ -88,7 +118,7 @@ def createStickyDeformers(deformerType, name=None, parent=None, inputFaces=[], s
 
 @acceptString('parents')
 def createDeformers(deformerType, name='', parents=[], members=[],
-                    falloffRadius=None, createOffsetCtrls=False):
+                    falloffRadius=None, createOffsetCtrls=False, before=True):
 
 
     falloffRadius = falloffRadius or 1.0
@@ -137,7 +167,8 @@ def createDeformers(deformerType, name='', parents=[], members=[],
                         weightNode=[ctrl, ctrl],
                         offsetCtrl=offsetCtrlLocatorShape,
                         falloffRadius=falloffRadius,
-                        deformerType=deformerType)
+                        deformerType=deformerType,
+                        before=before)
 
         _no_double_transform(members, deformer)
 
@@ -159,10 +190,11 @@ def filterSelection(inputFaces=[]):
     else:
         sel = cmds.ls(inputFaces, fl=True)
     meshFaces = cmds.filterExpand(sel, expand=True, selectionMask=34) or []
+    meshVerts = cmds.filterExpand(sel, expand=True, selectionMask=31) or []
     meshTransforms = cmds.filterExpand(expand=True, selectionMask=12) or []
     nurbsSurfaceTransforms = cmds.filterExpand(expand=True, selectionMask=10) or []
     nurbsCurvesTransforms = cmds.filterExpand(expand=True, selectionMask=9) or []
-    return meshFaces, meshTransforms, nurbsSurfaceTransforms, nurbsCurvesTransforms
+    return meshFaces, meshVerts, meshTransforms, nurbsSurfaceTransforms, nurbsCurvesTransforms
 
 
 def getFalloffRadius(ssr):
@@ -275,6 +307,54 @@ def getFaceCenterPositions(meshFaces, returnMPoints=False):
     return dFaceVsFacePosition
 
 
+def getVertexPositions(meshVerts, returnMPoints=False):
+    """
+    Returns the world-space position of each given mesh vertex.
+
+    Args:
+        meshVerts (list): A list of mesh vertex components (e.g., 'pSphereShape1.vtx[12]').
+        returnMPoints (bool): If True, return MPoint objects; otherwise, return a list of [x, y, z].
+
+    Returns:
+        dict: A dictionary where keys are vertex components and values are either MPoints or lists of world coordinates.
+    """
+    dVertexPosition = {}
+    selMSelectionList = om.MSelectionList()
+
+    # Add each vertex to the MSelectionList
+    for vtx in meshVerts:
+        selMSelectionList.add(vtx)
+
+    dagPathMDagPath = om.MDagPath()
+    componentMObject = om.MObject()
+
+    # Iterate over the selection list (mesh vertex components)
+    iterSel = om.MItSelectionList(selMSelectionList, om.MFn.kMeshVertComponent)
+    while not iterSel.isDone():
+        iterSel.getDagPath(dagPathMDagPath, componentMObject)
+        partialPath = dagPathMDagPath.partialPathName()  # Mesh name without the full DAG path
+
+        # Iterator for the mesh vertices
+        vtxIter = om.MItMeshVertex(dagPathMDagPath, componentMObject)
+        while not vtxIter.isDone():
+            index = vtxIter.index()
+            posMPoint = vtxIter.position(om.MSpace.kWorld)  # World-space position of the vertex
+
+            key = f'{partialPath}.vtx[{index}]'  # Create a key for the vertex
+
+            # Store the position either as an MPoint or a list of [x, y, z]
+            if returnMPoints:
+                dVertexPosition[key] = posMPoint
+            else:
+                dVertexPosition[key] = [posMPoint.x, posMPoint.y, posMPoint.z]
+
+            vtxIter.next()  # Move to the next vertex
+
+        iterSel.next()  # Move to the next selected item
+
+    return dVertexPosition
+
+
 def getUniqueBaseName(srcObjName, dstSuffixes=[]):
     """
     Finds a unique base name for all given destination suffixes "dstSuffixes", based on the given source object name.
@@ -321,23 +401,31 @@ def getUniqueBaseName(srcObjName, dstSuffixes=[]):
         count += 1
 
 
-def createStickyControls(driverMeshFaces=[], createControlParentGroupsOnly=False,
+def createStickyControls(driverComponents=[], componentType='f', createControlParentGroupsOnly=False,
                          stickyControlsParent='', radius=1.0,
                          namePrefix='', constrainViaFollicles=True):
     """
     Creates sticky controls (or empty parent groups) constrained to a mesh surface, using follicles or pointOnPolyConstraint.
+
+    Args:
+        driverComponents: face ('mesh.f[N]') or vertex ('mesh.vtx[N]') component(s) driving each control's position.
+        componentType: 'f' for faces (default) or 'vtx' for vertices -- selects the selectionMask/position lookup used.
     """
     bGenerateName = not namePrefix
     sticky_controls = []
     sticky_control_zeroes = []
     follicles = []
 
-    mesh_faces = cmds.filterExpand(driverMeshFaces, expand=True, selectionMask=34)
-    d_face_vs_face_position = getFaceCenterPositions(mesh_faces, returnMPoints=True)
+    mask = 31 if componentType == 'vtx' else 34
+    mesh_components = cmds.filterExpand(driverComponents, expand=True, selectionMask=mask)
+    if componentType == 'vtx':
+        d_component_position = getVertexPositions(mesh_components, returnMPoints=True)
+    else:
+        d_component_position = getFaceCenterPositions(mesh_components, returnMPoints=True)
 
-    for driver in mesh_faces:
-        geo_name, face_num = driver.split(".")
-        component = re.sub(r'[^a-zA-Z0-9]', '_', face_num)
+    for driver in mesh_components:
+        geo_name, comp_num = driver.split(".")
+        component = re.sub(r'[^a-zA-Z0-9]', '_', comp_num)
 
         if bGenerateName:
             base_name = geo_name.replace(":", "_") + "_" + component
@@ -370,10 +458,10 @@ def createStickyControls(driverMeshFaces=[], createControlParentGroupsOnly=False
 
         # Get UVs and setup follicle or pointOnPoly constraint
         sh_only = cmds.listRelatives(mesh_shape.split("|")[-1], shapes=1)[0]  # key is only the shape
-        face_m_point = d_face_vs_face_position[f'{sh_only}.{face_num}']
+        component_m_point = d_component_position[f'{sh_only}.{comp_num}']
         # delay import to avoid circular call
         from dw_maya.dw_maya_utils import closest_uv_on_mesh
-        uv = closest_uv_on_mesh(mesh_shape, position=face_m_point)
+        uv = closest_uv_on_mesh(mesh_shape, position=component_m_point)
 
         if constrainViaFollicles:
             follicle = create_follicle_constraint(ctrl_zero, mesh_shape, uv, base_name, in_mesh_con)
@@ -536,7 +624,8 @@ def _deformer_setup(members, name,
                      weightNode: list,
                      offsetCtrl: str,
                      falloffRadius: float,
-                     deformerType: str):
+                     deformerType: str,
+                     before: bool = True):
     """
     Connects the deformer to the members and sets up the required connections.
 
@@ -548,37 +637,48 @@ def _deformer_setup(members, name,
         falloffRadius (float): The falloff radius for the deformation.
         deformerType (str): The type of deformer ('cluster', 'softMod').
         multiFaceMode (bool): Whether to apply multi-face deformation.
+        before (bool): Insert this deformer BEFORE existing deformers in the
+            member's history (True, default) or AFTER them (False). On an
+            already-skinned mesh, True creates a cycle -- the sticky
+            control is positioned by a follicle tracking the live,
+            already-deformed surface, and inserting the sticky before the
+            skinCluster makes the skinCluster's output depend on the
+            sticky's own output. Pass False in that case.
     """
-    if deformerType == "softMod":
-        deformer, ctrl = cmds.softMod(members,
-                                      name=name + '_softMod',
-                                      weightedNode=weightNode,
-                                      bindState=1,
-                                      falloffRadius=falloffRadius,
-                                      falloffAroundSelection=0, before=1,
-                                      afterReference=False)
-        cmds.connectAttr(offsetCtrl + ".worldPosition", deformer + ".falloffCenter")
-        cmds.addAttr(ctrl, ln="falloffRadius", at="float", dv=falloffRadius, k=1, min=0.0)
-        cmds.connectAttr(ctrl + ".falloffRadius", deformer + ".falloffRadius")
+    # Inserting a deformer with before=True on a mesh that already has one
+    # in its history (e.g. a skinCluster) briefly looks cyclic to Maya
+    # while it reconnects plugs, before settling into its final, genuinely
+    # non-cyclic state -- see _CycleCheckSuppressed.
+    with _CycleCheckSuppressed():
+        if deformerType == "softMod":
+            deformer, ctrl = cmds.softMod(members,
+                                          name=name + '_softMod',
+                                          weightedNode=weightNode,
+                                          bindState=1,
+                                          falloffRadius=falloffRadius,
+                                          falloffAroundSelection=0, before=before,
+                                          afterReference=False)
+            cmds.connectAttr(offsetCtrl + ".worldPosition", deformer + ".falloffCenter")
+            cmds.addAttr(ctrl, ln="falloffRadius", at="float", dv=falloffRadius, k=1, min=0.0)
+            cmds.connectAttr(ctrl + ".falloffRadius", deformer + ".falloffRadius")
 
-        cmds.addAttr(ctrl, ln="falloffMode", at="enum", en='volume:surface', k=1)
-        cmds.connectAttr(ctrl + ".falloffMode", deformer + ".falloffMode")
+            cmds.addAttr(ctrl, ln="falloffMode", at="enum", en='volume:surface', k=1)
+            cmds.connectAttr(ctrl + ".falloffMode", deformer + ".falloffMode")
 
-    elif deformerType == "cluster":
-        deformer, ctrl = cmds.cluster(members,
-                                      name=name + '_cluster',
-                                      weightedNode=[ctrl, ctrl],
-                                      envelope=1, before=1, afterReference=False)
-        worldPos = cmds.xform(offsetCtrl, q=True, translation=True, ws=True)
-        cmds.percent(deformer, members, v=0.0)
+        elif deformerType == "cluster":
+            deformer, ctrl = cmds.cluster(members,
+                                          name=name + '_cluster',
+                                          weightedNode=weightNode,
+                                          envelope=1, before=before, afterReference=False)
+            worldPos = cmds.xform(offsetCtrl, q=True, translation=True, ws=True)
+            cmds.percent(deformer, members, v=0.0)
 
-        if falloffRadius:
-            cmds.percent(deformer, members, dropoffPosition=worldPos, dropoffType='linearSquared',
-                         dropoffDistance=falloffRadius, value=1)
+            if falloffRadius:
+                cmds.percent(deformer, members, dropoffPosition=worldPos, dropoffType='linearSquared',
+                             dropoffDistance=falloffRadius, value=1)
 
-
-    if deformerType in ["softMod", "cluster"]:
-        cmds.connectAttr(offsetCtrl + ".worldInverseMatrix", deformer + ".bindPreMatrix")
+        if deformerType in ["softMod", "cluster"]:
+            cmds.connectAttr(offsetCtrl + ".worldInverseMatrix", deformer + ".bindPreMatrix")
 
     return deformer, ctrl
 
