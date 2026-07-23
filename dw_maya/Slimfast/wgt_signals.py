@@ -12,7 +12,7 @@ class SlimfastSignals(QtCore.QObject):
 
     #: Emitted when the source list changes.
     #: Payload: (node_labels: list[str], map_lists: list[list[str]])
-    sources_changed = QtCore.Signal(list, list)
+    sources_changed = QtCore.Signal(list, list, list)
     #: Emitted when the active mesh changes. Payload: mesh name string.
     mesh_changed = QtCore.Signal(str)
     #: Emitted when the active WeightSource changes. Payload: WeightSource or None.

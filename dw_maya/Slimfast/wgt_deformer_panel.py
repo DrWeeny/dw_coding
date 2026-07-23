@@ -423,7 +423,7 @@ class VtxColorPanel(DeformerPanelBase):
         lay.addLayout(ch_row)
 
         # --- preview toggle ---
-        btn = QtWidgets.QPushButton('👁  Channel B&W preview')
+        btn = QtWidgets.QPushButton()
         btn.setCheckable(True)
         btn.setFixedHeight(32)
         btn.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed)
@@ -435,9 +435,22 @@ class VtxColorPanel(DeformerPanelBase):
         btn.setToolTip('Toggle greyscale preview of the active channel in the viewport')
         btn.toggled.connect(self._on_toggled)
         self._preview_btn = btn
+        self._active_channel = 'channel'
+        self._update_preview_label()
         lay.addWidget(btn)
 
         return container
+
+    def _update_preview_label(self) -> None:
+        """Label describes what clicking will DO, not the current state --
+        avoids the "unchecked but the viewport is still grayscale" mismatch
+        (the tool keeps the viewport pinned to grayscale for as long as the
+        paint tool stays selected, regardless of this button; see
+        VertexColorSet -- ChannelPaintController.final_cmd/off_cmd)."""
+        if self._preview_btn.isChecked():
+            self._preview_btn.setText(f'👁  Exit {self._active_channel} BW Mode')
+        else:
+            self._preview_btn.setText(f'👁  Enter {self._active_channel} BW Mode')
 
     def on_source_changed(self,
                           source: Optional['WeightSource'],
@@ -451,6 +464,7 @@ class VtxColorPanel(DeformerPanelBase):
                 self._preview_btn.blockSignals(True)
                 self._preview_btn.setChecked(False)
                 self._preview_btn.blockSignals(False)
+                self._update_preview_label()
             return
         channel = active_map or 'channel'
         # Sync the radios without re-emitting map_selected
@@ -461,9 +475,36 @@ class VtxColorPanel(DeformerPanelBase):
             radio.setChecked(True)
             for b in self._channel_btns.values():
                 b.blockSignals(False)
-        self._preview_btn.setText(f'👁  {channel} B&W preview')
+        self._active_channel = channel
+        self._sync_preview_button()
         # VertexColorSet.use_map() already re-renders an active preview to
         # follow the new channel -- nothing to do here.
+
+    def _sync_preview_button(self) -> None:
+        """Refresh checked state from the source's actual visible state --
+        the paint tool forces grayscale while it's selected regardless of
+        this button. Deliberately does NOT disable the button while
+        locked: gating clickability on a state guess (mouse-hover refresh,
+        a tool-changed callback, anything with its own timing) risks that
+        guess going stale and silently swallowing clicks -- exactly what
+        happened before. The button always stays clickable; _on_toggled
+        re-checks the fresh, real state at the moment of the click instead.
+        """
+        if self._source is None:
+            return
+        self._preview_btn.blockSignals(True)
+        self._preview_btn.setChecked(self._source.preview_visible)
+        self._preview_btn.blockSignals(False)
+        self._preview_btn.setToolTip(
+            'Grayscale is forced while the paint tool is selected -- '
+            'deselect it to see colors again'
+            if self._source.preview_locked else
+            'Toggle greyscale preview of the active channel in the viewport'
+        )
+        self._update_preview_label()
+
+    def on_enter(self) -> None:
+        self._sync_preview_button()
 
     @Slot(QtWidgets.QAbstractButton)
     def _on_channel_clicked(self, radio: QtWidgets.QAbstractButton) -> None:
@@ -476,6 +517,15 @@ class VtxColorPanel(DeformerPanelBase):
         if self._source is None:
             return
         self._source.enable_preview() if checked else self._source.disable_preview()
+        if not checked and self._source.preview_locked:
+            # Can't actually leave BW while the paint tool is still
+            # selected (disable_preview only recorded the preference) --
+            # snap back to checked so the button doesn't lie about what
+            # the viewport is showing.
+            self._preview_btn.blockSignals(True)
+            self._preview_btn.setChecked(True)
+            self._preview_btn.blockSignals(False)
+        self._update_preview_label()
 
 
 # ---------------------------------------------------------------------------

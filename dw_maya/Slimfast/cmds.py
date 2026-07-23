@@ -28,7 +28,6 @@ logger = get_logger()
 
 import traceback
 
-
 # ---------------------------------------------------------------------------
 # Controller — all Maya logic, zero PySide6
 # ---------------------------------------------------------------------------
@@ -101,7 +100,7 @@ class SlimfastController:
             self._active = None
             self._active_map = None
             self._mesh = None
-            self._signals.sources_changed.emit([], [])
+            self._signals.sources_changed.emit([], [], [])
             logger.warning("Select a polyMesh and refresh.")
             return
 
@@ -116,7 +115,9 @@ class SlimfastController:
 
         node_labels = [self._source_label(s) for s in self._sources]
         map_lists = [s.available_maps() for s in self._sources]
-        self._signals.sources_changed.emit(node_labels, map_lists)
+        has_weight = [s.has_weight_list() for s in self._sources]
+
+        self._signals.sources_changed.emit(node_labels, map_lists, has_weight)
         self._signals.mesh_changed.emit(mesh)
 
         if self._sources:
@@ -512,7 +513,7 @@ class SlimfastController:
         if not self._require_active():
             return
 
-        # ── nCloth / nRigid ─────────────────────────────────────────────
+        # -- nCloth / nRigid ---------------------------------------------
         if isinstance(self._active, NClothMap):
             try:
                 for _ in range(iterations):
@@ -523,7 +524,7 @@ class SlimfastController:
                     f"Click \"Paint\" before using artisan smooth. Detail: {e}"
                 )
 
-        # ── VertexColorSet — active channel ─────────────────────────────
+        # -- VertexColorSet — active channel -----------------------------
         elif isinstance(self._active, VertexColorSet):
             ctx = _CTX_ALPHA
             if cmds.currentCtx() != ctx:
@@ -542,7 +543,7 @@ class SlimfastController:
             self._clamp_weights_post()
             logger.info(f"Vertex color artisan smooth x{iterations}.")
 
-        # ── Standard deformers ────────────────────────────────
+        # -- Standard deformers --------------------------------
         else:
             try:
                 mel.eval('artAttrPaintOperation artAttrCtx Smooth')
@@ -703,7 +704,6 @@ class SlimfastController:
 
     def border_selection(self, key_mod:int=0) -> None:
         """Select border vertices of the current component selection."""
-
         if key_mod == 1:
             select_border_recursive(mode="inner")
         else:
@@ -1171,7 +1171,7 @@ class SlimfastController:
             except Exception as e:
                 logger.debug(f"set_cfx_brush_val failed (paint tool not active?): {e}")
             return
-        # ── VertexColorSet — artUserPaintCtx ────────────────────────────
+        # -- VertexColorSet — artUserPaintCtx ----------------------------
         from dw_maya.dw_paint.vertex_color import VertexColorSet
         if isinstance(self._active, VertexColorSet):
             try:
@@ -1180,7 +1180,7 @@ class SlimfastController:
             except Exception as e:
                 logger.debug(f"artUserPaintCtx value update failed: {e}")
             return
-        # ── Standard deformers — artAttrCtx ──────────────────
+        # -- Standard deformers — artAttrCtx ------------------
         ctx = self._resolve_paint_ctx()
         if ctx is None:
             return

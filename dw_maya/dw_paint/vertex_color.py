@@ -30,6 +30,20 @@ Example::
     weights = src.get_weights()
     src.set_weights([w * 0.5 for w in weights])
 
+Debugging note (2026-07-23): while chasing a channel-bleed bug in this
+module, a freshly launched Maya process (no scene explicitly opened)
+still reproduced the bug identically to a session with hours of prior
+testing -- restarting the Maya *application* was not enough to get a
+clean repro. Only doing File > New (a genuinely empty scene, with the
+test mesh/colorSet rebuilt from scratch afterward) actually cleared
+whatever state was carrying the corruption forward. Root cause not
+pinned down further than that; likely Maya reopening/retaining some
+prior scene state on launch (autosave/crash recovery, workspace-remembered
+file, or similar) rather than truly starting blank. Lesson for future
+debugging sessions on this module: "restart Maya" is not sufficient to
+rule out stale state -- use File > New and rebuild the repro from
+scratch before trusting a result as a clean signal.
+
 Author: DrWeeny
 """
 
@@ -590,11 +604,21 @@ class ChannelPaintController:
 
 
 def _has_active_paint_session(mesh: str) -> bool:
-    """True if a ``ChannelPaintController`` is currently live for *mesh*.
+    """True if the paint tool is genuinely selected right now, for *mesh*.
+
+    Checks BOTH that a ``ChannelPaintController`` exists for this mesh AND
+    that Maya's current tool context really is ours -- the controller
+    object itself is never cleared (``off_cmd`` is deliberately a no-op,
+    so channel-switch retargeting still works across separate paint
+    sessions), so checking only its existence would keep reporting a
+    session as "active" long after the user switched to the Select tool,
+    forcing every later channel switch to pin 'current' onto the scratch/
+    grayscale colorSet for no reason -- visually stuck in B&W with no
+    stamps ever landing to justify it.
 
     Used to keep :meth:`VertexColorSet.disable_preview` from deleting the
-    scratch colorSet out from under an in-progress interactive paint
-    session -- it doubles as that session's scratch canvas (see
+    scratch colorSet out from under a genuinely in-progress interactive
+    paint session -- it doubles as that session's scratch canvas (see
     ``ChannelPaintController.on_cmd``); deleting it mid-session would break
     the invariant that 'current' never idles on the real colorSet between
     stamps.
@@ -602,7 +626,12 @@ def _has_active_paint_session(mesh: str) -> bool:
     import __main__
 
     controller = __main__.__dict__.get(_CTX_NAME)
-    return isinstance(controller, ChannelPaintController) and controller.mesh == mesh
+    if not (isinstance(controller, ChannelPaintController) and controller.mesh == mesh):
+        return False
+    try:
+        return cmds.currentCtx() == _CTX_NAME
+    except Exception:
+        return False
 
 
 class VertexColorSet(WeightSource):
@@ -781,16 +810,17 @@ class VertexColorSet(WeightSource):
                           colorSet=_PREVIEW_SET)
 
         # 4. Create context if it doesn't exist
-        if not cmds.artUserPaintCtx(_CTX_NAME, query=True, exists=True):
+        context_existed = cmds.artUserPaintCtx(_CTX_NAME, query=True, exists=True)
+        if not context_existed:
             cmds.artUserPaintCtx(_CTX_NAME)
 
-        # 5. Configure the context with all callbacks
-        cmds.artUserPaintCtx(
-            _CTX_NAME,
+        # 5. Configure the context with all callbacks. value/opacity/radius
+        # are only seeded on first creation -- re-editing them on every
+        # Paint click would reset the artist's last-used brush value and
+        # radius each time they re-enter the tool, which is exactly the
+        # annoyance this guards against.
+        edit_kwargs = dict(
             edit=True,
-            value=0,
-            opacity=1.0,
-            radius=5,
             fullpaths=True,
             accopacity=False,
             stampProfile='solid',
@@ -806,6 +836,9 @@ class VertexColorSet(WeightSource):
             afterStrokeCmd=f'{_CTX_NAME}_after_stroke_cmd',
             finalizeCmd=f'{_CTX_NAME}_final_cmd',
         )
+        if not context_existed:
+            edit_kwargs.update(value=0, opacity=1.0, radius=5)
+        cmds.artUserPaintCtx(_CTX_NAME, **edit_kwargs)
 
         # 6. Select the mesh and activate the context
         cmds.select(self._mesh_name, replace=True)
@@ -1039,6 +1072,29 @@ class VertexColorSet(WeightSource):
     # Channel preview — B&W visualisation
     # ------------------------------------------------------------------
 
+    @property
+    def preview_visible(self) -> bool:
+        """True if the viewport is currently showing the grayscale preview.
+
+        That's either because the user explicitly turned it on
+        (``_preview_active``), or because the interactive paint tool is
+        active on this mesh right now, which forces it regardless (see
+        ``ChannelPaintController.final_cmd``/``off_cmd`` and
+        ``disable_preview``'s note on why it can't be turned off
+        mid-session). UI code should drive a preview toggle's checked
+        state from this, not from ``_preview_active`` alone.
+        """
+        return self._preview_active or _has_active_paint_session(self._mesh_name)
+
+    @property
+    def preview_locked(self) -> bool:
+        """True if the paint tool is forcing the grayscale preview right
+        now, so a preview toggle has nothing meaningful left to do until
+        the tool is deselected (see ``disable_preview``). UI code should
+        disable a preview toggle while this is True.
+        """
+        return _has_active_paint_session(self._mesh_name)
+
     def enable_preview(self) -> None:
         """Create a temp colorSet where R=G=B=<active channel> and display it.
 
@@ -1072,17 +1128,29 @@ class VertexColorSet(WeightSource):
     def disable_preview(self) -> None:
         """Remove the temp colorSet and restore the original display.
 
-        Keeps the colorSet around (just switches 'current' back to the
-        real one) while an interactive paint session is live on this mesh
-        -- see ``_has_active_paint_session``.
+        While an interactive paint session is live on this mesh (see
+        ``_has_active_paint_session``), 'current' must stay pinned to the
+        scratch colorSet regardless -- switching it to the real colorSet
+        here would leave it there right as the next stroke starts, since
+        reads no longer re-pin it (see _read_sibling_snapshot), reopening
+        the exact native-paint-feedback bleed this whole scratch-pinning
+        design exists to prevent. Instead, switch away from the paint tool
+        ourselves: that fires ``ChannelPaintController.off_cmd`` (Maya's
+        own toolOffProc callback) synchronously, which restores real colors
+        immediately since ``_preview_active`` is now False -- matching
+        what "exit preview" actually means to the user, rather than
+        leaving them stuck in grayscale until they remember to switch
+        tools manually.
         """
         if _has_active_paint_session(self._mesh_name):
-            cmds.polyColorSet(self._mesh_name, currentColorSet=True,
-                              colorSet=self._color_set)
             self._preview_active = False
+            try:
+                cmds.SelectTool()
+            except Exception as e:
+                logger.warning(f"Could not switch away from the paint tool: {e}")
             logger.info(
-                f"Channel preview disabled on '{self._mesh_name}' "
-                f"(scratch colorSet kept -- paint session still active)."
+                f"Preview disabled on '{self._mesh_name}' -- switched off "
+                f"the paint tool so real colors show immediately."
             )
             return
 
