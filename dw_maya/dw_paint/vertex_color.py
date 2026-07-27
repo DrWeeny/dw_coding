@@ -44,6 +44,35 @@ debugging sessions on this module: "restart Maya" is not sufficient to
 rule out stale state -- use File > New and rebuild the repro from
 scratch before trusting a result as a clean signal.
 
+Direct-mode experiment (2026-07-24): the fix above landed as two bundled
+changes in one commit -- (1) stop switching 'current' to the real colorSet
+for reads (getVertexColors takes a colorSet name directly, no switch
+needed), which is the actual root cause fix, and (2) unconditionally pin
+'current' to the scratch colorSet for the WHOLE paint session, even
+between strokes, which is what forces the B&W-only viewport during
+painting. (2) was never tested in isolation with (1) already in place --
+it was reverted from an earlier "show true colors between strokes"
+version that broke BEFORE fix (1) existed, so the two failures were
+confounded. This module now supports two live-switchable paint modes,
+driven by ``VertexColorSet._preview_active`` (the same flag the B&W
+toggle button sets):
+    - Direct mode (``_preview_active=False``): 'current' stays on the
+      real colorSet for the whole session -- true colors visible while
+      painting, no scratch canvas. Native artUserPaintCtx grayscale
+      feedback landing on the real colorSet is corrected per-stamp by
+      ``ChannelPaintController._flush_dirty``'s merge-write.
+    - BW mode (``_preview_active=True``): unchanged from the previous fix
+      -- scratch canvas, merge-on-flush, exactly as before.
+See ``ChannelPaintController._pin_target`` for the single place that
+decides which target is live. The toggle can now be flipped mid-session
+in both directions (``enable_preview``/``disable_preview`` re-pin
+'current' instead of forcing the artist out of the tool). This needs a
+live Maya retest before being trusted -- known confound: production has
+also seen a stale-session-cache bug and a dual-instance (fork vs
+open-tools) collision bug layered on top of the original bleed (see
+memory), so a clean repro needs a fresh scene and a single Slimfast
+instance loaded.
+
 Author: DrWeeny
 """
 
@@ -183,6 +212,27 @@ def check_channel_isolation(mesh: str, color_set: str) -> bool:
         return False
     return True
 
+def _set_geometry_draw_dirty(mesh_name: str) -> None:
+    """Force the viewport to redraw *mesh_name*'s vertex colors.
+
+    ``MFnMesh.setVertexColors`` writes the color buffer through the raw
+    OpenMaya API, which does not mark the mesh dirty for Viewport 2.0 /
+    OGS -- so a batch write (numpy smooth, flood, paste) can land in the
+    data with the viewport still drawing the stale colors until some
+    unrelated event forces a redraw (hence "after refreshing once it never
+    happens again"). Marking the geometry draw-dirty here makes OGS pick up
+    the new colorSet stream on the next refresh cycle. Interactive artisan
+    strokes don't need this -- the tool already forces its own redraws.
+    """
+    try:
+        import maya.api.OpenMayaRender as omr
+        # setGeometryDrawDirty wants the shape MObject, not the MDagPath.
+        dag = MeshDataFactory.get(mesh_name)._dag
+        omr.MRenderer.setGeometryDrawDirty(dag.node())
+    except Exception as e:
+        logger.debug(f"setGeometryDrawDirty failed on '{mesh_name}': {e}")
+
+
 def _ensure_scratch_colorset(mesh: str) -> None:
     """Create the internal scratch colorSet (``_PREVIEW_SET``) if missing.
 
@@ -243,33 +293,54 @@ class ChannelPaintController:
         # this must never come from re-reading Maya's 'current' mid-stroke.
         self._sibling_snapshot: Optional[np.ndarray] = None
 
+    def _pin_target(self) -> str:
+        """Where 'current' should rest right now: scratch in BW mode, real colorSet otherwise.
+
+        2026-07-24 experiment (see vertex_color.py module docstring):
+        BW/preview mode keeps the scratch-buffer + merge-on-flush design
+        (native grayscale stamp feedback is harmless there since nothing
+        reads the scratch set as real data). Direct mode intentionally
+        lets 'current' rest on the real colorSet so the artist sees true
+        colors while painting, at the cost of Maya's native per-stamp
+        feedback landing there too -- ``_flush_dirty`` immediately
+        overwrites with the correct merged RGBA right after each stamp, so
+        the corruption is expected to be transient/self-correcting rather
+        than persistent. This trade was reverted once before (see
+        final_cmd's git history) but that revert was bundled with the
+        get_weights()-touches-current bug in the same commit -- with that
+        bug now fixed independently, this is worth retesting in isolation.
+        """
+        return _PREVIEW_SET if self.source._preview_active else self.color_set
+
     def on_cmd(self) -> None:
-        """Context activated — refresh channel cache and pin 'current' off the real colorSet.
+        """Context activated — refresh channel cache and pin 'current' to the right target.
 
         ``artUserPaintCtx`` paints its own grayscale visual feedback
         straight into whatever colorSet is 'current' at the moment of each
         stamp -- that is Maya's native per-vertex paint behavior, not
-        something ``setValueCommand`` controls or can suppress. If the real
-        colorSet were left 'current' during a drag, that native write would
-        clobber the sibling channels; our own read-modify-write would then
-        just re-save that corruption as if it were legitimate data. Keeping
-        a dedicated scratch colorSet 'current' for the whole session
-        confines any native bleed to a set nothing ever reads as real data.
+        something ``setValueCommand`` controls or can suppress. In BW mode
+        that native write must never land on the real colorSet (it would
+        clobber sibling channels before our own read-modify-write can
+        correct it), so 'current' stays pinned to the dedicated scratch
+        colorSet for the whole session. In direct mode 'current' is the
+        real colorSet on purpose -- see ``_pin_target``.
         """
         self._values = np.array(self.source.get_weights(), dtype=np.float64)
-        _ensure_scratch_colorset(self.mesh)
-        MeshDataFactory.get(self.mesh)._fn_mesh.setCurrentColorSetName(_PREVIEW_SET)
+        target = self._pin_target()
+        if target == _PREVIEW_SET:
+            _ensure_scratch_colorset(self.mesh)
+        MeshDataFactory.get(self.mesh)._fn_mesh.setCurrentColorSetName(target)
 
     def off_cmd(self) -> None:
         """Context deactivated -- safe to restore 'current' to real colors now.
 
         No more stamps can land once the tool is switched away from, so
         this is the only point (besides the brief controlled window inside
-        a flush) where 'current' may rest on the real colorSet.
+        a flush) where 'current' may rest on the real colorSet -- in
+        direct mode it already does (see ``_pin_target``).
         """
-        target = self.color_set if not self.source._preview_active else _PREVIEW_SET
         try:
-            MeshDataFactory.get(self.mesh)._fn_mesh.setCurrentColorSetName(target)
+            MeshDataFactory.get(self.mesh)._fn_mesh.setCurrentColorSetName(self._pin_target())
         except Exception as e:
             logger.warning(f"Could not restore colorSet on tool deactivation: {e}")
 
@@ -347,80 +418,143 @@ class ChannelPaintController:
     def final_cmd(self, shape: str = '') -> None:
         """Called on release — apply remaining stamp, flush, commit undo.
 
-        Always leaves 'current' pinned to the scratch colorSet, even though
-        no more stamps can land until the next ``before_stroke_cmd`` -- the
-        tool is still active/selected at this point, and Maya's native
-        artUserPaintCtx feedback appears to re-snapshot its paint target at
-        the START of each new stroke (not just once at tool activation).
-        Leaving 'current' on the real colorSet here (as a "show true colors
-        between strokes" nicety) reopened exactly the same white-bleed bug
-        for every stroke after the first. Real colors only come back via
-        ``off_cmd``, once the tool is truly deactivated and no more strokes
-        can occur.
+        In BW mode, pins 'current' back to the scratch colorSet even
+        though no more stamps can land until the next
+        ``before_stroke_cmd`` -- the tool is still active/selected at this
+        point, and Maya's native artUserPaintCtx feedback appears to
+        re-snapshot its paint target at the START of each new stroke (not
+        just once at tool activation), so real colors must stay hidden
+        from 'current' for the whole BW session (see ``_pin_target``).
+
+        In direct mode 'current' already IS the real colorSet (see
+        ``_pin_target``) -- true colors are visible between strokes by
+        design, that's the point of direct mode.
         """
         self._apply_stamp()
         self._flush_dirty()
         self._commit_stroke_undo()
 
-        _ensure_scratch_colorset(self.mesh)
-        MeshDataFactory.get(self.mesh)._fn_mesh.setCurrentColorSetName(_PREVIEW_SET)
+        target = self._pin_target()
+        if target == _PREVIEW_SET:
+            _ensure_scratch_colorset(self.mesh)
+        MeshDataFactory.get(self.mesh)._fn_mesh.setCurrentColorSetName(target)
 
     def _commit_stroke_undo(self) -> None:
-        """Register one undo-queue entry covering the whole just-finished stroke.
+        """Make the just-finished stroke undoable with a single Ctrl+Z.
 
         ``_flush_dirty`` already wrote every stamp straight to Maya via the
-        raw OpenMaya API (not undoable on its own). This replays that final
-        state through :func:`push_undo` so Ctrl+Z reverts the touched
-        vertices back to their value at ``before_stroke_cmd``, in one step.
+        raw OpenMaya API for live feedback -- those writes never touch the
+        undo queue. Two things conspire against a naive fix:
+
+        - A command run straight from this callback (``finalizeCmd``) nests
+          inside the artisan tool's own executing command and never becomes
+          an independently-undoable entry.
+        - The internal ``dwPyUndo`` MPxCommand bridge, whether called
+          directly or via ``evalDeferred``, did not produce a working undo
+          entry here (confirmed live: no ``dwPyUndo`` ever landed on the
+          queue, and an ``evalDeferred`` python-callable wrapper journaled
+          only itself, not the raw-API work inside it).
+
+        So this instead defers a callable to idle (out of the tool
+        callback) that (1) silently rewinds the touched verts to their
+        pre-stroke value via raw API, then (2) rewrites them to the final
+        value through native ``cmds.polyColorPerVertex`` -- a genuinely
+        undoable command. The whole thing is bracketed in one undo chunk,
+        so undoing it restores the pre-stroke (rewound) state and redoing
+        replays the final. In B&W mode the scratch preview set is committed
+        the same way (rewind + undoable write) so Ctrl+Z reverts what the
+        viewport actually shows.
         """
         if not self._stroke_dirty_verts or self._stroke_start_values is None:
             return
 
-        try:
-            import maya.api.OpenMaya as om2
-            from dw_maya.dw_decorators import push_undo
+        source = self.source
+        mesh = self.mesh
+        color_set = self.color_set
+        idx = self._channel_idx
+        flag = self._channel_flag
+        dirty = list(self._stroke_dirty_verts)
+        final_values = self._values.copy()
+        start_values = self._stroke_start_values.copy()
+        preview = bool(getattr(source, '_preview_active', False))
 
-            mesh = self.mesh
-            color_set = self.color_set
-            idx = self._channel_idx
-            dirty_list = list(self._stroke_dirty_verts)
-            final_values = self._values
-            start_values = self._stroke_start_values
+        self._stroke_dirty_verts = set()
+        self._stroke_start_values = None
 
-            fn_mesh = MeshDataFactory.get(mesh)._fn_mesh
-            # getVertexColors takes the colorSet name directly -- no need
-            # to touch 'current' for this read (see _read_sibling_snapshot
-            # for why that matters: it can re-arm Maya's native paint
-            # feedback onto the real colorSet mid-session).
-            unset = om2.MColor((_UNSET_VALUE,) * 4)
-            colors = fn_mesh.getVertexColors(color_set, unset)
+        def _commit():
+            try:
+                import maya.api.OpenMaya as om2
+                from collections import defaultdict
+                from dw_maya.dw_maya_utils.dw_maya_components import create_maya_ranges
 
-            def _build(values) -> 'om2.MColorArray':
-                arr = om2.MColorArray()
-                for i in dirty_list:
-                    c = colors[i] if i < len(colors) else unset
-                    rgba = [c.r, c.g, c.b, c.a]
-                    rgba[idx] = float(values[i])
-                    arr.append(om2.MColor(rgba))
-                return arr
+                fn_mesh = MeshDataFactory.get(mesh)._fn_mesh
+                unset = om2.MColor((_UNSET_VALUE,) * 4)
 
-            redo_colors = _build(final_values)
-            undo_colors = _build(start_values)
+                def _paint_cmds(values, is_scratch):
+                    # One undoable polyColorPerVertex per distinct value,
+                    # ranges compressed. Grouping keeps the command count low
+                    # even for a big stroke.
+                    groups = defaultdict(list)
+                    for i in dirty:
+                        groups[round(float(values[i]), 5)].append(i)
+                    for val, ids in groups.items():
+                        for rng in create_maya_ranges(ids):
+                            if is_scratch:
+                                cmds.polyColorPerVertex(
+                                    f'{mesh}.vtx[{rng}]',
+                                    r=val, g=val, b=val, a=1.0,
+                                    colorDisplayOption=True, representation=4,
+                                )
+                            else:
+                                cmds.polyColorPerVertex(
+                                    f'{mesh}.vtx[{rng}]',
+                                    colorDisplayOption=True, representation=4,
+                                    **{flag: val},
+                                )
 
-            def _redo():
-                fn_mesh.setCurrentColorSetName(color_set)
-                fn_mesh.setVertexColors(redo_colors, dirty_list)
+                cmds.undoInfo(openChunk=True)
+                try:
+                    # -- real colorSet ---------------------------------
+                    base = fn_mesh.getVertexColors(color_set, unset)
+                    rewind = om2.MColorArray()
+                    for i in dirty:
+                        c = base[i] if i < len(base) else unset
+                        rgba = [c.r, c.g, c.b, c.a]
+                        rgba[idx] = float(start_values[i])
+                        rewind.append(om2.MColor(rgba))
+                    fn_mesh.setCurrentColorSetName(color_set)
+                    fn_mesh.setVertexColors(rewind, dirty)  # silent rewind
 
-            def _undo():
-                fn_mesh.setCurrentColorSetName(color_set)
-                fn_mesh.setVertexColors(undo_colors, dirty_list)
+                    cmds.polyColorSet(mesh, currentColorSet=True, colorSet=color_set)
+                    _paint_cmds(final_values, is_scratch=False)  # undoable
 
-            push_undo(_redo, _undo)
-        except Exception as e:
-            logger.warning(f"Could not register stroke undo: {e}")
-        finally:
-            self._stroke_dirty_verts = set()
-            self._stroke_start_values = None
+                    # -- B&W scratch set (what the viewport shows) -----
+                    if preview:
+                        _ensure_scratch_colorset(mesh)
+                        srewind = om2.MColorArray()
+                        for i in dirty:
+                            v = float(start_values[i])
+                            srewind.append(om2.MColor((v, v, v, 1.0)))
+                        fn_mesh.setCurrentColorSetName(_PREVIEW_SET)
+                        fn_mesh.setVertexColors(srewind, dirty)  # silent rewind
+
+                        cmds.polyColorSet(mesh, currentColorSet=True, colorSet=_PREVIEW_SET)
+                        _paint_cmds(final_values, is_scratch=True)  # undoable
+                        # leave 'current' on scratch -- BW-mode invariant
+                finally:
+                    cmds.undoInfo(closeChunk=True)
+
+                _set_geometry_draw_dirty(mesh)
+            except Exception as exc:
+                logger.warning(f"Stroke undo commit failed: {exc}")
+
+        # Run synchronously (NOT deferred): this executes while the artisan's
+        # own per-stroke undo chunk is still open, so our polyColorPerVertex
+        # writes nest into that single entry -- one clean Ctrl+Z per stroke.
+        # Deferring to idle instead landed our entry AFTER the tool's
+        # (harmless, no-op) ``artUserSetValues`` entry, so every second undo
+        # hit that no-op and only one stroke of two appeared to revert.
+        _commit()
 
     def _apply_stamp(self) -> None:
         """Apply accumulated stamp hits to the in-memory channel buffer."""
@@ -527,14 +661,23 @@ class ChannelPaintController:
     def _flush_dirty(self) -> None:
         """Write only the changed vertices to Maya (incremental update).
 
-        'current' is only ever pointed at the real colorSet for the brief
-        moment of the write below, then immediately pinned back to the
-        scratch/preview set (see on_cmd) so no native artUserPaintCtx stamp
-        can land on the real data between flushes. Sibling channels come
-        from the once-per-stroke snapshot (``_read_sibling_snapshot``),
-        never from re-reading Maya's 'current' mid-stroke -- that 'current'
-        can be the scratch set's uniform grayscale, or real data Maya's own
-        paint feedback already bled into, depending on timing.
+        BW mode: 'current' is only ever pointed at the real colorSet for
+        the brief moment of the write below, then immediately pinned back
+        to the scratch/preview set (see on_cmd) so no native
+        artUserPaintCtx stamp can land on the real data between flushes.
+
+        Direct mode (see ``_pin_target``): 'current' already IS the real
+        colorSet and stays there -- no scratch involved, no pin-back. Any
+        native grayscale feedback Maya wrote into the sibling channels for
+        this stamp is overwritten right here by the merged RGBA write,
+        same as BW mode's correction, just without a scratch buffer to
+        hide behind in between.
+
+        Sibling channels come from the once-per-stroke snapshot
+        (``_read_sibling_snapshot``), never from re-reading Maya's
+        'current' mid-stroke -- that 'current' can be the scratch set's
+        uniform grayscale, or real data Maya's own paint feedback already
+        bled into, depending on timing.
         """
         if not self._dirty_verts:
             return
@@ -548,6 +691,7 @@ class ChannelPaintController:
         dirty_list = list(self._dirty_verts)
         idx = self._channel_idx
         self._stroke_dirty_verts.update(dirty_list)
+        bw_mode = self.source._preview_active
 
         try:
             import maya.api.OpenMaya as om2
@@ -568,16 +712,20 @@ class ChannelPaintController:
 
             fn_mesh.setCurrentColorSetName(color_set)
             fn_mesh.setVertexColors(new_colors, dirty_list)
-            fn_mesh.setCurrentColorSetName(_PREVIEW_SET)
 
-            # Live grayscale feedback on the scratch/preview colorSet --
-            # this is what the viewport shows during the drag (if
-            # displayColors is on), independent of the preview toggle.
-            preview_colors = om2.MColorArray()
-            for i in dirty_list:
-                v = float(self._values[i])
-                preview_colors.append(om2.MColor((v, v, v, 1.0)))
-            fn_mesh.setVertexColors(preview_colors, dirty_list)
+            if bw_mode:
+                fn_mesh.setCurrentColorSetName(_PREVIEW_SET)
+
+                # Live grayscale feedback on the scratch/preview colorSet --
+                # this is what the viewport shows during the drag (if
+                # displayColors is on), independent of the preview toggle.
+                preview_colors = om2.MColorArray()
+                for i in dirty_list:
+                    v = float(self._values[i])
+                    preview_colors.append(om2.MColor((v, v, v, 1.0)))
+                fn_mesh.setVertexColors(preview_colors, dirty_list)
+            # else: direct mode -- 'current' stays on color_set, real RGBA
+            # is already what just got written, nothing more to show.
 
         except Exception as e:
             logger.warning(f"API flush failed, falling back to cmds. Error: {e}")
@@ -591,14 +739,15 @@ class ChannelPaintController:
                     **{flag: float(self._values[i])},
                 )
 
-            cmds.polyColorSet(mesh, currentColorSet=True, colorSet=_PREVIEW_SET)
-            for i in dirty_list:
-                v = float(self._values[i])
-                cmds.polyColorPerVertex(
-                    f'{mesh}.vtx[{i}]',
-                    r=v, g=v, b=v, a=1.0,
-                    colorDisplayOption=True, representation=4,
-                )
+            if bw_mode:
+                cmds.polyColorSet(mesh, currentColorSet=True, colorSet=_PREVIEW_SET)
+                for i in dirty_list:
+                    v = float(self._values[i])
+                    cmds.polyColorPerVertex(
+                        f'{mesh}.vtx[{i}]',
+                        r=v, g=v, b=v, a=1.0,
+                        colorDisplayOption=True, representation=4,
+                    )
 
         self._dirty_verts.clear()
 
@@ -717,15 +866,11 @@ class VertexColorSet(WeightSource):
         super().use_map(map_name)
         self._sync_paint_controller()
         if self._preview_active:
+            # Refresh the scratch canvas to the new channel -- in direct
+            # mode there's no scratch canvas being shown, so nothing to do
+            # (the real colorSet already reflects the new channel's data
+            # via _sync_paint_controller).
             self.enable_preview()
-        elif _has_active_paint_session(self.mesh_name):
-            # 'current' stays pinned to the scratch colorSet for the whole
-            # paint-tool session now, not just mid-drag (see
-            # ChannelPaintController.final_cmd/off_cmd) -- refresh its
-            # visual content to the new channel even without the B&W
-            # toggle on, so a channel switch doesn't keep showing stale
-            # grayscale left over from whichever channel was active before.
-            self._update_preview(self.get_weights())
         return self
 
     def _sync_paint_controller(self) -> None:
@@ -748,16 +893,17 @@ class VertexColorSet(WeightSource):
         controller._channel_idx = _CHANNELS[self.channel][1]
         controller._channel_flag = _CHANNELS[self.channel][0]
         controller._values = np.array(self.get_weights(), dtype=np.float64)
-        # get_weights() leaves 'current' on the real colorSet to do its
-        # read -- pin it back to the scratch set immediately, same
-        # invariant as on_cmd/before_stroke_cmd (current must never idle
-        # on the real colorSet between stamps). The controller singleton
-        # outlives its tool session (off_cmd never clears it), so a stale
-        # controller can be retargeted here without on_cmd having run for
-        # THIS mesh (e.g. mesh deleted/recreated under the same name) --
-        # the scratch colorSet is not guaranteed to exist, ensure it first.
-        _ensure_scratch_colorset(self.mesh_name)
-        MeshDataFactory.get(self.mesh_name)._fn_mesh.setCurrentColorSetName(_PREVIEW_SET)
+        # get_weights()'s API path doesn't touch 'current' at all -- but
+        # re-assert the right pin anyway (BW scratch or real colorSet, see
+        # _pin_target) since the controller singleton outlives its tool
+        # session (off_cmd never clears it), so a stale controller can be
+        # retargeted here without on_cmd having run for THIS mesh (e.g.
+        # mesh deleted/recreated under the same name) -- the scratch
+        # colorSet is not guaranteed to exist if BW mode needs it.
+        target = controller._pin_target()
+        if target == _PREVIEW_SET:
+            _ensure_scratch_colorset(self.mesh_name)
+        MeshDataFactory.get(self.mesh_name)._fn_mesh.setCurrentColorSetName(target)
         # Any in-flight stroke/undo state belongs to the OLD channel.
         controller._stamp_hits = {}
         controller._dirty_verts = set()
@@ -797,17 +943,23 @@ class VertexColorSet(WeightSource):
         cmds.polyColorSet(self._mesh_name, currentColorSet=True,
                           colorSet=self._color_set)
 
-        # 3b. Then immediately pin 'current' to the scratch colorSet BEFORE
-        # the tool activates -- not the real one. artUserPaintCtx's native
-        # per-stamp visual feedback appears to target whatever colorSet is
-        # 'current' at activation time (cmds.setToolTo below), not whatever
-        # 'current' is live during the stroke -- on_cmd (toolOnProc)
-        # re-pinning to scratch AFTER activation was too late, so Maya kept
-        # painting its own white feedback onto the real colorSet for the
-        # whole session regardless.
-        _ensure_scratch_colorset(self._mesh_name)
-        cmds.polyColorSet(self._mesh_name, currentColorSet=True,
-                          colorSet=_PREVIEW_SET)
+        # 3b. Then immediately pin 'current' to the right target BEFORE the
+        # tool activates. artUserPaintCtx's native per-stamp visual
+        # feedback appears to target whatever colorSet is 'current' at
+        # activation time (cmds.setToolTo below), not whatever 'current'
+        # is live during the stroke -- on_cmd (toolOnProc) re-pinning
+        # AFTER activation was too late for the scratch case, so pin here
+        # too. In BW mode that target is the scratch colorSet (never the
+        # real one); in direct mode it's the real colorSet itself (see
+        # _pin_target / module docstring on the 2026-07-24 direct-mode
+        # experiment).
+        if self._preview_active:
+            _ensure_scratch_colorset(self._mesh_name)
+            cmds.polyColorSet(self._mesh_name, currentColorSet=True,
+                              colorSet=_PREVIEW_SET)
+        else:
+            cmds.polyColorSet(self._mesh_name, currentColorSet=True,
+                              colorSet=self._color_set)
 
         # 4. Create context if it doesn't exist
         context_existed = cmds.artUserPaintCtx(_CTX_NAME, query=True, exists=True)
@@ -903,8 +1055,11 @@ class VertexColorSet(WeightSource):
                 values = [_UNSET_VALUE] * n
 
             # Only the cmds fallback above touches 'current' -- restore it
-            # if a B&W preview or paint session expects the scratch set.
-            if self._preview_active or _has_active_paint_session(self._mesh_name):
+            # to the scratch set only in BW mode. In direct mode 'current'
+            # belongs on the real colorSet (see ChannelPaintController._pin_target),
+            # which is exactly where this fallback just left it -- nothing
+            # to restore.
+            if self._preview_active:
                 try:
                     MeshDataFactory.get(self._mesh_name)._fn_mesh.setCurrentColorSetName(_PREVIEW_SET)
                 except Exception:
@@ -984,9 +1139,10 @@ class VertexColorSet(WeightSource):
                         **{flag: float(w)},
                     )
 
-            # Restore 'current' to scratch if a preview/paint session
-            # expects it there -- only this fallback path touches 'current'.
-            if self._preview_active or _has_active_paint_session(self._mesh_name):
+            # Restore 'current' to scratch only in BW mode -- only this
+            # fallback path touches 'current'. In direct mode it's already
+            # sitting on the real colorSet, which is where it belongs.
+            if self._preview_active:
                 try:
                     MeshDataFactory.get(self._mesh_name)._fn_mesh.setCurrentColorSetName(_PREVIEW_SET)
                 except Exception:
@@ -998,6 +1154,10 @@ class VertexColorSet(WeightSource):
 
         # Sync artisan controller if active
         self._sync_artisan_controller(weights)
+
+        # Raw-API writes above don't dirty OGS on their own -- force the
+        # viewport to pick up the new colors (numpy smooth/flood/paste).
+        _set_geometry_draw_dirty(self._mesh_name)
 
     def _set_weights_api(self, weights: WeightList) -> None:
         """Write the active channel using OpenMaya API for better performance.
@@ -1039,21 +1199,49 @@ class VertexColorSet(WeightSource):
         # the "current colorset" state synchronous with this same fn_mesh.
         # This one touch of 'current' onto the real colorSet is unavoidable
         # (setVertexColors has no colorSet-name parameter) -- restore it to
-        # scratch right after if a preview/paint session expects it there,
-        # same reasoning as _read_sibling_snapshot.
+        # scratch right after only in BW mode, same reasoning as
+        # _read_sibling_snapshot. In direct mode 'current' belongs on the
+        # real colorSet anyway, nothing to restore.
         fn_mesh.setCurrentColorSetName(color_set)
         fn_mesh.setVertexColors(new_colors, vertex_list)
-        if self._preview_active or _has_active_paint_session(self._mesh_name):
+        if self._preview_active:
             _ensure_scratch_colorset(self._mesh_name)
             fn_mesh.setCurrentColorSetName(_PREVIEW_SET)
+
+        source = self
+        mesh_name = self._mesh_name
+
+        def _refresh_scratch(color_arr):
+            # In B&W mode the viewport shows the scratch preview, not the
+            # real colorSet -- so undo/redo of a batch write (smooth/flood/
+            # paste) must also repaint the scratch grayscale, or the change
+            # is invisible. Read the LIVE preview flag so a mid-op mode flip
+            # is respected. 'current' is left on scratch afterwards (BW
+            # invariant); direct mode skips this and leaves 'current' on real.
+            if not getattr(source, '_preview_active', False):
+                return
+            try:
+                _ensure_scratch_colorset(mesh_name)
+                pv = om2.MColorArray()
+                for c in color_arr:
+                    v = [c.r, c.g, c.b, c.a][idx]
+                    pv.append(om2.MColor((v, v, v, 1.0)))
+                fn_mesh.setCurrentColorSetName(_PREVIEW_SET)
+                fn_mesh.setVertexColors(pv, vertex_list)
+            except Exception as exc:
+                logger.debug(f"undo/redo preview refresh failed: {exc}")
 
         def _redo():
             fn_mesh.setCurrentColorSetName(color_set)
             fn_mesh.setVertexColors(new_colors, vertex_list)
+            _refresh_scratch(new_colors)
+            _set_geometry_draw_dirty(mesh_name)
 
         def _undo():
             fn_mesh.setCurrentColorSetName(color_set)
             fn_mesh.setVertexColors(old_colors, vertex_list)
+            _refresh_scratch(old_colors)
+            _set_geometry_draw_dirty(mesh_name)
 
         try:
             push_undo(_redo, _undo)
@@ -1076,24 +1264,22 @@ class VertexColorSet(WeightSource):
     def preview_visible(self) -> bool:
         """True if the viewport is currently showing the grayscale preview.
 
-        That's either because the user explicitly turned it on
-        (``_preview_active``), or because the interactive paint tool is
-        active on this mesh right now, which forces it regardless (see
-        ``ChannelPaintController.final_cmd``/``off_cmd`` and
-        ``disable_preview``'s note on why it can't be turned off
-        mid-session). UI code should drive a preview toggle's checked
-        state from this, not from ``_preview_active`` alone.
+        Just ``_preview_active`` -- as of the 2026-07-24 direct-mode
+        experiment (see module docstring / ``ChannelPaintController._pin_target``),
+        an active paint session no longer forces grayscale on its own:
+        direct mode shows real colors, BW mode shows the scratch preview,
+        and the toggle now works live in both directions mid-session.
         """
-        return self._preview_active or _has_active_paint_session(self._mesh_name)
+        return self._preview_active
 
     @property
     def preview_locked(self) -> bool:
-        """True if the paint tool is forcing the grayscale preview right
-        now, so a preview toggle has nothing meaningful left to do until
-        the tool is deselected (see ``disable_preview``). UI code should
-        disable a preview toggle while this is True.
+        """Always False now -- the preview toggle can be flipped live even
+        while a paint session is active (see ``enable_preview``/
+        ``disable_preview``). Kept as a property (rather than removed
+        outright) so UI code checking it doesn't need an extra guard.
         """
-        return _has_active_paint_session(self._mesh_name)
+        return False
 
     def enable_preview(self) -> None:
         """Create a temp colorSet where R=G=B=<active channel> and display it.
@@ -1128,29 +1314,25 @@ class VertexColorSet(WeightSource):
     def disable_preview(self) -> None:
         """Remove the temp colorSet and restore the original display.
 
-        While an interactive paint session is live on this mesh (see
-        ``_has_active_paint_session``), 'current' must stay pinned to the
-        scratch colorSet regardless -- switching it to the real colorSet
-        here would leave it there right as the next stroke starts, since
-        reads no longer re-pin it (see _read_sibling_snapshot), reopening
-        the exact native-paint-feedback bleed this whole scratch-pinning
-        design exists to prevent. Instead, switch away from the paint tool
-        ourselves: that fires ``ChannelPaintController.off_cmd`` (Maya's
-        own toolOffProc callback) synchronously, which restores real colors
-        immediately since ``_preview_active`` is now False -- matching
-        what "exit preview" actually means to the user, rather than
-        leaving them stuck in grayscale until they remember to switch
-        tools manually.
+        2026-07-24 direct-mode experiment: while an interactive paint
+        session is live on this mesh, this now switches 'current' straight
+        to the real colorSet and lets the session keep running in direct
+        mode (see ``ChannelPaintController._pin_target``) instead of
+        forcing the artist out of the tool. Native paint feedback landing
+        on the real colorSet from here on is corrected per-stamp by
+        ``_flush_dirty``, same as any other direct-mode stroke. The
+        scratch colorSet is left in place (not deleted) since flipping BW
+        back on mid-session (``enable_preview``) reuses it.
         """
         if _has_active_paint_session(self._mesh_name):
             self._preview_active = False
             try:
-                cmds.SelectTool()
+                MeshDataFactory.get(self._mesh_name)._fn_mesh.setCurrentColorSetName(self._color_set)
             except Exception as e:
-                logger.warning(f"Could not switch away from the paint tool: {e}")
+                logger.warning(f"Could not switch to direct mode mid-session: {e}")
             logger.info(
-                f"Preview disabled on '{self._mesh_name}' -- switched off "
-                f"the paint tool so real colors show immediately."
+                f"Preview disabled on '{self._mesh_name}' -- painting "
+                f"directly on '{self._color_set}' for the rest of this session."
             )
             return
 

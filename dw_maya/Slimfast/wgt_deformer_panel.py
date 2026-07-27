@@ -442,11 +442,15 @@ class VtxColorPanel(DeformerPanelBase):
         return container
 
     def _update_preview_label(self) -> None:
-        """Label describes what clicking will DO, not the current state --
-        avoids the "unchecked but the viewport is still grayscale" mismatch
-        (the tool keeps the viewport pinned to grayscale for as long as the
-        paint tool stays selected, regardless of this button; see
-        VertexColorSet -- ChannelPaintController.final_cmd/off_cmd)."""
+        """Label describes what clicking will DO, not the current state.
+
+        2026-07-24: BW mode is now a live, both-directions toggle even
+        mid-paint-session (see VertexColorSet.enable_preview/disable_preview
+        and ChannelPaintController._pin_target) -- the viewport is no
+        longer forced to grayscale for the whole tool session, so this
+        label no longer needs to account for that mismatch. Kept as
+        action-describing text anyway since that reads better than a
+        pure state label."""
         if self._preview_btn.isChecked():
             self._preview_btn.setText(f'👁  Exit {self._active_channel} BW Mode')
         else:
@@ -481,14 +485,13 @@ class VtxColorPanel(DeformerPanelBase):
         # follow the new channel -- nothing to do here.
 
     def _sync_preview_button(self) -> None:
-        """Refresh checked state from the source's actual visible state --
-        the paint tool forces grayscale while it's selected regardless of
-        this button. Deliberately does NOT disable the button while
-        locked: gating clickability on a state guess (mouse-hover refresh,
-        a tool-changed callback, anything with its own timing) risks that
-        guess going stale and silently swallowing clicks -- exactly what
-        happened before. The button always stays clickable; _on_toggled
-        re-checks the fresh, real state at the moment of the click instead.
+        """Refresh checked state from the source's actual visible state.
+
+        ``preview_locked`` is always False now (2026-07-24 direct-mode
+        experiment) -- the toggle works live in both directions even
+        mid-session, so the tooltip no longer needs a locked-state variant.
+        Kept the ``preview_locked`` check rather than deleting it so a
+        future revert doesn't have to re-derive this wiring.
         """
         if self._source is None:
             return

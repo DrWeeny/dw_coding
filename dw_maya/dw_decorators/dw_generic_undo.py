@@ -38,14 +38,34 @@ from dw_logger import get_logger
 logger = get_logger()
 
 _CMD_NAME = 'dwPyUndo'
-# Stack of (redo, undo) callables — pushed by push_undo(), popped by doIt().
-# Reset to empty every time this module is (re)imported, see _plugin_loaded.
-_pending: List[Tuple[Callable[[], None], Callable[[], None]]] = []
+# Key under which the shared (redo, undo) stack lives on __main__.
+_PENDING_KEY = '_DW_PYUNDO_PENDING'
 # False on every fresh import/reload — forces _ensure_loaded() to rebind the
 # plugin's command class to *this* module instance (dev iteration reloads
 # dw_maya frequently; an already-loaded plugin would otherwise keep pointing
-# at the stale module's _pending list).
+# at a stale module).
 _plugin_loaded = False
+
+
+def _get_pending() -> List[Tuple[Callable[[], None], Callable[[], None]]]:
+    """Return the process-wide (redo, undo) stack, creating it on first use.
+
+    CRITICAL: ``cmds.loadPlugin(<this file>)`` loads this file as a *second*,
+    top-level module (``dw_generic_undo``) that is a different object from the
+    normally imported ``dw_maya.dw_decorators.dw_generic_undo``. A plain
+    module-level ``_pending`` list would therefore be two distinct lists —
+    ``push_undo`` (called from the imported module) would append to one while
+    ``_DwPyUndoCommand.doIt`` (defined in the plugin module) pops from the
+    other, which stays empty, so every registered undo callable is silently
+    dropped. Anchoring the stack on the single ``__main__`` module makes both
+    copies share one list.
+    """
+    import __main__
+    store = getattr(__main__, _PENDING_KEY, None)
+    if store is None:
+        store = []
+        setattr(__main__, _PENDING_KEY, store)
+    return store
 
 
 def maya_useNewAPI():
@@ -65,8 +85,9 @@ class _DwPyUndoCommand(om2.MPxCommand):
         return _DwPyUndoCommand()
 
     def doIt(self, args) -> None:
-        if _pending:
-            self._redo, self._undo = _pending.pop()
+        pending = _get_pending()
+        if pending:
+            self._redo, self._undo = pending.pop()
         self.redoIt()
 
     def redoIt(self) -> None:
@@ -127,13 +148,14 @@ def push_undo(redo_func: Callable[[], None], undo_func: Callable[[], None]) -> b
         redo_func()
         return False
 
-    _pending.append((redo_func, undo_func))
+    pending = _get_pending()
+    pending.append((redo_func, undo_func))
     try:
         cmds.dwPyUndo()
         return True
     except Exception as e:
         logger.error(f"dwPyUndo invocation failed: {e}")
-        if _pending and _pending[-1] == (redo_func, undo_func):
-            _pending.pop()
+        if pending and pending[-1] == (redo_func, undo_func):
+            pending.pop()
         redo_func()
         return False
