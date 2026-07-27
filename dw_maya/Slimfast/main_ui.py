@@ -2021,6 +2021,14 @@ class SlimfastWidget(QtWidgets.QWidget):
         self._ctrl.set_artisan_color_range(lo, hi)
         self._refresh_display_range()
 
+        # Painting a vertex-color map forces (and locks) B&W -- re-sync the
+        # sub-panel so its preview button reflects the forced/locked state.
+        if self._current_panel is not None:
+            try:
+                self._current_panel.on_enter()
+            except Exception as e:
+                logger.warning(f"Panel re-sync after paint failed: {e}")
+
     @Slot(int)
     def _on_source_combo_changed(self, combo_index: int) -> None:
         """Decode (source_idx, map_name) from the selected row and activate both."""

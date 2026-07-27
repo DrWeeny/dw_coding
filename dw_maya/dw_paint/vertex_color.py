@@ -44,6 +44,16 @@ debugging sessions on this module: "restart Maya" is not sufficient to
 rule out stale state -- use File > New and rebuild the repro from
 scratch before trusting a result as a clean signal.
 
+Direct-mode experiment REVERTED (2026-07-27): production confirmed that
+painting in direct/color mode bleeds the sibling channels (exactly the
+risk flagged below). Painting is now ALWAYS B&W-locked -- ``_paint`` forces
+the scratch canvas on, ``preview_locked`` returns True for the whole paint
+session, and ``disable_preview`` refuses to leave B&W while the tool is
+active. Direct mode survives only as dormant code paths keyed off
+``_preview_active`` (kept so the two-mode plumbing isn't lost), but
+``_preview_active`` is now pinned True for every paint session. The
+paragraph below documents the (now-inactive) experiment for context.
+
 Direct-mode experiment (2026-07-24): the fix above landed as two bundled
 changes in one commit -- (1) stop switching 'current' to the real colorSet
 for reads (getVertexColors takes a colorSet name directly, no switch
@@ -925,6 +935,15 @@ class VertexColorSet(WeightSource):
         """
         check_channel_isolation(self._mesh_name, self._color_set)
 
+        # Painting is ALWAYS B&W-locked (reverts the 2026-07-24 direct-mode
+        # experiment, confirmed unsafe in production): force the grayscale
+        # scratch canvas on so artUserPaintCtx's native per-stamp feedback
+        # lands on the scratch set, never bleeding the real colorSet's
+        # sibling channels. The toggle stays locked for the whole session --
+        # see preview_locked / disable_preview.
+        if not self._preview_active:
+            self.enable_preview()
+
         import __main__
 
         # 1. Install MEL procs
@@ -1274,12 +1293,17 @@ class VertexColorSet(WeightSource):
 
     @property
     def preview_locked(self) -> bool:
-        """Always False now -- the preview toggle can be flipped live even
-        while a paint session is active (see ``enable_preview``/
-        ``disable_preview``). Kept as a property (rather than removed
-        outright) so UI code checking it doesn't need an extra guard.
+        """True while the paint tool is active on this mesh -- B&W is forced.
+
+        Painting always happens on the scratch colorSet so artUserPaintCtx's
+        native grayscale feedback stays isolated to the active channel;
+        painting directly on the real colorSet (direct/color mode) corrupts
+        the sibling channels. So the B&W toggle is LOCKED on for the whole
+        paint session -- the UI snaps the button back if the artist tries to
+        turn it off (see ``wgt_deformer_panel._on_toggled``). Reverts the
+        2026-07-24 direct-mode experiment, which production confirmed unsafe.
         """
-        return False
+        return _has_active_paint_session(self._mesh_name)
 
     def enable_preview(self) -> None:
         """Create a temp colorSet where R=G=B=<active channel> and display it.
@@ -1312,29 +1336,20 @@ class VertexColorSet(WeightSource):
         logger.info(f"Channel preview enabled on '{self._mesh_name}' ({self.channel}).")
 
     def disable_preview(self) -> None:
-        """Remove the temp colorSet and restore the original display.
+        """Turn B&W off, restore the original display, and stop painting.
 
-        2026-07-24 direct-mode experiment: while an interactive paint
-        session is live on this mesh, this now switches 'current' straight
-        to the real colorSet and lets the session keep running in direct
-        mode (see ``ChannelPaintController._pin_target``) instead of
-        forcing the artist out of the tool. Native paint feedback landing
-        on the real colorSet from here on is corrected per-stamp by
-        ``_flush_dirty``, same as any other direct-mode stroke. The
-        scratch colorSet is left in place (not deleted) since flipping BW
-        back on mid-session (``enable_preview``) reuses it.
+        Painting is B&W-locked (channel isolation), so leaving B&W means
+        leaving paint mode. If the artisan paint tool is still active on
+        this mesh, switch back to Maya's Select tool first -- this ends the
+        paint session (so the artist never has to pick the Select tool
+        manually, and can never end up painting in color mode) -- then tear
+        the preview down normally.
         """
         if _has_active_paint_session(self._mesh_name):
-            self._preview_active = False
             try:
-                MeshDataFactory.get(self._mesh_name)._fn_mesh.setCurrentColorSetName(self._color_set)
+                cmds.setToolTo('selectSuperContext')
             except Exception as e:
-                logger.warning(f"Could not switch to direct mode mid-session: {e}")
-            logger.info(
-                f"Preview disabled on '{self._mesh_name}' -- painting "
-                f"directly on '{self._color_set}' for the rest of this session."
-            )
-            return
+                logger.warning(f"Could not switch to the Select tool: {e}")
 
         existing = cmds.polyColorSet(self._mesh_name, q=True, allColorSets=True) or []
         if _PREVIEW_SET in existing:

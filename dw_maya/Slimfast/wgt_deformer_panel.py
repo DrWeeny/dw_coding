@@ -487,11 +487,12 @@ class VtxColorPanel(DeformerPanelBase):
     def _sync_preview_button(self) -> None:
         """Refresh checked state from the source's actual visible state.
 
-        ``preview_locked`` is always False now (2026-07-24 direct-mode
-        experiment) -- the toggle works live in both directions even
-        mid-session, so the tooltip no longer needs a locked-state variant.
-        Kept the ``preview_locked`` check rather than deleting it so a
-        future revert doesn't have to re-derive this wiring.
+        ``preview_locked`` is True while the paint tool is active: painting
+        is forced to B&W (channel isolation), so the button shows checked
+        with a locked-state tooltip and ``_on_toggled`` snaps it back if the
+        artist tries to turn it off. (The 2026-07-24 direct-mode experiment
+        that made it always-False was reverted -- direct painting bled the
+        sibling channels in production.)
         """
         if self._source is None:
             return
