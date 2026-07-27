@@ -719,14 +719,23 @@ class SlimfastWidget(QtWidgets.QWidget):
 
         lay.addLayout(new_row)
 
-        remap_btn = QtWidgets.QPushButton('Apply Remap')
-        remap_btn.setFixedHeight(26)
-        remap_btn.setStyleSheet(
+        self._remap_apply_btn = QtWidgets.QPushButton('Apply Remap')
+        self._remap_apply_btn.setFixedHeight(26)
+        self._remap_apply_btn.setStyleSheet(
             'QPushButton { background-color: #504040; color: white; }'
             'QPushButton:hover { background-color: #705050; }'
         )
-        remap_btn.clicked.connect(self._on_remap_apply)
-        lay.addWidget(remap_btn)
+        self._remap_apply_btn.clicked.connect(self._on_remap_apply)
+        lay.addWidget(self._remap_apply_btn)
+
+        self._curve_edit_btn = QtWidgets.QPushButton('Advanced Edit')
+        self._curve_edit_btn.setFixedHeight(26)
+        self._curve_edit_btn.setToolTip(
+            'Advanced edit: reshape the current weights through a draggable '
+            'curve (contrast / S-curve / remap) with live preview.'
+        )
+        self._curve_edit_btn.clicked.connect(self._on_edit_with_curve)
+        lay.addWidget(self._curve_edit_btn)
 
         return section
 
@@ -962,11 +971,13 @@ class SlimfastWidget(QtWidgets.QWidget):
         lay.addWidget(self._smooth_warn_label)
 
         quick_row = QtWidgets.QHBoxLayout()
+        self._smooth_quick_btns = []
         for n in (2, 5, 10, 20):
             btn = QtWidgets.QPushButton(str(n))
             btn.setFixedWidth(44)
             btn.clicked.connect(partial(self._on_smooth, n))
             quick_row.addWidget(btn)
+            self._smooth_quick_btns.append(btn)
         quick_row.addStretch()
         lay.addLayout(quick_row)
 
@@ -986,10 +997,10 @@ class SlimfastWidget(QtWidgets.QWidget):
         self._iter_slider.valueChanged.connect(self._iter_spinbox.setValue)
         self._iter_spinbox.valueChanged.connect(self._iter_slider.setValue)
 
-        flood_btn = QtWidgets.QPushButton('Apply')
-        flood_btn.setToolTip('Apply smooth N times to all vertices')
-        flood_btn.clicked.connect(self._on_smooth_flood)
-        iter_row.addWidget(flood_btn)
+        self._smooth_flood_btn = QtWidgets.QPushButton('Apply')
+        self._smooth_flood_btn.setToolTip('Apply smooth N times to all vertices')
+        self._smooth_flood_btn.clicked.connect(self._on_smooth_flood)
+        iter_row.addWidget(self._smooth_flood_btn)
         lay.addLayout(iter_row)
 
         mode_row = QtWidgets.QHBoxLayout()
@@ -1427,6 +1438,41 @@ class SlimfastWidget(QtWidgets.QWidget):
         w_min, w_max = self._remap_old_min.value(), self._remap_old_max.value()
         self._remap_new_min.setValue(w_max)
         self._remap_new_max.setValue(w_min)
+
+    def _lock_weight_edits(self, locked: bool) -> None:
+        """Enable/disable every weight-mutating control (soft lock).
+
+        Used while the curve-remap editor is open so a paint stroke or a
+        flood/smooth/remap can't race its live preview. The Maya viewport is
+        a separate window, so it stays navigable -- only Slimfast's write
+        actions are frozen.
+        """
+        widgets = [
+            self._paint_btn, self._copy_btn, self._paste_btn,
+            self._set0_btn, self._set1_btn, self._weight_slider,
+            self._smooth_flood_btn, self._remap_apply_btn,
+            self._remap_fit_btn, self._remap_invert_btn,
+            self._curve_edit_btn, self._adv_apply_btn,
+            *getattr(self, '_smooth_quick_btns', []),
+        ]
+        for w in widgets:
+            if w is not None:
+                w.setEnabled(not locked)
+
+    @Slot()
+    def _on_edit_with_curve(self) -> None:
+        """Open the non-modal curve contrast/remap editor with a soft lock."""
+        if self._ctrl.active_source is None:
+            logger.warning("Select a weight source before editing with a curve.")
+            return
+        from dw_maya.Slimfast.wgt_curve_remap import CurveRemapDialog
+
+        # Keep a reference so the non-modal dialog is not garbage-collected.
+        self._curve_dlg = CurveRemapDialog(self._ctrl, parent=self)
+        self._lock_weight_edits(True)
+        # Re-enable on any close (Apply, Cancel, window X -> QDialog.reject).
+        self._curve_dlg.finished.connect(lambda _r: self._lock_weight_edits(False))
+        self._curve_dlg.show()
 
     @Slot(bool)
     def _on_storage_toggled(self, checked: bool) -> None:

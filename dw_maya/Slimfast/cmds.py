@@ -421,6 +421,56 @@ class SlimfastController:
             logger.debug(f"get_weight_range failed: {traceback.format_exc()}")
             return None
 
+    def _silent_write(self,
+                      weights: List[float],
+                      source: Optional[WeightSource] = None) -> None:
+        """Write weights to *source* WITHOUT touching the undo queue.
+
+        Used for interactive previews (curve-remap drag): disables undo
+        recording with ``stateWithoutFlush`` (which, unlike ``state=False``,
+        does not clear the existing queue) around the write so a live
+        preview doesn't spam Ctrl+Z with one entry per drag. Works for any
+        WeightSource -- vertex-color (raw API + push_undo) and deformer
+        (cmds.setAttr) writes are both suppressed while undo is off.
+
+        *source* defaults to the active source; callers that captured a
+        source up front (the curve editor) pass it explicitly so a mid-
+        session selection change can't retarget the write to another mesh.
+        """
+        source = source or self._active
+        if source is None:
+            return
+        state = cmds.undoInfo(query=True, state=True)
+        cmds.undoInfo(stateWithoutFlush=False)
+        try:
+            source.set_weights(list(weights))
+        finally:
+            cmds.undoInfo(stateWithoutFlush=state)
+
+    def preview_weights(self,
+                        weights: List[float],
+                        source: Optional[WeightSource] = None) -> None:
+        """Silent preview write (no undo). Also used to restore on cancel."""
+        self._silent_write(weights, source)
+
+    def commit_weights(self,
+                       original: List[float],
+                       final: List[float],
+                       source: Optional[WeightSource] = None) -> None:
+        """Make a previewed change a single undoable step (original -> final).
+
+        The preview already left the map holding *final* via silent writes,
+        so this first silently rewinds to *original*, then does ONE undoable
+        ``set_weights`` to *final* -- the resulting single undo entry records
+        a real original->final delta, so Ctrl+Z reverts the whole contrast
+        in one step (same rewind-then-write trick as the vtx paint commit).
+        """
+        source = source or self._active
+        if source is None:
+            return
+        self._silent_write(original, source)
+        source.set_weights(list(final))
+
     def set_artisan_color_range(self, lo: float, hi: float) -> None:
         """Push display range to the active artisan context.
 
@@ -452,6 +502,15 @@ class SlimfastController:
 
             return extract_id(vtx)
         return None
+
+    def selection_vtx_ids(self) -> Optional[List[int]]:
+        """Public accessor for the current live vertex-selection mask.
+
+        Returns the selected vertex indices, or ``None`` when nothing (or
+        only the object) is selected. Used by the curve editor to restrict
+        contrast to the selected verts, matching the numpy smooth path.
+        """
+        return self._get_vtx_mask()
 
     def set_advanced_mask_from_selection(self) -> int:
         """Capture the current vertex selection as the Advanced-ops mask.

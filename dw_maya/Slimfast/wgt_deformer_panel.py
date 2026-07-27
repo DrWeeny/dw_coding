@@ -67,6 +67,10 @@ except ImportError:
     from PySide2 import QtCore, QtGui, QtWidgets
     from PySide2.QtCore import Signal, Slot, Qt
 
+from dw_logger import get_logger
+
+logger = get_logger()
+
 if TYPE_CHECKING:
     from dw_maya.dw_paint.protocol import WeightSource
     from dw_maya.Slimfast.cmds import SlimfastController
@@ -513,8 +517,20 @@ class VtxColorPanel(DeformerPanelBase):
     @Slot(QtWidgets.QAbstractButton)
     def _on_channel_clicked(self, radio: QtWidgets.QAbstractButton) -> None:
         channel = radio.property('channel')
-        if channel:
-            self.map_selected.emit(channel)
+        if not channel:
+            return
+        # Activate the map first (map_selected -> controller.select_map ->
+        # source.use_map, a direct/synchronous connection), then start
+        # painting the newly picked channel. Painting on radio-click keeps
+        # the artist brushing as they switch channels, and lives here in the
+        # vertex-color panel rather than main_ui -- the whole point of the
+        # panel registry is that main_ui carries no per-panel logic.
+        self.map_selected.emit(channel)
+        if self._source is not None:
+            try:
+                self._source.paint()
+            except Exception as e:
+                logger.warning(f"Paint on channel switch failed: {e}")
 
     @Slot(bool)
     def _on_toggled(self, checked: bool) -> None:

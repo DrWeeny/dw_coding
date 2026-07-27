@@ -98,6 +98,32 @@ class RampCurveWidget(QtWidgets.QWidget):
         self.update()
         self.curveChanged.emit(self.control_points)
 
+    def evaluate(self, x: float) -> float:
+        """Sample the curve at *x* in 0-1, returning y in 0-1.
+
+        Uses the same per-segment interpolation the widget draws: a straight
+        segment for ``'linear'`` points, a smoothstep ease for ``'smooth'``.
+        Endpoints are pinned to x=0 / x=1, so any in-range x lands in a
+        segment. Callers build a LUT by sampling this across 0-1.
+        """
+        if x <= 0.0:
+            return self._points[0][1]
+        if x >= 1.0:
+            return self._points[-1][1]
+        pts = self._points
+        for i in range(len(pts) - 1):
+            x0, y0, interp = pts[i]
+            x1, y1, _next = pts[i + 1]
+            if x <= x1:
+                span = x1 - x0
+                if span <= 1e-12:
+                    return y1
+                t = (x - x0) / span
+                if interp == 'smooth':
+                    t = _ease(t)
+                return y0 + t * (y1 - y0)
+        return pts[-1][1]
+
     # ------------------------------------------------------------------
     # Coordinate mapping (widget px <-> 0-1 curve space, y flipped)
     # ------------------------------------------------------------------
