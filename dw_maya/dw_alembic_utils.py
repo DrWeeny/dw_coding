@@ -295,7 +295,12 @@ def exportAbc(file=str, nodes=list, frameRange=None, uvWrite=True, dataFormat='o
     # =====================================================================================
     # VALIDATE THE PATH
     # =====================================================================================
-    if file.startswith('/') and file.endswith('.abc'):
+    # Absolute paths: os.path.isabs rather than startswith('/'), which only
+    # recognised posix roots and so rejected every Windows path ('C:/x.abc')
+    # and UNC share. Backslashes are normalised first since the abc job string
+    # is built with forward slashes throughout.
+    file = file.replace('\\', '/')
+    if os.path.isabs(file) and file.endswith('.abc'):
         file = f"-file {file}"
         args_list.append(file)
     elif '/' not in file:
