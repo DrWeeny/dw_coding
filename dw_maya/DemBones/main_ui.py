@@ -29,12 +29,29 @@ from dw_maya.DemBones.compat import QtCore, QtGui, QtWidgets, wrapInstance, QAct
 from dw_maya.DemBones.wgt_source import SourcePanel
 from dw_maya.DemBones.wgt_params import ParamsPanel
 from dw_maya.DemBones.wgt_generations import GenerationsPanel
+from dw_maya.DemBones import wgt_bind_skin
+from dw_maya.DemBones import wgt_transfer
 from dw_maya.DemBones import dem_cmds
 from dw_logger import get_logger
 
 logger = get_logger()
 
 _window = None
+
+
+def _solve_mode(params: dict, use_rig: bool) -> str:
+    """Label the solve for the generation sidecar.
+
+    The two half-solves are mutually exclusive mode switches, so they are read
+    off the params rather than tracked separately: ``nWeightsIters == 0`` keeps
+    the supplied weights and solves the joint animation only, ``nTransIters ==
+    0`` keeps the supplied transforms and solves the weights only.
+    """
+    if params.get("nWeightsIters") == 0:
+        return "transforms-only"
+    if params.get("nTransIters") == 0:
+        return "weights-only"
+    return "use-rig" if use_rig else "full"
 
 
 class DemBonesUI(QtWidgets.QMainWindow):
@@ -50,6 +67,7 @@ class DemBonesUI(QtWidgets.QMainWindow):
         self._runner = dem_cmds.SolveRunner(self)
         self._log_buffer = []
         self._pending = None   # metadata for the in-flight solve
+        self._dialogs = {}   # kept alive: Qt would collect them otherwise
 
         self._build_ui()
         self._connect()
@@ -124,7 +142,7 @@ class DemBonesUI(QtWidgets.QMainWindow):
         layout.addLayout(out_row)
 
     def _build_menu(self) -> None:
-        """Tools menu: locate the DemBones executable."""
+        """Tools menu: locate the executable, copy a skin mesh to mesh."""
         menu = self.menuBar().addMenu("Tools")
         locate_action = QAction("Locate DemBones executable...", self)
         locate_action.setToolTip(
@@ -132,6 +150,29 @@ class DemBonesUI(QtWidgets.QMainWindow):
             "remembered across Maya sessions.")
         locate_action.triggered.connect(self._on_locate_exe)
         menu.addAction(locate_action)
+
+        menu.addSeparator()
+        bind_action = QAction("Bind skin (prepare rest mesh)...", self)
+        bind_action.setToolTip(
+            "Bind the rest mesh so every joint takes part in the solve, and "
+            "add the non-deforming ones (the root) at weight 0.")
+        bind_action.triggered.connect(self._on_bind_skin)
+        menu.addAction(bind_action)
+
+        transfer_action = QAction("Transfer to rig (skin / animation)...", self)
+        transfer_action.setToolTip(
+            "Hand a solved generation back: copy its skinning onto another "
+            "mesh, and its animation onto the rig's controls or joints.")
+        transfer_action.triggered.connect(self._on_transfer)
+        menu.addAction(transfer_action)
+
+    def _on_bind_skin(self) -> None:
+        """Open the bind-skin dialog (kept alive on the window)."""
+        self._dialogs["bind"] = wgt_bind_skin.launch(parent=self)
+
+    def _on_transfer(self) -> None:
+        """Open the transfer dialog (kept alive on the window)."""
+        self._dialogs["transfer"] = wgt_transfer.launch(parent=self)
 
     def _on_locate_exe(self) -> bool:
         """Open a file picker and persist the chosen DemBones binary.
@@ -165,8 +206,20 @@ class DemBonesUI(QtWidgets.QMainWindow):
         self._runner.finished.connect(self._on_solve_finished)
         # Cross-widget wiring (plain signals, no hub).
         self.source_panel.use_rig_changed.connect(self.params_panel.set_use_rig)
-        self.generations_panel.restore_requested.connect(
-            self.params_panel.set_params)
+        self.source_panel.anim_only_changed.connect(
+            self.params_panel.set_anim_only)
+        self.generations_panel.restore_requested.connect(self._on_restore_params)
+
+    def _on_restore_params(self, params: dict) -> None:
+        """Load a generation's params, syncing the anim-only mode with them.
+
+        The mode is a source-panel checkbox rather than a param, so it is
+        inferred from the restored ``nWeightsIters`` - otherwise restoring a
+        transforms-only generation would leave the mode off and the params
+        panel would let the zeros be edited away.
+        """
+        self.source_panel.set_anim_only(params.get("nWeightsIters") == 0)
+        self.params_panel.set_params(params)
 
     # -- Solve ------------------------------------------------------------
 
@@ -178,6 +231,7 @@ class DemBonesUI(QtWidgets.QMainWindow):
         abc_path = self.source_panel.abc_path()
         start, end = self.source_panel.frame_range()
         use_rig = self.source_panel.use_rig()
+        anim_only = self.source_panel.anim_only()
 
         if not target or not abc_path:
             QtWidgets.QMessageBox.information(
@@ -189,8 +243,17 @@ class DemBonesUI(QtWidgets.QMainWindow):
                 "Target mesh vertex count does not match the Alembic. The solve "
                 "would be garbage - fix the topology first.")
             return
+        if not self._check_alembic_topology(target, abc_path):
+            return
         if use_rig and not dem_cmds.find_skin_cluster(target):
             from maya import cmds
+            if anim_only:
+                # Anim-only keeps the weights it is given; bare joints have none.
+                QtWidgets.QMessageBox.warning(
+                    self, "DemBones",
+                    "Animation only needs the weights to keep, but no "
+                    "skinCluster was found on the target mesh.")
+                return
             if not (cmds.ls(selection=True, type="joint") or []):
                 QtWidgets.QMessageBox.warning(
                     self, "DemBones",
@@ -221,8 +284,11 @@ class DemBonesUI(QtWidgets.QMainWindow):
         index = dem_cmds.next_generation_index(self._out_dir)
         abc_stem = os.path.splitext(os.path.basename(abc_path))[0]
         base = f"{index:03d}_{abc_stem}_b{params['nBones']}_{start}-{end}"
-        init_fbx = os.path.join(self._out_dir, base + "_rest.fbx")
-        out_fbx = os.path.join(self._out_dir, base + ".fbx")
+        # Forward slashes throughout: os.path.join would mix separators into a
+        # workspace root that already uses '/', and these paths get written to
+        # a json a pipeline has to read.
+        init_fbx = f"{self._out_dir}/{base}_rest.fbx".replace("\\", "/")
+        out_fbx = f"{self._out_dir}/{base}.fbx".replace("\\", "/")
 
         # Export the rest FBX (mesh-only or mesh+rig).
         try:
@@ -241,8 +307,7 @@ class DemBonesUI(QtWidgets.QMainWindow):
             "fbx": out_fbx,
             "params": params,
             "range": [start, end],
-            "mode": "weights-only" if params.get("nTransIters") == 0
-                    else ("use-rig" if use_rig else "full"),
+            "mode": _solve_mode(params, use_rig),
         }
         self._log_buffer = []
         self.log_view.clear()
@@ -251,6 +316,48 @@ class DemBonesUI(QtWidgets.QMainWindow):
         self.cancel_btn.setEnabled(True)
         self._runner.start(exe, args)
         self._update_busy_display()
+
+    def _check_alembic_topology(self, target: str, abc_path: str) -> bool:
+        """Compare the rest mesh against the .abc file itself before solving.
+
+        The panel's green/red check compares two meshes in the scene, which
+        both lie when the cached mesh was edited after the cache was written.
+        This reads the file (imported into a throwaway namespace and deleted
+        again) so the mismatch is caught here rather than as an exit code 1.
+
+        Returns:
+            True to go ahead with the solve.
+        """
+        counts = dem_cmds.alembic_vertex_counts(abc_path)
+        if not counts:
+            # Unreadable or no mesh inside: not proof of a mismatch, let the
+            # exe have its say - its error message is surfaced now anyway.
+            return True
+
+        target_n = dem_cmds.mesh_vertex_count(target)
+        if target_n in counts:
+            return True
+
+        found = ", ".join(str(n) for n in counts)
+        box = QtWidgets.QMessageBox(self)
+        box.setIcon(QtWidgets.QMessageBox.Warning)
+        box.setWindowTitle("DemBones")
+        box.setText("The rest mesh does not match the Alembic file.")
+        box.setInformativeText(
+            f"The rest mesh has {target_n} vertices; the cache on disk holds "
+            f"{found}.\n\n"
+            f"DemBones matches the two vertex by vertex and will refuse the "
+            f"pair. This usually means points were edited after the cache was "
+            f"written - the fix is to re-cache the Alembic from the mesh you "
+            f"are solving.\n\n"
+            f"Note the panel's own check compares the rest mesh to the "
+            f"abc-driven mesh in the scene, which agrees with it here; only "
+            f"the file disagrees.")
+        box.addButton("Solve anyway", QtWidgets.QMessageBox.DestructiveRole)
+        cancel = box.addButton(QtWidgets.QMessageBox.Cancel)
+        box.setDefaultButton(cancel)
+        qt_exec(box)
+        return box.clickedButton() is not cancel
 
     def _update_busy_display(self) -> None:
         """Log replaces the busy bar: show the log when asked, else a busy bar
@@ -287,7 +394,7 @@ class DemBonesUI(QtWidgets.QMainWindow):
 
         if code != 0 or self._pending is None:
             self.rmse_label.setText("rmse: failed")
-            logger.warning(f"DemBones solve exited with code {code}")
+            self._report_failure(code)
             return
 
         rmse = dem_cmds.parse_rmse("\n".join(self._log_buffer))
@@ -297,10 +404,58 @@ class DemBonesUI(QtWidgets.QMainWindow):
 
         if os.path.isfile(self._pending["fbx"]):
             dem_cmds.write_sidecar(self._pending["fbx"], self._pending)
+            dem_cmds.write_log(self._pending["fbx"], "\n".join(self._log_buffer))
             self.generations_panel.refresh()
         else:
             logger.warning("Solve finished but no output FBX was produced.")
         self._pending = None
+
+    def _report_failure(self, code: int) -> None:
+        """Surface why a solve failed instead of leaving it in the log view.
+
+        The exe explains itself on stdout/stderr, which the runner already
+        captures - but the log view is hidden by default, so a failure used to
+        show up as a bare exit code. The output is written to a .log next to the
+        would-be generation, echoed to the script editor, and the tail is put in
+        front of the artist with the log view forced open.
+        """
+        log_text = "\n".join(self._log_buffer)
+        logger.warning(f"DemBones solve exited with code {code}")
+        if log_text:
+            logger.warning(f"DemBones output:\n{log_text}")
+
+        written = None
+        if self._pending:
+            written = dem_cmds.write_log(self._pending["fbx"], log_text)
+
+        # Show the log rather than the busy bar - the answer is in there.
+        if not self.show_log_chk.isChecked():
+            self.show_log_chk.setChecked(True)
+
+        if code == -1:
+            detail = ("The DemBones executable never started. Check the path "
+                      "under Tools > Locate DemBones executable.")
+        else:
+            detail = self._log_tail(log_text) or (
+                "The executable produced no output at all.")
+
+        box = QtWidgets.QMessageBox(self)
+        box.setIcon(QtWidgets.QMessageBox.Critical)
+        box.setWindowTitle("DemBones")
+        box.setText(f"The solve failed (exit code {code}).")
+        box.setInformativeText(detail)
+        if written:
+            box.setDetailedText(f"Full log written to:\n{written}\n\n{log_text}")
+        elif log_text:
+            box.setDetailedText(log_text)
+        qt_exec(box)
+        self._pending = None
+
+    @staticmethod
+    def _log_tail(log_text: str, lines: int = 12) -> str:
+        """Last non-empty lines of the log - where the reason usually is."""
+        kept = [line for line in log_text.splitlines() if line.strip()]
+        return "\n".join(kept[-lines:])
 
 
 # ---------------------------------------------------------------------------

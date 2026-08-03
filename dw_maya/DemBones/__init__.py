@@ -14,9 +14,11 @@ Layout
     main_ui.py          core window + solve orchestration (wires panels)
     dem_cmds.py         scene discovery, validation, FBX export, exe args,
                         generation I/O, QProcess SolveRunner
-    wgt_source.py       target mesh / abc / range / use-rig panel
+    wgt_source.py       target mesh / abc / range / use-rig + anim-only panel
     wgt_params.py       basic + advanced solve params
     wgt_generations.py  fbx + sidecar generations list
+    wgt_bind_skin.py    bind the rest mesh for a solve (Tools menu)
+    wgt_transfer.py     skin + animation back to the rig (Tools menu)
     compat.py           PySide2 / PySide6 shim
     bin/<OS>/DemBones   bundled executable (not in VCS by default)
 

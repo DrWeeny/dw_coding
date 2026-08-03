@@ -9,7 +9,10 @@ in the widget tooltip rather than the label text.
 ``get_params`` returns a flat dict keyed by the names ``dem_cmds.build_args``
 expects; ``set_params`` restores them (used by the generations "Restore params"
 action). main_ui wires the source panel's ``use_rig_changed`` signal to
-``set_use_rig``, which greys out nBones (the bone count comes from the rig).
+``set_use_rig``, which greys out nBones (the bone count comes from the rig), and
+``anim_only_changed`` to ``set_anim_only``, which forces and locks the three
+params that make the solve transforms-only (the previous values come back when
+the mode is switched off).
 """
 
 from __future__ import annotations
@@ -24,8 +27,17 @@ class ParamsPanel(QtWidgets.QWidget):
 
     _FIELD_W = 100   # fixed field width so every spinbox/combo aligns
 
+    # Params forced (and locked) by the anim-only mode -> transforms-only solve.
+    _ANIM_ONLY_PARAMS = {
+        "nWeightsIters": 0,   # freeze the weights we were given
+        "nInitIters":    0,   # no re-clustering, the bones already exist
+        "bindUpdate":    0,   # keep the bind pose / joint placement
+    }
+
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
+        self._anim_only = False
+        self._saved_params = {}   # values stashed while anim-only is on
         self._build_ui()
 
     # -- UI ---------------------------------------------------------------
@@ -46,8 +58,9 @@ class ParamsPanel(QtWidgets.QWidget):
         self.rig_note.setToolTip(
             "Use existing rig: solving against your supplied joints.\n"
             "- nBones is ignored - the bone count comes from your skeleton.\n"
-            "- Weights are still solved (nWeightsIters > 0); your skin is the "
-            "seed, not the final weights.\n"
+            "- Weights are solved by default (nWeightsIters > 0); your skin is "
+            "the seed, not the final weights. Tick 'Animation only' in the "
+            "source panel to keep them instead.\n"
             "- bindUpdate = 0 keeps your joint placement.\n"
             "Tip: a high nIters is rarely needed here - your placement already "
             "does the heavy lifting.")
@@ -55,6 +68,22 @@ class ParamsPanel(QtWidgets.QWidget):
         self.rig_note.setStyleSheet("QLabel { color: #d89b3a; }")
         self.rig_note.setVisible(False)
         v.addWidget(self.rig_note)
+
+        # Shown with "Animation only": the locked params and what still matters.
+        self.anim_note = QtWidgets.QLabel(
+            "Animation only: weights frozen, transforms solved - hover.")
+        self.anim_note.setToolTip(
+            "Animation only: the target's existing skin weights are kept and "
+            "only the joint transforms are solved.\n"
+            "- nWeightsIters = 0, nInitIters = 0, bindUpdate = 0 (locked).\n"
+            "- nTransIters is the only solve left - give it room (5-10).\n"
+            "- nIters can stay low: with the weights frozen there is no "
+            "alternation left to converge.\n"
+            "- nBones / nnz / the weights-smoothing params are unused.")
+        self.anim_note.setWordWrap(False)
+        self.anim_note.setStyleSheet("QLabel { color: #6cc0c0; }")
+        self.anim_note.setVisible(False)
+        v.addWidget(self.anim_note)
 
         # -- Common params (always visible) -------------------------------
         common = QtWidgets.QGridLayout()
@@ -226,6 +255,54 @@ class ParamsPanel(QtWidgets.QWidget):
         self.n_bones.setEnabled(not bool(on))
         self.rig_note.setVisible(bool(on))
 
+    def set_anim_only(self, on: bool) -> None:
+        """Force (and lock) the transforms-only params, or give them back.
+
+        Args:
+            on: True to freeze the supplied weights and solve transforms only.
+        """
+        on = bool(on)
+        if on == self._anim_only:
+            return
+        self._anim_only = on
+
+        if on:
+            self._saved_params = {key: self._get_value(key)
+                                  for key in self._ANIM_ONLY_PARAMS}
+            for key, value in self._ANIM_ONLY_PARAMS.items():
+                self._set_value(key, value)
+        else:
+            for key, value in self._saved_params.items():
+                self._set_value(key, value)
+            self._saved_params = {}
+
+        for key in self._ANIM_ONLY_PARAMS:
+            self._widget(key).setEnabled(not on)
+        self.anim_note.setVisible(on)
+
+    # -- Locked-param helpers ---------------------------------------------
+
+    def _widget(self, key: str):
+        """Return the widget backing an anim-only param key."""
+        return {
+            "nWeightsIters": self.n_weights_iters,
+            "nInitIters":    self.n_init_iters,
+            "bindUpdate":    self.bind_update,
+        }[key]
+
+    def _get_value(self, key: str) -> int:
+        widget = self._widget(key)
+        if isinstance(widget, QtWidgets.QComboBox):
+            return widget.currentIndex()
+        return widget.value()
+
+    def _set_value(self, key: str, value: int) -> None:
+        widget = self._widget(key)
+        if isinstance(widget, QtWidgets.QComboBox):
+            widget.setCurrentIndex(int(value))
+        else:
+            widget.setValue(int(value))
+
     # -- Public API -------------------------------------------------------
 
     def get_params(self) -> Dict:
@@ -247,7 +324,19 @@ class ParamsPanel(QtWidgets.QWidget):
         }
 
     def set_params(self, params: Dict) -> None:
-        """Restore widget values from a param dict (missing keys left as-is)."""
+        """Restore widget values from a param dict (missing keys left as-is).
+
+        While anim-only is on the three locked params are not written to the
+        widgets - they go to the stash instead, so they come back correctly
+        when the mode is switched off rather than being overwritten by the
+        forced zeros.
+        """
+        if self._anim_only:
+            params = dict(params)
+            for key in self._ANIM_ONLY_PARAMS:
+                if key in params:
+                    self._saved_params[key] = int(params.pop(key))
+
         if "nBones" in params:
             self.n_bones.setValue(int(params["nBones"]))
         if "nnz" in params:

@@ -26,11 +26,13 @@ import json
 import glob
 import shutil
 import tempfile
+import functools
 from typing import Dict, List, Optional, Tuple
 
 from maya import cmds, mel
 
 from dw_maya.DemBones.compat import QtCore
+from dw_maya.dw_decorators import dw_undo, dw_generic_undo
 from dw_logger import get_logger
 
 logger = get_logger()
@@ -205,6 +207,491 @@ def find_joints_from_mesh(mesh: str) -> List[str]:
 
 
 # ============================================================================
+# SKIN COPY (same joints, another mesh - seeding a rest mesh from a generation)
+# ============================================================================
+
+def _skin_fn(skin_cluster: str):
+    """Return the API 2.0 MFnSkinCluster for a skinCluster node."""
+    import maya.api.OpenMaya as om
+    import maya.api.OpenMayaAnim as oma
+    sel = om.MSelectionList()
+    sel.add(skin_cluster)
+    return oma.MFnSkinCluster(sel.getDependNode(0))
+
+
+def _vertex_component(mesh: str, n_vtx: int):
+    """Return (dagPath-to-shape, complete vertex component) for a mesh."""
+    import maya.api.OpenMaya as om
+    sel = om.MSelectionList()
+    sel.add(mesh)
+    dag = sel.getDagPath(0)
+    dag.extendToShape()
+    comp_fn = om.MFnSingleIndexedComponent()
+    components = comp_fn.create(om.MFn.kMeshVertComponent)
+    comp_fn.setCompleteData(n_vtx)
+    return dag, components
+
+
+def _influence_logical_indices(skin_cluster: str) -> Dict[str, int]:
+    """Map each influence name to its logical index in the skinCluster arrays.
+
+    The ``matrix`` / ``bindPreMatrix`` plug arrays are sparse - a joint's slot
+    is whatever index it was connected on, not its position in influence order -
+    so per-influence attributes must be addressed through this map rather than
+    by enumerating influence order.
+    """
+    fn = _skin_fn(skin_cluster)
+    return {path.partialPathName(): fn.indexForInfluenceObject(path)
+            for path in fn.influenceObjects()}
+
+
+def _read_skin_weights(skin_cluster: str,
+                       mesh: str,
+                       n_vtx: int,
+                       ) -> Tuple[List[float], List[str]]:
+    """Read every weight of a skinCluster in one call.
+
+    Returns:
+        (flat weights, influence names). The weights are row-major -
+        ``[v0_i0, v0_i1, ..., v1_i0, ...]`` - with the columns in the order of
+        the returned influence names.
+    """
+    fn = _skin_fn(skin_cluster)
+    influences = [path.partialPathName() for path in fn.influenceObjects()]
+    dag, components = _vertex_component(mesh, n_vtx)
+    weights, _ = fn.getWeights(dag, components)
+    return list(weights), influences
+
+
+SURFACE_ASSOCIATIONS = ["closestPoint", "closestComponent", "rayCast"]
+
+
+def bind_space_shape(mesh: str) -> str:
+    """The shape a new skinCluster would actually deform.
+
+    On an already-deformed mesh that is the intermediate ("Orig") shape, not
+    the visible one: deformers read the original geometry and write the
+    displayed result. The two can be far apart - a prop modelled at the origin
+    and carried into the set by its rig shows up in the set while the geometry
+    a fresh bind would consume is still at the origin.
+
+    Args:
+        mesh: Mesh transform or shape.
+
+    Returns:
+        The intermediate shape when the mesh has one, else the visible shape,
+        else ``mesh`` unchanged.
+    """
+    node = mesh
+    try:
+        if cmds.objectType(node, isAType="shape"):
+            parents = cmds.listRelatives(node, parent=True, fullPath=True) or []
+            node = parents[0] if parents else node
+        shapes = cmds.listRelatives(node,
+                                    shapes=True,
+                                    fullPath=True,
+                                    noIntermediate=False) or []
+    except Exception as e:
+        logger.warning(f"Could not resolve the bind shape of '{mesh}': {e}")
+        return mesh
+
+    if not shapes:
+        return mesh
+    for shape in shapes:
+        try:
+            if cmds.getAttr(f"{shape}.intermediateObject"):
+                return shape
+        except Exception:
+            continue
+    return shapes[0]
+
+
+def meshes_share_space(mesh_a: str,
+                       mesh_b: str,
+                       tolerance: float = 0.01,
+                       undeformed: bool = True,
+                       ) -> Tuple[bool, float]:
+    """Are two meshes sitting in the same place in BIND space?
+
+    A precondition for copying skinning between them: the weights are scalars
+    and carry over fine, but the target ends up bound to the SOURCE's joints,
+    which live wherever the solve put them. If the target sits somewhere else,
+    binding snaps it over to the joints as soon as the animation evaluates -
+    the "my mesh jumped back to the origin" symptom. Nothing in the skinCluster
+    can compensate for that; the two have to be brought together first.
+
+    Both meshes are measured through :func:`bind_space_shape`, NOT through what
+    the viewport shows. An already-rigged pipeline mesh displays its deformed
+    position while a new skinCluster binds the undeformed shape underneath, and
+    the two are routinely in different places - the asset modelled at the origin
+    and placed in the set by its rig. Comparing the visible boxes says "same
+    place" and the bind still snaps.
+
+    Compared as the distance between bounding-box centres, relative to the
+    first mesh's diagonal, so the tolerance means the same thing at any scale.
+
+    Args:
+        mesh_a: First mesh (transform or shape).
+        mesh_b: Second mesh.
+        tolerance: Allowed offset as a fraction of mesh_a's bbox diagonal.
+        undeformed: Measure the bind-space (intermediate) shapes. False
+            measures what the viewport shows, which is the right question when
+            checking whether a closest-point weight transfer has the two
+            surfaces on top of each other.
+
+    Returns:
+        (share_space, distance_between_centres). Falls back to (True, 0.0)
+        when a bounding box cannot be read - unknown is not a mismatch.
+    """
+    resolve = bind_space_shape if undeformed else (lambda mesh: mesh)
+    try:
+        # exactWorldBoundingBox, not xform(boundingBox): xform refuses a shape
+        # ("No valid objects supplied"), which sent this straight to the except
+        # branch and reported every mesh pair as fine.
+        box_a = cmds.exactWorldBoundingBox(resolve(mesh_a))
+        box_b = cmds.exactWorldBoundingBox(resolve(mesh_b))
+    except Exception as e:
+        logger.warning(f"Could not compare world space: {e}")
+        return True, 0.0
+
+    centre_a = [(box_a[i] + box_a[i + 3]) * 0.5 for i in range(3)]
+    centre_b = [(box_b[i] + box_b[i + 3]) * 0.5 for i in range(3)]
+    distance = sum((centre_a[i] - centre_b[i]) ** 2 for i in range(3)) ** 0.5
+    diagonal = sum((box_a[i + 3] - box_a[i]) ** 2 for i in range(3)) ** 0.5
+    limit = (diagonal or 1.0) * tolerance
+    return distance <= limit, distance
+
+
+def _vertex_position(mesh: str, index: int) -> List[float]:
+    """World position of one vertex."""
+    return cmds.xform(f"{mesh}.vtx[{index}]",
+                      query=True,
+                      worldSpace=True,
+                      translation=True)
+
+
+def _orthonormal_frame(p0: List[float],
+                       p1: List[float],
+                       p2: List[float],
+                       ) -> Optional[List[float]]:
+    """Build a 4x4 frame from three points, or None if they are collinear.
+
+    Rows 0-2 are the orthonormal axes, row 3 the origin - Maya's row-vector
+    convention, so a point in frame coordinates maps out with ``p * frame``.
+    """
+    def sub(a, b):
+        return [a[i] - b[i] for i in range(3)]
+
+    def cross(a, b):
+        return [a[1] * b[2] - a[2] * b[1],
+                a[2] * b[0] - a[0] * b[2],
+                a[0] * b[1] - a[1] * b[0]]
+
+    def norm(a):
+        length = sum(c * c for c in a) ** 0.5
+        return None if length < 1e-9 else [c / length for c in a]
+
+    axis_x = norm(sub(p1, p0))
+    if axis_x is None:
+        return None
+    axis_z = norm(cross(axis_x, sub(p2, p0)))
+    if axis_z is None:
+        return None
+    axis_y = cross(axis_z, axis_x)
+    return (axis_x + [0.0] + axis_y + [0.0] + axis_z + [0.0]
+            + list(p0) + [1.0])
+
+
+def rigid_transform_between(mesh_from: str,
+                            mesh_to: str,
+                            tolerance: float = 0.001,
+                            ) -> Optional[List[float]]:
+    """The rigid transform mapping one mesh's points onto another's.
+
+    For the case where a mesh has been moved (and only moved) - the solved rest
+    mesh placed onto the target's bind pose, say. The two must share topology:
+    vertices are paired by index, three of them build a frame on each side, and
+    the result is verified against further samples so a non-rigid difference is
+    reported rather than silently approximated.
+
+    Args:
+        mesh_from: Mesh whose space the result maps OUT of.
+        mesh_to: Mesh whose space the result maps INTO.
+        tolerance: Allowed verification error as a fraction of the sample
+            spread.
+
+    Returns:
+        A flat 16-float matrix (row-major), or None when the vertex counts
+        differ, the samples are degenerate, or the difference is not rigid.
+    """
+    n_from = mesh_vertex_count(mesh_from) or 0
+    n_to = mesh_vertex_count(mesh_to) or 0
+    if not n_from or n_from != n_to:
+        logger.error(
+            f"Cannot solve a rigid transform: '{mesh_from}' has {n_from} "
+            f"vertices, '{mesh_to}' has {n_to}. They must share topology.")
+        return None
+
+    # Spread the samples over the whole mesh: nearby vertices make a poor
+    # frame and a verification that proves nothing.
+    indices = sorted({0, n_from // 5, 2 * n_from // 5, 3 * n_from // 5,
+                      4 * n_from // 5, n_from - 1})
+    try:
+        points_from = [_vertex_position(mesh_from, i) for i in indices]
+        points_to = [_vertex_position(mesh_to, i) for i in indices]
+    except Exception as e:
+        logger.error(f"Could not read vertex positions: {e}")
+        return None
+
+    frame_from = _orthonormal_frame(*points_from[:3])
+    frame_to = _orthonormal_frame(*points_to[:3])
+    if frame_from is None or frame_to is None:
+        logger.error("The sampled vertices are collinear - cannot build a "
+                     "frame. The meshes may be degenerate.")
+        return None
+
+    import maya.api.OpenMaya as om
+    matrix = om.MMatrix(frame_from).inverse() * om.MMatrix(frame_to)
+
+    # Verify on the samples that did not build the frame.
+    spread = max(
+        sum((points_from[0][k] - p[k]) ** 2 for k in range(3)) ** 0.5
+        for p in points_from[1:]) or 1.0
+    worst = 0.0
+    for source_point, target_point in zip(points_from, points_to):
+        mapped = om.MPoint(source_point) * matrix
+        worst = max(worst, (om.MPoint(target_point) - mapped).length())
+    if worst > spread * tolerance:
+        logger.error(
+            f"'{mesh_from}' and '{mesh_to}' do not differ by a rigid "
+            f"transform (worst sample error {worst:.4f} over a {spread:.1f} "
+            f"spread). A single matrix cannot express the difference.")
+        return None
+
+    logger.info(f"Solved the rigid transform '{mesh_from}' -> '{mesh_to}' "
+                f"(worst sample error {worst:.6f}).")
+    return list(matrix)
+
+
+@dw_undo.singleUndoChunk
+def copy_skin_cluster(source_mesh: str,
+                      target_mesh: str,
+                      replace: bool = True,
+                      copy_bind_pose: bool = True,
+                      surface_association: str = "closestPoint",
+                      bind_pose_mesh: Optional[str] = None,
+                      new_skin_name: Optional[str] = None,
+                      ) -> Optional[str]:
+    """Copy a skinCluster from one mesh to another, binding the SAME joints.
+
+    The shortcut for reusing an earlier generation's weights: bind the rest mesh
+    to the joints of a solved DemBones result so an "Animation only" solve has
+    weights to keep. Unlike :func:`transfer_skin_by_name` there is no name
+    matching - the target is bound to the very influence nodes the source uses,
+    so both meshes end up driven by one skeleton.
+
+    When the two meshes share a vertex count the weights are copied index to
+    index through the API (exact, and immune to the two meshes sitting in
+    different places). Otherwise it falls back to ``copySkinWeights`` with
+    closest-point association, which is an approximation.
+
+    ``copy_bind_pose`` carries the source's ``bindPreMatrix`` values over, so the
+    result does not depend on where the joints happen to be right now. Without
+    it, binding to an animated skeleton would freeze the current frame's pose as
+    the bind pose and the mesh would jump.
+
+    Args:
+        source_mesh: Skinned mesh to read from (transform or shape).
+        target_mesh: Mesh to receive the skinning.
+        replace: Delete an existing skinCluster on the target first. When False
+            an existing one is kept and only its weights are overwritten (any
+            missing influence is added).
+        copy_bind_pose: Copy the source's bindPreMatrix values onto the target.
+        surface_association: ``copySkinWeights`` association used when the
+            topologies differ (see ``SURFACE_ASSOCIATIONS``). ``closestPoint``
+            suits a mesh that lost or gained points, ``closestComponent``
+            respects shell boundaries, ``rayCast`` suits offset surfaces.
+            Ignored on the exact path.
+        bind_pose_mesh: A copy of ``source_mesh`` moved onto the target's own
+            bind pose. Use it when the target's undeformed geometry is not
+            where the solve happened - the rigid transform between the two is
+            solved and folded into the copied bindPreMatrix values, so the
+            target binds correctly in ITS space while the animation still plays
+            out in the solve's space. Must share topology with ``source_mesh``.
+        new_skin_name: Name for a newly created target skinCluster.
+
+    Returns:
+        The target skinCluster name, or None on failure.
+    """
+    src_skin = find_skin_cluster(source_mesh)
+    if not src_skin:
+        logger.error(f"No skinCluster found on source mesh '{source_mesh}'.")
+        return None
+
+    influences = skin_influences(src_skin)
+    if not influences:
+        logger.error(f"skinCluster '{src_skin}' has no influences.")
+        return None
+
+    bind_offset = None
+    if bind_pose_mesh:
+        bind_offset = rigid_transform_between(bind_pose_mesh, source_mesh)
+        if bind_offset is None:
+            logger.error(
+                f"Could not solve the bind-pose offset from "
+                f"'{bind_pose_mesh}'. Aborting rather than binding into the "
+                f"wrong space.")
+            return None
+
+    # A bind-pose mesh is the answer to a space mismatch, so only complain
+    # about one when no offset is being applied.
+    same_space, distance = (True, 0.0) if bind_offset is not None \
+        else meshes_share_space(source_mesh, target_mesh)
+    if not same_space:
+        logger.warning(
+            f"'{source_mesh}' and '{target_mesh}' are {distance:.3f} units "
+            f"apart in world space. The target is about to be bound to the "
+            f"source's joints, which stay where they are - expect it to snap "
+            f"over to them. Move one onto the other first (placing the "
+            f"generation's group is usually the way).")
+
+    tgt_skin = find_skin_cluster(target_mesh)
+    if tgt_skin and replace:
+        logger.info(f"Removing existing skinCluster '{tgt_skin}' on the target.")
+        cmds.delete(tgt_skin)
+        tgt_skin = None
+
+    if not tgt_skin:
+        name = new_skin_name or f"{_leaf_name(target_mesh)}_skinCluster"
+        # obeyMaxInfluences off: a DemBones solve can hand out more influences
+        # per vertex than Maya's default cap, and the cap would silently prune
+        # them as the weights are written.
+        tgt_skin = cmds.skinCluster(influences,
+                                    target_mesh,
+                                    toSelectedBones=True,
+                                    obeyMaxInfluences=False,
+                                    normalizeWeights=1,
+                                    name=name)[0]
+        logger.info(f"Created skinCluster '{tgt_skin}' on '{target_mesh}'.")
+    else:
+        existing = set(skin_influences(tgt_skin))
+        for joint in influences:
+            if joint not in existing:
+                cmds.skinCluster(tgt_skin,
+                                 edit=True,
+                                 addInfluence=joint,
+                                 weight=0.0)
+
+    if copy_bind_pose:
+        _copy_bind_pre_matrices(src_skin, tgt_skin, influences, bind_offset)
+
+    # 0 stands for "could not be counted" and takes the approximate path.
+    src_n = mesh_vertex_count(source_mesh) or 0
+    tgt_n = mesh_vertex_count(target_mesh) or 0
+    if src_n and src_n == tgt_n:
+        _copy_weights_exact(src_skin, source_mesh, tgt_skin, target_mesh, src_n)
+        logger.info(
+            f"Copied {len(influences)} influences '{src_skin}' -> '{tgt_skin}' "
+            f"(exact, {src_n} verts).")
+    else:
+        # copySkinWeights pairs vertices by their CURRENT positions, so the two
+        # surfaces have to be on top of each other at this moment. They are at
+        # the rest frame - the target has just been bound and the joints sit at
+        # their bind pose - and they are not at any other frame.
+        overlapping, apart = meshes_share_space(source_mesh, target_mesh,
+                                                undeformed=False)
+        if not overlapping:
+            logger.warning(
+                f"The two surfaces are {apart:.2f} units apart as they stand, "
+                f"so the closest-point pairing has nothing sensible to match. "
+                f"Go to the rest frame (where the solved joints are at their "
+                f"bind pose) and copy again.")
+
+        # "name" first, never "closestJoint": both skinClusters are bound to the
+        # very same joints, so the pairing is already known. closestJoint would
+        # re-derive it by proximity and a DemBones joint cloud is dense enough
+        # that it pairs a joint with its neighbour, smearing the weights.
+        cmds.copySkinWeights(sourceSkin=src_skin,
+                             destinationSkin=tgt_skin,
+                             noMirror=True,
+                             surfaceAssociation=surface_association,
+                             influenceAssociation=["name", "oneToOne"])
+        logger.warning(
+            f"Vertex counts differ ({src_n} vs {tgt_n}) - fell back to "
+            f"{surface_association} copySkinWeights; the weights are "
+            f"approximate.")
+    return tgt_skin
+
+
+def _copy_bind_pre_matrices(src_skin: str,
+                            tgt_skin: str,
+                            influences: List[str],
+                            offset: Optional[List[float]] = None,
+                            ) -> None:
+    """Copy the per-influence bindPreMatrix values between two skinClusters.
+
+    ``offset`` pre-multiplies each matrix. Maya deforms with
+    ``p * bindPreMatrix * jointWorldMatrix``, so an ``offset`` mapping the
+    target's bind space into the source's turns that into
+    ``p * offset * bindPre * jointWorld`` - the point is carried into the space
+    the solve happened in, deformed there, and the animation is untouched.
+    That is the whole trick: the bind moves, the motion does not.
+    """
+    import maya.api.OpenMaya as om
+    offset_matrix = om.MMatrix(offset) if offset else None
+
+    src_idx = _influence_logical_indices(src_skin)
+    tgt_idx = _influence_logical_indices(tgt_skin)
+    for joint in influences:
+        key = _leaf_name(joint)
+        s = src_idx.get(joint, src_idx.get(key))
+        t = tgt_idx.get(joint, tgt_idx.get(key))
+        if s is None or t is None:
+            logger.warning(f"No bindPreMatrix slot found for '{joint}'.")
+            continue
+        try:
+            matrix = cmds.getAttr(f"{src_skin}.bindPreMatrix[{s}]")
+            if offset_matrix is not None:
+                matrix = list(offset_matrix * om.MMatrix(matrix))
+            cmds.setAttr(f"{tgt_skin}.bindPreMatrix[{t}]", matrix, type="matrix")
+        except Exception as e:
+            logger.warning(f"Could not copy bindPreMatrix for '{joint}': {e}")
+
+
+def _copy_weights_exact(src_skin: str,
+                        source_mesh: str,
+                        tgt_skin: str,
+                        target_mesh: str,
+                        n_vtx: int,
+                        ) -> None:
+    """Copy every weight index to index (both meshes share a vertex count).
+
+    Registered through ``push_undo``: the write is a raw API ``setWeights``,
+    which is not a command and never reaches the undo queue on its own - the
+    surrounding undo chunk would group the skinCluster creation and leave the
+    weights behind. The target's current weights are read first and become the
+    undo state, so overwriting an existing skinCluster is reversible too.
+    """
+    from dw_maya.dw_deformers import dw_skinning
+    flat, influences = _read_skin_weights(src_skin, source_mesh, n_vtx)
+    old_flat, old_influences = _read_skin_weights(tgt_skin, target_mesh, n_vtx)
+
+    def _write(columns: List[str], values: List[float]) -> None:
+        # The target carries the same influence nodes, so the source's column
+        # order resolves directly against it.
+        dw_skinning.write_influence_columns(tgt_skin,
+                                            target_mesh,
+                                            n_vtx,
+                                            columns,
+                                            values,
+                                            normalize=False)
+
+    dw_generic_undo.push_undo(functools.partial(_write, influences, flat),
+                              functools.partial(_write, old_influences,
+                                                old_flat))
+
+
+# ============================================================================
 # SKIN TRANSFER (DemBones result -> pipeline mesh, influences differ by namespace)
 # ============================================================================
 
@@ -340,6 +827,376 @@ def transfer_skin_by_name(source_mesh: str,
     return tgt_skin
 
 
+# ============================================================================
+# BIND (prepare the rest mesh so every joint takes part in the solve)
+# ============================================================================
+
+@dw_undo.singleUndoChunk
+def bind_mesh_to_joints(mesh: str,
+                        joints: List[str],
+                        max_influences: int = 8,
+                        dropoff: float = 4.0,
+                        replace: bool = False,
+                        name: Optional[str] = None,
+                        ) -> Optional[str]:
+    """Smooth-bind a mesh to joints, keeping every joint as an influence.
+
+    Written for seeding a solve. Weights are the only coupling between a joint
+    and DemBones: a joint with no weight anywhere is invisible to the solver,
+    its transform is never fitted, and it comes back with no animation. The
+    seed does not have to be good - with ``nWeightsIters > 0`` the solve
+    refines it - but it does have to be non-zero.
+
+    Which is why ``removeUnusedInfluence`` is forced off. It defaults to ON in
+    ``cmds.skinCluster``, and it prunes, at bind time, every joint the bind
+    method gave no weight to: bind 56 joints to a cloth mesh and quietly get 35.
+
+    Args:
+        mesh: The rest mesh to bind.
+        joints: Joints to bind it to (the root is usually left out - see
+            :func:`add_zero_weight_influences`).
+        max_influences: Influences per vertex. Match it to the solve's ``nnz``,
+            or the seed is narrower than the budget the solve will use.
+        dropoff: Weight falloff by distance.
+        replace: Delete an existing skinCluster on the mesh first. When False
+            an existing one is kept and the joints are added to it.
+        name: Name for a newly created skinCluster.
+
+    Returns:
+        The skinCluster name, or None on failure.
+    """
+    if not joints:
+        logger.error("No joints given to bind.")
+        return None
+
+    skin = find_skin_cluster(mesh)
+    if skin and replace:
+        logger.info(f"Removing existing skinCluster '{skin}'.")
+        cmds.delete(skin)
+        skin = None
+
+    if skin:
+        existing = set(skin_influences(skin))
+        added = [j for j in joints if j not in existing]
+        for joint in added:
+            cmds.skinCluster(skin, edit=True, addInfluence=joint, weight=0.0)
+        logger.info(
+            f"Added {len(added)} influence(s) to the existing '{skin}'. They "
+            f"carry no weight yet - flood or paint them, or rebind with "
+            f"replace=True for a distance-based seed.")
+        return skin
+
+    try:
+        skin = cmds.skinCluster(joints,
+                                mesh,
+                                toSelectedBones=True,
+                                bindMethod=0,          # closest distance
+                                skinMethod=0,          # classic linear
+                                normalizeWeights=1,
+                                maximumInfluences=max_influences,
+                                obeyMaxInfluences=False,
+                                removeUnusedInfluence=False,
+                                dropoffRate=dropoff,
+                                name=name or f"{_leaf_name(mesh)}_skinCluster",
+                                )[0]
+    except Exception as e:
+        logger.error(f"Bind failed on '{mesh}': {e}")
+        return None
+
+    bound = skin_influences(skin)
+    logger.info(f"Bound '{mesh}' to {len(bound)} of {len(joints)} joints "
+                f"(maxInfluences={max_influences}).")
+    if len(bound) < len(joints):
+        logger.warning(
+            f"{len(joints) - len(bound)} joint(s) did not survive the bind "
+            f"even with removeUnusedInfluence off - check they are joints and "
+            f"not already influencing another mesh.")
+    return skin
+
+
+@dw_undo.singleUndoChunk
+def add_zero_weight_influences(mesh: str, joints: List[str]) -> List[str]:
+    """Add joints to a mesh's skinCluster carrying no weight.
+
+    For the joints that must be in the file but must not deform: a pipeline
+    root, the intermediates between it and the real influences. They make the
+    file's joint count match the influence count, which is what DemBones
+    insists on, without touching the deformation.
+
+    Args:
+        mesh: Skinned mesh.
+        joints: Joints to add.
+
+    Returns:
+        The joints actually added.
+    """
+    skin = find_skin_cluster(mesh)
+    if not skin:
+        logger.error(f"'{mesh}' has no skinCluster to add influences to.")
+        return []
+    existing = set(skin_influences(skin))
+    pending = [j for j in joints if j not in existing]
+    if not pending:
+        logger.info("Every joint given is already an influence.")
+        return []
+    return _bind_zero_weight(skin, pending)
+
+
+# ============================================================================
+# SOLVE -> RIG (drive an existing rig from a solved generation)
+# ============================================================================
+
+# Constraint types whose targetList tells us which node drives another.
+_TARGET_QUERIES = {
+    "parentConstraint": "parentConstraint",
+    "orientConstraint": "orientConstraint",
+    "pointConstraint": "pointConstraint",
+}
+
+
+def driving_control(node: str) -> Optional[str]:
+    """The node driving ``node`` through a constraint, if any.
+
+    Read from the constraint's target list rather than from names: a rig's
+    control and the joint it drives rarely share a naming rule end to end
+    (``RESETFK_M_105_Shelter`` drives ``BB_M_105_Shelter``, but the root is
+    ``M_0_HIERARCHY_MANIP_G`` driving ``BB_M_0_Root``), while the connection is
+    always there and always right.
+
+    Args:
+        node: The driven node, typically a rig joint.
+
+    Returns:
+        The driving node, or None when nothing constrains it.
+    """
+    constraints = cmds.listConnections(node,
+                                       source=True,
+                                       destination=False,
+                                       type="constraint") or []
+    for constraint in dict.fromkeys(constraints):
+        command = _TARGET_QUERIES.get(cmds.nodeType(constraint))
+        if not command:
+            continue
+        try:
+            targets = getattr(cmds, command)(constraint,
+                                             query=True,
+                                             targetList=True) or []
+        except Exception as e:
+            logger.warning(f"Could not query '{constraint}': {e}")
+            continue
+        targets = [t for t in targets if t != node]
+        if targets:
+            return targets[0]
+    return None
+
+
+def map_solved_to_targets(solved_joints: List[str],
+                          to_controls: bool = True,
+                          ) -> Tuple[Dict[str, str], List[str]]:
+    """Pair each solved joint with the node that should receive its animation.
+
+    The first hop is always the same: the solved joint is matched to the scene
+    joint of the same leaf name (the generation is an import of the same
+    skeleton under its own namespace, so leaf names line up). ``to_controls``
+    then decides whether to stop there or take a second hop to whatever
+    constrains that joint.
+
+    Args:
+        solved_joints: Joints from the imported generation.
+        to_controls: Resolve on to the rig control driving each joint. False
+            targets the joints themselves - the case for a skeleton with no
+            control rig over it.
+
+    Returns:
+        ({solved joint: target}, list of solved joints left unresolved).
+    """
+    index: Dict[str, List[str]] = {}
+    for joint in cmds.ls(type="joint", long=True) or []:
+        index.setdefault(_leaf_name(joint), []).append(joint)
+
+    mapping: Dict[str, str] = {}
+    unresolved: List[str] = []
+    for solved in solved_joints:
+        # Everything under the generation's own namespace is off limits: that
+        # is where the solved joint itself lives.
+        solved_root_ns = solved.split(":")[0] if ":" in solved else ""
+        candidates = [j for j in index.get(_leaf_name(solved), [])
+                      if not (solved_root_ns and f"{solved_root_ns}:" in j)]
+        if not candidates:
+            unresolved.append(solved)
+            continue
+        if not to_controls:
+            mapping[solved] = candidates[0]
+            continue
+        control = driving_control(candidates[0])
+        if not control:
+            unresolved.append(solved)
+            continue
+        mapping[solved] = control
+    return mapping, unresolved
+
+
+def _settable_axes(node: str, attribute: str) -> List[str]:
+    """Which of x/y/z of an attribute can actually be written on a node."""
+    axes = []
+    for axis in "xyz":
+        try:
+            if cmds.getAttr(f"{node}.{attribute}{axis.upper()}", settable=True):
+                axes.append(axis)
+        except Exception:
+            continue
+    return axes
+
+
+_ANIM_CHANNELS = ["translateX", "translateY", "translateZ",
+                  "rotateX", "rotateY", "rotateZ"]
+
+
+def _copy_animation(source: str,
+                    target: str,
+                    start: int,
+                    end: int,
+                    ) -> int:
+    """Copy a node's anim curves onto another, channel by channel.
+
+    Valid only when the two share a skeleton: an imported generation is the
+    same joints in the same hierarchy with the same orientations, so their
+    local values mean the same thing and can move across as they are.
+
+    Returns:
+        The number of channels copied.
+    """
+    copied = 0
+    for channel in _ANIM_CHANNELS:
+        try:
+            if not cmds.getAttr(f"{target}.{channel}", settable=True):
+                continue
+            if not cmds.copyKey(source, attribute=channel, time=(start, end)):
+                continue
+            cmds.pasteKey(target,
+                          attribute=channel,
+                          option="replaceCompletely")
+            copied += 1
+        except Exception as e:
+            logger.warning(f"Could not copy '{channel}' to '{target}': {e}")
+    return copied
+
+
+@dw_undo.singleUndoChunk
+def transfer_solve_animation(solved_joints: List[str],
+                             start: int,
+                             end: int,
+                             to_controls: bool = True,
+                             rest_frame: Optional[int] = None,
+                             dry_run: bool = False,
+                             ) -> Dict[str, str]:
+    """Hand a solved generation's animation back to the rig it came from.
+
+    Two mechanisms, because the two targets are not the same problem:
+
+    - **Controls** (``to_controls=True``): constrain-bake-release. A control
+      and the joint it drives sit at different places, in different
+      orientations, under different parents, so its anim curves are NOT the
+      solved joint's curves. Constraining with ``maintainOffset`` at the rest
+      frame captures that relationship exactly and the bake turns it into the
+      control's own keys. Channels the rig locks are skipped on both the
+      constraint and the bake, and reported - what the solve needed from a
+      locked channel is lost, and that is a property of the rig.
+    - **Joints** (``to_controls=False``): a direct anim-curve copy. The
+      generation is an import of the same skeleton, so local values transfer
+      exactly - no baking, no constraints, no sampling error. Use it for a
+      plain skeleton with no control rig over it. If the joints ARE driven by
+      constraints, keys set on them will not win; target the controls instead.
+
+    Args:
+        solved_joints: The imported generation's joints.
+        start: First frame.
+        end: Last frame.
+        to_controls: Target the driving controls rather than the joints.
+        rest_frame: Frame at which to capture the control offsets (controls
+            mode only). Defaults to ``start``, where the solve's bind pose is.
+        dry_run: Resolve and log the pairing without touching anything.
+
+    Returns:
+        The {solved joint: target} pairing that was transferred (or would be).
+    """
+    what = "rig controls" if to_controls else "scene joints"
+    logger.info(f"Resolved {len(mapping)} of {len(solved_joints)} solved "
+                f"joints to {what}.")
+    if unresolved:
+        logger.warning(
+            f"{len(unresolved)} solved joint(s) unresolved: "
+            f"{[_leaf_name(j) for j in unresolved[:10]]}"
+            f"{' ...' if len(unresolved) > 10 else ''}")
+    if dry_run or not mapping:
+        return mapping
+
+    if not to_controls:
+        total = 0
+        for solved, target in mapping.items():
+            total += _copy_animation(solved, target, start, end)
+        logger.info(f"Copied {total} channel(s) onto {len(mapping)} joint(s).")
+        return mapping
+
+    if rest_frame is None:
+        rest_frame = start
+    cmds.currentTime(rest_frame)
+
+    constraints: List[str] = []
+    controls: List[str] = []
+    channels: List[str] = []
+    locked_report: List[str] = []
+    try:
+        for solved, control in mapping.items():
+            translate_axes = _settable_axes(control, "translate")
+            rotate_axes = _settable_axes(control, "rotate")
+            if not translate_axes and not rotate_axes:
+                logger.warning(f"'{control}' is fully locked - skipped.")
+                continue
+            if len(translate_axes) < 3 or len(rotate_axes) < 3:
+                locked_report.append(_leaf_name(control))
+
+            constraint = cmds.parentConstraint(
+                solved,
+                control,
+                maintainOffset=True,
+                skipTranslate=[a for a in "xyz" if a not in translate_axes]
+                or "none",
+                skipRotate=[a for a in "xyz" if a not in rotate_axes]
+                or "none")
+            constraints.append(constraint[0])
+            controls.append(control)
+            channels += [f"translate{a.upper()}" for a in translate_axes]
+            channels += [f"rotate{a.upper()}" for a in rotate_axes]
+
+        if not controls:
+            logger.error("No control could be constrained; nothing to bake.")
+            return {}
+
+        if locked_report:
+            logger.warning(
+                f"{len(locked_report)} control(s) have locked channels the "
+                f"solve may have needed: {locked_report[:10]}"
+                f"{' ...' if len(locked_report) > 10 else ''}")
+
+        cmds.bakeResults(controls,
+                         simulation=True,
+                         time=(start, end),
+                         sampleBy=1,
+                         disableImplicitControl=True,
+                         preserveOutsideKeys=False,
+                         sparseAnimCurveBake=False,
+                         attribute=sorted(set(channels)))
+        logger.info(f"Baked {len(controls)} control(s) over [{start}, {end}].")
+    finally:
+        if constraints:
+            existing = cmds.ls(constraints) or []
+            if existing:
+                cmds.delete(existing)
+
+    return mapping
+
+
 _TRANSFORM_CHANNELS = [
     "translateX", "translateY", "translateZ",
     "rotateX", "rotateY", "rotateZ",
@@ -416,6 +1273,65 @@ def mesh_vertex_count(mesh: str) -> Optional[int]:
         return cmds.polyEvaluate(mesh, vertex=True)
     except Exception:
         return None
+
+
+def _ensure_alembic_plugin() -> None:
+    if not cmds.pluginInfo("AbcImport", query=True, loaded=True):
+        cmds.loadPlugin("AbcImport")
+
+
+def alembic_vertex_counts(abc_path: str) -> List[int]:
+    """Vertex count of every mesh inside an .abc, read from the file itself.
+
+    The scene mesh an AlembicNode feeds is NOT proof of what the file holds -
+    points can be deleted downstream of the node, or the mesh edited after the
+    cache was written. Both scene meshes then agree with each other while the
+    file disagrees with both, the UI check passes, and the solve dies on a
+    vertex count mismatch. So the file is opened for real: imported into a
+    throwaway namespace, counted, and deleted again.
+
+    Args:
+        abc_path: Path to the .abc cache.
+
+    Returns:
+        One count per mesh found, in import order. Empty when the file cannot
+        be read - the caller should treat that as "unknown", not as a mismatch.
+    """
+    if not abc_path or not os.path.isfile(abc_path):
+        return []
+
+    namespace = _unique_namespace("dembones_abccheck")
+    new_nodes = []
+    # The import and its cleanup are a query, not an edit: keep them off the
+    # undo queue entirely, or a Ctrl+Z after the solve would bring the whole
+    # temporary cache back into the scene.
+    undo_state = cmds.undoInfo(query=True, state=True)
+    cmds.undoInfo(stateWithoutFlush=False)
+    try:
+        _ensure_alembic_plugin()
+        new_nodes = cmds.file(abc_path,
+                              i=True,
+                              type="Alembic",
+                              namespace=namespace,
+                              mergeNamespacesOnClash=False,
+                              returnNewNodes=True) or []
+        meshes = cmds.ls(new_nodes, type="mesh", long=True) or []
+        return [n for n in (mesh_vertex_count(m) for m in meshes)
+                if n is not None]
+    except Exception as e:
+        logger.warning(f"Could not read vertex counts from '{abc_path}': {e}")
+        return []
+    finally:
+        try:
+            existing = cmds.ls(new_nodes) or []
+            if existing:
+                cmds.delete(existing)
+            if cmds.namespace(exists=namespace):
+                cmds.namespace(removeNamespace=namespace,
+                               deleteNamespaceContent=True)
+        except Exception as e:
+            logger.warning(f"Could not clean up '{namespace}': {e}")
+        cmds.undoInfo(stateWithoutFlush=undo_state)
 
 
 def validate_topology(target_mesh: str,
@@ -514,10 +1430,49 @@ def _ensure_fbx_plugin() -> None:
         cmds.loadPlugin("fbxmaya")
 
 
+def _long_name(node: str) -> str:
+    """Full dag path of a node, or the name unchanged when it can't be found."""
+    found = cmds.ls(node, long=True) or []
+    return found[0] if found else node
+
+
+def non_influence_ancestors(joints: List[str]) -> List[str]:
+    """Joints pulled into an FBX export as ancestors without being influences.
+
+    Selecting a joint is not enough to export it alone: FBX preserves the
+    hierarchy, so every joint above it comes along. A pipeline root joint that
+    exists only to give the skeleton a single parent therefore lands in the file
+    while the skinCluster has never heard of it - and DemBones refuses the pair
+    with "Scene has more joints than skinCluster has: 16/15".
+
+    Args:
+        joints: The influence joints being exported.
+
+    Returns:
+        The extra joints, ordered from the deepest upwards.
+    """
+    known = {_long_name(j) for j in joints}
+    extra: List[str] = []
+    for joint in joints:
+        node = _long_name(joint)
+        while True:
+            parents = cmds.listRelatives(node, parent=True, fullPath=True) or []
+            if not parents:
+                break
+            node = parents[0]
+            if cmds.nodeType(node) != "joint":
+                continue   # a group in between - keep climbing
+            if node not in known and node not in extra:
+                extra.append(node)
+    return extra
+
+
+@dw_undo.singleUndoChunk
 def export_target_fbx(mesh: str,
                       out_fbx: str,
                       with_rig: bool,
                       joints: Optional[List[str]] = None,
+                      include_ancestors: bool = True,
                       ) -> str:
     """Export the rest mesh (optionally with its joints + skinCluster) to FBX.
 
@@ -526,6 +1481,11 @@ def export_target_fbx(mesh: str,
         out_fbx: Destination .fbx path.
         with_rig: When True, export skin + skeleton; else mesh-only geometry.
         joints: Joints to include with the rig (defaults to skin influences).
+        include_ancestors: Bind any joint the export drags in as an ancestor
+            (a pipeline root, typically) to the skinCluster at weight 0.0 for
+            the duration of the export, so the file's joint count matches the
+            influence count. The influences are restored afterwards - the
+            artist's skinCluster is left exactly as it was.
 
     Returns:
         The output path written.
@@ -533,22 +1493,90 @@ def export_target_fbx(mesh: str,
     _ensure_fbx_plugin()
     out_fbx = out_fbx.replace("\\", "/")
 
-    selection = [mesh]
+    # The selection is exported LITERALLY: descendants are not pulled in.
+    # Default FBX behaviour is the opposite, and it is what puts a whole 57-joint
+    # skeleton in a file that should hold 16 - selecting the root joint would
+    # otherwise drag in every joint under it. Ancestors are still written (FBX
+    # needs them to place a node), which is what `include_ancestors` handles.
+    mel.eval("FBXExportIncludeChildren -v false")
+
+    # Shapes come along explicitly: with children excluded, do not rely on the
+    # transform alone carrying its geometry.
+    selection = [mesh] + (cmds.listRelatives(mesh,
+                                             shapes=True,
+                                             fullPath=True) or [])
+    borrowed: List[str] = []
+    skin = None
     if with_rig:
         if joints is None:
             joints = find_joints_from_mesh(mesh)
         selection += joints
+
+        skin = find_skin_cluster(mesh)
+        if include_ancestors and skin and joints:
+            borrowed = _bind_zero_weight(skin, non_influence_ancestors(joints))
+            selection += borrowed
+
         mel.eval("FBXExportSkins -v true")
         mel.eval("FBXExportSkeletonDefinitions -v true")
     else:
         mel.eval("FBXExportSkins -v false")
 
-    cmds.select(selection, replace=True)
-    # Bake nothing here; the init FBX is a static rest pose.
-    mel.eval("FBXExportInAscii -v false")
-    mel.eval(f'FBXExport -f "{out_fbx}" -s')
+    try:
+        cmds.select(selection, replace=True)
+        # Bake nothing here; the init FBX is a static rest pose.
+        mel.eval("FBXExportInAscii -v false")
+        mel.eval(f'FBXExport -f "{out_fbx}" -s')
+    finally:
+        if skin and borrowed:
+            _unbind_influences(skin, borrowed)
+
+    if with_rig and joints:
+        # The two numbers DemBones compares: joints written vs influences bound.
+        logger.info(
+            f"Exported {len(joints) + len(borrowed)} joints "
+            f"({len(joints)} influences + {len(borrowed)} ancestor(s) bound at "
+            f"weight 0).")
     logger.info(f"Exported target FBX -> {out_fbx} (with_rig={with_rig})")
     return out_fbx
+
+
+def _bind_zero_weight(skin_cluster: str, joints: List[str]) -> List[str]:
+    """Add joints to a skinCluster at weight 0 (no effect on the deformation).
+
+    Returns:
+        The joints actually added - the ones to hand back to
+        :func:`_unbind_influences` once the export is done.
+    """
+    added: List[str] = []
+    for joint in joints:
+        try:
+            cmds.skinCluster(skin_cluster,
+                             edit=True,
+                             addInfluence=joint,
+                             weight=0.0)
+            added.append(joint)
+        except Exception as e:
+            logger.warning(f"Could not add '{joint}' to '{skin_cluster}': {e}")
+    if added:
+        logger.info(
+            f"Bound {len(added)} non-influence ancestor joint(s) at weight 0 "
+            f"for the export ({', '.join(_leaf_name(j) for j in added)}); "
+            f"DemBones needs the file's joint count to match the influence "
+            f"count. They are removed again afterwards.")
+    return added
+
+
+def _unbind_influences(skin_cluster: str, joints: List[str]) -> None:
+    """Remove influences previously added by :func:`_bind_zero_weight`."""
+    for joint in joints:
+        try:
+            cmds.skinCluster(skin_cluster,
+                             edit=True,
+                             removeInfluence=joint)
+        except Exception as e:
+            logger.warning(
+                f"Could not remove '{joint}' from '{skin_cluster}': {e}")
 
 
 # ============================================================================
@@ -645,6 +1673,30 @@ def write_sidecar(fbx_path: str, meta: Dict) -> str:
     except Exception as e:
         logger.error(f"Failed to write sidecar '{path}': {e}")
     return path
+
+
+def log_path(fbx_path: str) -> str:
+    """Return the .log path for a generation fbx."""
+    return os.path.splitext(fbx_path)[0] + ".log"
+
+
+def write_log(fbx_path: str, text: str) -> Optional[str]:
+    """Dump the exe output next to the generation fbx.
+
+    Written whether the solve succeeded or not - on failure it is usually the
+    only record of why, since the UI log view may have been hidden.
+    """
+    path = log_path(fbx_path)
+    try:
+        directory = os.path.dirname(path)
+        if directory and not os.path.isdir(directory):
+            os.makedirs(directory)
+        with open(path, "w") as fh:
+            fh.write(text)
+        return path
+    except Exception as e:
+        logger.error(f"Failed to write solve log '{path}': {e}")
+        return None
 
 
 def read_sidecar(fbx_path: str) -> Dict:
@@ -750,14 +1802,30 @@ def import_generation(fbx_path: str,
 class SolveRunner(QtCore.QObject):
     """Run DemBones.exe via QProcess so the UI stays responsive.
 
+    stdout and stderr are merged, so the exe's error messages arrive through
+    ``log`` like everything else - they are the only explanation of a non-zero
+    exit code, and worth keeping rather than only displaying.
+
     Signals
     -------
     log(str)       a line of stdout/stderr from the exe.
-    finished(int)  process exit code (0 = success).
+    finished(int)  process exit code (0 = success, -1 = never started).
     """
 
     log = QtCore.Signal(str)
     finished = QtCore.Signal(int)
+
+    # QProcess.ProcessError -> what actually went wrong, in artist terms.
+    _ERROR_REASONS = {
+        QtCore.QProcess.FailedToStart:
+            "The executable could not be started - wrong path, missing "
+            "permissions, or a DLL it depends on is missing.",
+        QtCore.QProcess.Crashed:
+            "The executable crashed.",
+        QtCore.QProcess.Timedout: "The process timed out.",
+        QtCore.QProcess.WriteError: "Could not write to the process.",
+        QtCore.QProcess.ReadError: "Could not read from the process.",
+    }
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
@@ -777,6 +1845,7 @@ class SolveRunner(QtCore.QObject):
         self._proc.setProcessChannelMode(QtCore.QProcess.MergedChannels)
         self._proc.readyReadStandardOutput.connect(self._on_output)
         self._proc.finished.connect(self._on_finished)
+        self._proc.errorOccurred.connect(self._on_error)
 
         self.log.emit(self._format_cmd(exe, args))
         self._proc.start(exe, args)
@@ -808,7 +1877,20 @@ class SolveRunner(QtCore.QObject):
         for line in data.splitlines():
             self.log.emit(line)
 
-    def _on_finished(self, code, _status) -> None:
+    def _on_error(self, error) -> None:
+        """Report a process-level failure (as opposed to a non-zero exit).
+
+        ``finished`` never fires when the exe fails to start, so it is emitted
+        here as -1 - without it the UI would sit with Solve disabled forever.
+        """
+        reason = self._ERROR_REASONS.get(error, f"Process error ({error}).")
+        self.log.emit(reason)
+        if error == QtCore.QProcess.FailedToStart:
+            self.finished.emit(-1)
+
+    def _on_finished(self, code, status) -> None:
+        if status == QtCore.QProcess.CrashExit:
+            self.log.emit("The process exited abnormally (crash or cancel).")
         self.finished.emit(int(code))
 
 
