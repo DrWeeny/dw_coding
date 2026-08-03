@@ -3,11 +3,14 @@ DynEval Main UI — Simulation Management Tool
 
 Layout
 ------
-DynEvalUI (QMainWindow)
+DynEvalUI (QMainWindow)          three columns in a QSplitter
 ├── SimTreePanel          discovers + displays sim hierarchy, publishes SELECTED_NODE
-└── SimDetailPanel
-    ├── CacheVersionPanel  version list + create / attach / delete
-r    └── MapListPanel       map list + type combo; double-click = artisan paint
+├── SimDetailPanel        the selected node's state
+│   ├── CacheVersionPanel  version list + create / attach / delete
+│   └── MapListPanel       map list + type combo; double-click = artisan paint
+└── SimUtilPanel          misc utilities, independent of the selection
+    ├── CommentEditor      comment on the selected cache
+    └── PresetWidget       simulation presets
 
 DataHub contract (all inter-widget communication goes through these keys):
     SELECTED_NODE          SimItem | None         tree → all panels
@@ -65,6 +68,7 @@ from dw_maya.DynEval.sim_registry import (
 from dw_maya.DynEval.sim_widget import SimulationTreeView
 from dw_maya.DynEval.sim_widget.wgt_base import DynEvalMainWindow, DynEvalWidgetBase
 from dw_maya.DynEval.sim_widget.wgt_commentary import CommentEditor
+from dw_maya.DynEval.sim_widget.wgt_preset_manager import PresetWidget
 from dw_maya.DynEval.sim_cmds import cache_metadata, dyn_prefs
 logger = get_logger()
 
@@ -87,7 +91,7 @@ class DynEvalUI(DynEvalMainWindow):
 
     Responsibilities:
     - Creates the hub (via DynEvalMainWindow base).
-    - Lays out SimTreePanel + SimDetailPanel.
+    - Lays out SimTreePanel + SimDetailPanel + SimUtilPanel in a splitter.
     - Handles PAINT_REQUESTED via the dw_paint stack (NClothMap.paint()).
     - Exposes build_tree / refresh_tree as the public API for external callers.
     """
@@ -97,7 +101,7 @@ class DynEvalUI(DynEvalMainWindow):
 
         self.setWindowTitle("DynEval")
         self.setObjectName("DynEvalUI")
-        self.setGeometry(867, 546, 960, 540)
+        self.setGeometry(867, 546, 1240, 540)
         self.setMouseTracking(True)
 
         self._central = QtWidgets.QWidget(self)
@@ -158,9 +162,63 @@ class DynEvalUI(DynEvalMainWindow):
 
         self.tree_panel   = SimTreePanel(self.hub, parent=self)
         self.detail_panel = SimDetailPanel(self.hub, parent=self)
+        self.util_panel   = SimUtilPanel(self.hub, parent=self)
 
-        layout.addWidget(self.tree_panel,   stretch=1)
-        layout.addWidget(self.detail_panel, stretch=2)
+        # A splitter rather than fixed stretch: the util column is the one an
+        # artist wants to collapse when working, and stretch factors alone
+        # cannot be dragged shut.
+        self._splitter = QtWidgets.QSplitter(QtCore.Qt.Horizontal)
+        for widget in (self.tree_panel, self.detail_panel, self.util_panel):
+            self._splitter.addWidget(widget)
+
+        self._splitter.setStretchFactor(0, 1)
+        self._splitter.setStretchFactor(1, 2)
+        self._splitter.setStretchFactor(2, 1)
+        self._splitter.setCollapsible(0, False)
+        self._splitter.setCollapsible(1, False)
+        self._splitter.setSizes([240, 480, 280])
+
+        layout.addWidget(self._splitter)
+        self._restore_settings()
+
+    # ------------------------------------------------------------------
+    # Window state
+    # ------------------------------------------------------------------
+
+    def _settings(self) -> QtCore.QSettings:
+        """QSettings handle for window geometry and splitter sizes."""
+        return QtCore.QSettings("dw_tools", "DynEval")
+
+    def _restore_settings(self):
+        """Restore window geometry and splitter sizes, if any were saved.
+
+        Everything here is best-effort: a missing or unreadable key just
+        leaves the defaults in place. Layout preference must never be able to
+        stop the tool from opening.
+        """
+        try:
+            settings = self._settings()
+            geometry = settings.value("geometry")
+            if geometry:
+                self.restoreGeometry(geometry)
+            state = settings.value("splitter")
+            if state:
+                self._splitter.restoreState(state)
+        except Exception as e:
+            logger.warning(f"Could not restore window settings: {e}")
+
+    def _save_settings(self):
+        """Persist window geometry and splitter sizes."""
+        try:
+            settings = self._settings()
+            settings.setValue("geometry", self.saveGeometry())
+            settings.setValue("splitter", self._splitter.saveState())
+        except Exception as e:
+            logger.warning(f"Could not save window settings: {e}")
+
+    def closeEvent(self, event):
+        self._save_settings()
+        super().closeEvent(event)
 
     # ------------------------------------------------------------------
     # Hub setup
@@ -330,6 +388,9 @@ class SimTreePanel(DynEvalWidgetBase):
 
     def _on_selection(self):
         items = self.tree.get_selected_items()
+        # SELECTED_NODES first: the detail panels rebuild off SELECTED_NODE, so
+        # the full selection is already in place by the time they react to it.
+        self.publish(DynEvalKeys.SELECTED_NODES, list(items))
         self.publish(DynEvalKeys.SELECTED_NODE, items[0] if items else None)
 
     def selected_item(self):
@@ -512,11 +573,14 @@ def _item_path(item: QtGui.QStandardItem) -> str:
 
 class SimDetailPanel(DynEvalWidgetBase):
     """
-    Right panel — a tab container.
+    Middle panel — what you act on for the selected node.
 
-    Each sub-panel subscribes to the hub independently; the only logic
-    here is tab focus: COMMENT_EDIT_REQUESTED (double-click on a comment
-    cell in the cache panel) raises the Comment tab.
+    Cache versions and vertex maps: the two views that answer "what is the
+    state of this node". Utilities that are not about the selection live in
+    SimUtilPanel instead.
+
+    Each sub-panel subscribes to the hub independently; there is no logic
+    here beyond holding the tabs.
     """
 
     def __init__(self, hub, parent=None):
@@ -526,13 +590,57 @@ class SimDetailPanel(DynEvalWidgetBase):
         layout.setContentsMargins(0, 0, 0, 0)
 
         self.tabs = QtWidgets.QTabWidget()
-        self.cache_tab   = CacheVersionPanel(hub)
-        self.maps_tab    = MapListPanel(hub)
+        self.cache_tab = CacheVersionPanel(hub)
+        self.maps_tab  = MapListPanel(hub)
+
+        self.tabs.addTab(self.cache_tab, "Cache")
+        self.tabs.addTab(self.maps_tab,  "Maps")
+        layout.addWidget(self.tabs)
+
+
+# ============================================================================
+# UTIL PANEL  (container)
+# ============================================================================
+
+class SimUtilPanel(DynEvalWidgetBase):
+    """
+    Right panel — miscellaneous utilities, kept out of the selection flow.
+
+    Split from SimDetailPanel so the middle column can stay on Cache while
+    a comment or a preset list is visible beside it, instead of the two
+    competing for the same tab bar.
+
+    The only logic here is tab focus: COMMENT_EDIT_REQUESTED (double-click
+    on a comment cell in the cache panel) raises the Comment tab.
+    """
+
+    def __init__(self, hub, parent=None):
+        super().__init__(hub, parent)
+
+        layout = QtWidgets.QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+
+        self.tabs = QtWidgets.QTabWidget()
         self.comment_tab = CommentEditor(hub)
 
-        self.tabs.addTab(self.cache_tab,   "Cache")
-        self.tabs.addTab(self.maps_tab,    "Maps")
         self.tabs.addTab(self.comment_tab, "Comment")
+
+        # PresetWidget builds a PresetManager, which resolves a preset root and
+        # creates its backup folder at construction. It had never been
+        # instantiated before this panel existed, so a bad root must not be
+        # able to stop DynEval from opening.
+        self.preset_tab = None
+        try:
+            self.preset_tab = PresetWidget()
+            self.tabs.addTab(self.preset_tab, "Preset")
+        except Exception as e:
+            logger.error(f"Preset panel unavailable: {e}")
+            placeholder = QtWidgets.QLabel(f"Presets unavailable:\n{e}")
+            placeholder.setAlignment(QtCore.Qt.AlignCenter)
+            placeholder.setWordWrap(True)
+            placeholder.setEnabled(False)
+            self.tabs.addTab(placeholder, "Preset")
+
         layout.addWidget(self.tabs)
 
         self.subscribe(DynEvalKeys.COMMENT_EDIT_REQUESTED, self._on_comment_edit)
@@ -776,21 +884,67 @@ class CacheVersionPanel(DynEvalWidgetBase):
         cache_info = current.data(0, QtCore.Qt.UserRole) if current else None
         self.publish(DynEvalKeys.CACHE_SELECTED, cache_info)
 
+    def _cache_targets(self) -> list:
+        """Items a create should act on: the whole tree selection.
+
+        Falls back to the single displayed item, so this stays correct when a
+        create is triggered from somewhere that has no selection context (the
+        tree context menu publishes one item through CACHE_CREATE_REQUESTED).
+        """
+        items = list(self.hub_get(DynEvalKeys.SELECTED_NODES) or [])
+        if self._current_item and self._current_item not in items:
+            # The create came from somewhere carrying its own item rather than
+            # from the tree selection.
+            return [self._current_item]
+        return items or ([self._current_item] if self._current_item else [])
+
     def _create_cache(self):
-        if not self._current_item:
+        """Cache every selected item, each version assigned to its own item.
+
+        Items are grouped by simulation system and each group is cached in a
+        SINGLE solve, matching Maya's native behaviour (`cacheFile(cnd=[...])`
+        caches every node in one pass). Looping per item would re-simulate the
+        whole nucleus once per cloth. In practice a selection is several
+        cloths or several hairs, rarely a mix, so this is usually one group.
+
+        A backend that has not implemented create_many falls back to a loop,
+        so older cache_ops keep working.
+        """
+        targets = self._cache_targets()
+        if not targets:
             return
-        system = get_system(getattr(self._current_item, "node_type", None))
-        if not system or not system.cache_ops:
-            logger.warning("_create_cache: no cache_ops for this node type")
-            return
+
         frame_range = self.hub_get(DynEvalKeys.FRAME_RANGE) or (1, 100)
         replace = self._mode_replace.isChecked()
-        try:
-            system.cache_ops.create(self._current_item, frame_range, replace=replace)
-            self._rebuild_list()
-        except Exception as e:
-            logger.error(f"Cache creation failed: {e}")
-            cmds.warning(str(e))
+
+        groups = {}
+        for item in targets:
+            system = get_system(getattr(item, "node_type", None))
+            if not system or not system.cache_ops:
+                logger.warning(f"_create_cache: no cache_ops for {item!r}")
+                continue
+            groups.setdefault(system.name, (system, []))[1].append(item)
+
+        done, failed = 0, []
+        for system, items in groups.values():
+            try:
+                if hasattr(system.cache_ops, "create_many"):
+                    done += len(system.cache_ops.create_many(
+                        items, frame_range, replace=replace))
+                else:
+                    for item in items:
+                        system.cache_ops.create(item, frame_range, replace=replace)
+                        done += 1
+            except Exception as e:
+                logger.error(f"Cache creation failed for {system.name}: {e}")
+                failed.append(f"{system.name}: {e}")
+
+        self._rebuild_list()
+        if failed:
+            cmds.warning(f"{done} cache(s) created, {len(failed)} group(s) "
+                         f"failed - {'; '.join(failed)}")
+        else:
+            logger.info(f"{done} cache(s) created.")
 
     def _on_cache_mode_changed(self, replace_checked: bool):
         try:

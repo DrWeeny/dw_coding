@@ -82,88 +82,147 @@ class NucleusCacheOps:
         """
         Simulate and write a versioned nCache for item.node.
 
-        replace=False (increment, default): writes the next version.
-        replace=True: overwrites the currently attached version (or the
-        latest on disk when none is attached) — its files are deleted and
-        re-created under the same stem. Falls back to increment when no
-        cache exists yet.
+        Thin wrapper over create_many() so single- and multi-item creation go
+        down exactly one code path.
+        """
+        results = NucleusCacheOps.create_many([item], frame_range, replace=replace)
+        return results[0] if results else None
+
+    @staticmethod
+    def create_many(items: list,
+                    frame_range: tuple[int, int],
+                    replace: bool = False,
+                    ) -> list:
+        """
+        Simulate every item in ONE solve and write a versioned nCache each.
+
+        This mirrors Maya's own behaviour: `cmds.cacheFile(cnd=[...])` caches
+        every node in a single simulation pass. Looping per item instead would
+        re-simulate the whole nucleus once per cloth - N times the wait for
+        the same result, and N chances for the versions to disagree.
+
+        Consequence for failure: the solve either finishes for everyone or is
+        interrupted for everyone, so partial results only arise afterwards, in
+        the per-item file move / attach phase.
+
+        replace=False (increment, default): writes the next version per item.
+        replace=True: overwrites each item's currently attached version (or its
+        latest on disk when none is attached). Falls back to increment for an
+        item with no cache yet - which is exactly the mixed case where items
+        legitimately land on different versions.
 
         Steps
         ─────
-        1. Create the versioned dir and dynTmp if they don't exist.
-        2. Disconnect any currently attached cacheFile nodes
-           (+ delete the target version's files in replace mode).
-        3. Run create_cache() → raw files land in dynTmp under a Maya-assigned stem.
-        4. Move every matching file from dynTmp to the versioned location,
-           renaming by swapping the stem prefix.
-        5. Attach the new XML to item.node.
-        6. Return a CacheInfo for the newly created cache.
+        1. Per item: versioned dir, target xml (next version or replaced one).
+        2. Disconnect every node at once (+ wipe replaced versions).
+        3. ONE create_cache() over every node -> raw files land in a single
+           dynTmp, one Maya-assigned stem per node.
+        4. Per item: move and rename its own stem's files to its version.
+        5. Attach each xml to its node.
+
+        Args:
+            items: Sim items to cache together.
+            frame_range: (start, end).
+            replace: Overwrite each item's target version instead of adding one.
+
+        Returns:
+            One CacheInfo per item that completed, in input order.
         """
-        node = item.node
+        if not items:
+            return []
+
+        nodes = [i.node for i in items]
         cmds.waitCursor(state=1)
         try:
-            # 1. Directories
-            versioned_dir = Path(item.cache_dir())          # …/cloth/
-            versioned_dir.mkdir(parents=True, exist_ok=True)
-
-            work_dir = Path(item.cache_dir(0))              # …/dynTmp
+            # 1. Directories and target paths, per item.
+            #    cacheFile() writes to a single directory, so the solve uses
+            #    one work dir - the first item's - and the results are
+            #    distributed to each item's own versioned dir afterwards.
+            work_dir = Path(items[0].cache_dir(0))          # …/dynTmp
             work_dir.mkdir(parents=True, exist_ok=True)
 
-            # Target XML path: next version, or the replaced version's path
-            replace_target = NucleusCacheOps._replace_target(item) if replace else None
-            if replace_target is not None:
-                target_xml = Path(replace_target.path)
-            else:
-                target_xml = Path(item.cache_file(1))       # e.g. …/cloth/cloth_v003.xml
+            targets = []
+            for item in items:
+                Path(item.cache_dir()).mkdir(parents=True, exist_ok=True)
+                replace_target = (NucleusCacheOps._replace_target(item)
+                                  if replace else None)
+                if replace_target is not None:
+                    target_xml = Path(replace_target.path)
+                else:
+                    target_xml = Path(item.cache_file(1))
+                targets.append((item, target_xml, replace_target))
 
-            # 2. Disconnect (+ wipe the replaced version's files)
-            cache_management.delete_caches([node])
-            if replace_target is not None:
-                NucleusCacheOps.delete(item, replace_target)
+            # 2. Disconnect everything in one call, then wipe replaced files.
+            cache_management.delete_caches(nodes)
+            for item, _target_xml, replace_target in targets:
+                if replace_target is not None:
+                    NucleusCacheOps.delete(item, replace_target)
 
-            # 3. Simulate → dynTmp. Distribution comes from the Pref menu:
-            #    'OneFile' or 'OneFilePerFrame' (per-frame = free progress
-            #    inspection while a batch sim is still running).
+            # 3. One solve for every node. Distribution comes from the Pref
+            #    menu: 'OneFile' or 'OneFilePerFrame' (per-frame = free
+            #    progress inspection while a sim is still running).
             cache_names = cache_management.create_cache(
-                [node],
+                nodes,
                 str(work_dir),
                 time_range=list(frame_range),
                 distribution=dyn_prefs.get_cache_distribution(),
             )
             if not cache_names:
                 raise RuntimeError("create_cache() returned an empty list")
-
-            raw_stem = cache_names[0]   # e.g. "nClothShape1_cache"
-
-            # 4. Move and rename dynTmp files to the versioned location by
-            #    swapping the stem prefix, which preserves the per-frame part:
-            #    cloth_v003.xml, cloth_v003.mcx (OneFile)
-            #    cloth_v003.xml, cloth_v003Frame1.mcx, ... (OneFilePerFrame)
-            target_stem = target_xml.stem
-            moved = 0
-            for src in work_dir.iterdir():
-                if src.name.startswith(raw_stem):
-                    dst = target_xml.parent / f"{target_stem}{src.name[len(raw_stem):]}"
-                    shutil.move(str(src), str(dst))
-                    moved += 1
-
-            if moved == 0:
+            if len(cache_names) != len(nodes):
                 raise RuntimeError(
-                    f"No files starting with {raw_stem!r} found in {work_dir}"
+                    f"create_cache() returned {len(cache_names)} stems for "
+                    f"{len(nodes)} nodes - cannot match them up safely"
                 )
 
-            # 5. Attach
-            cache_management.attach_ncache(str(target_xml), node)
-            logger.debug(f"Created and attached: {target_xml.name!r} -> {node!r}")
+            # 4/5. Distribute, rename and attach per item. One item failing
+            #      here must not strand the others: the sim already ran, so
+            #      the remaining files are still worth saving.
+            results = []
+            for (item, target_xml, _), raw_stem in zip(targets, cache_names):
+                try:
+                    results.append(
+                        NucleusCacheOps._collect_one(item, target_xml,
+                                                     raw_stem, work_dir))
+                except Exception as e:
+                    logger.error(f"Cache collect failed for {item.node!r}: {e}")
 
-            # 6. Return CacheInfo
-            return NucleusCacheOps._info_from_xml(target_xml, node)
+            return results
 
         except Exception as e:
-            logger.error(f"NucleusCacheOps.create failed for {node!r}: {e}")
+            logger.error(f"NucleusCacheOps.create_many failed for {nodes!r}: {e}")
             raise
         finally:
             cmds.waitCursor(state=0)
+
+    @staticmethod
+    def _collect_one(item,
+                     target_xml: Path,
+                     raw_stem: str,
+                     work_dir: Path,
+                     ) -> CacheInfo:
+        """Move one node's raw cache files to its version, then attach.
+
+        Renaming swaps the stem prefix, which preserves the per-frame part:
+        cloth_v003.xml, cloth_v003.mcx (OneFile)
+        cloth_v003.xml, cloth_v003Frame1.mcx, ... (OneFilePerFrame)
+        """
+        target_stem = target_xml.stem
+        moved = 0
+        for src in work_dir.iterdir():
+            if src.name.startswith(raw_stem):
+                dst = target_xml.parent / f"{target_stem}{src.name[len(raw_stem):]}"
+                shutil.move(str(src), str(dst))
+                moved += 1
+
+        if moved == 0:
+            raise RuntimeError(
+                f"No files starting with {raw_stem!r} found in {work_dir}"
+            )
+
+        cache_management.attach_ncache(str(target_xml), item.node)
+        logger.debug(f"Created and attached: {target_xml.name!r} -> {item.node!r}")
+        return NucleusCacheOps._info_from_xml(target_xml, item.node)
 
     @staticmethod
     def _replace_target(item) -> CacheInfo | None:

@@ -105,6 +105,49 @@ def get_comment(item, version: int) -> str:
     return get_tags(item)["comments"].get(str(version), "")
 
 
+def resolve_comment_target(item) -> Optional[int]:
+    """Which cache version a comment lands on when none was picked explicitly.
+
+    Used by the multi-selection comment fan-out: only the item the cache list
+    is showing has a version the artist actually clicked, so every other
+    selected item needs one resolved for it. The attached version wins over
+    the newest, since attaching is a deliberate act and matches the workflow
+    of re-simulating one item out of a selection and commenting that one.
+
+    Args:
+        item: A sim tree item.
+
+    Returns:
+        Version number, or None when the item has no cache on disk.
+    """
+    # Local import: sim_registry sits above sim_cmds and importing it at
+    # module level would close a cycle.
+    from dw_maya.DynEval.sim_registry import get_system
+
+    node_type = getattr(item, "node_type", None)
+    system = get_system(node_type) if node_type else None
+    if not system or not system.cache_ops:
+        return None
+
+    try:
+        caches = system.cache_ops.list_caches(item)
+    except Exception as e:
+        logger.warning(f"resolve_comment_target: cannot list caches: {e}")
+        return None
+    if not caches:
+        return None
+
+    from dw_maya.DynEval.sim_cmds import cache_management
+    for cache_info in caches:
+        try:
+            if cache_management.cache_is_attached(cache_info.node, cache_info.name):
+                return cache_info.version
+        except Exception as e:
+            logger.debug(f"attach check failed for {cache_info.name!r}: {e}")
+
+    return max(c.version for c in caches)
+
+
 def get_favorites(item) -> list:
     return list(get_tags(item)["favorites"])
 

@@ -99,6 +99,7 @@ class CommentEditor(DynEvalWidgetBase):
         # Current context
         self._current_cache = None
         self._current_item = None
+        self._selected_items = []
 
         # Setup UI
         self._setup_ui(title, size)
@@ -164,6 +165,13 @@ class CommentEditor(DynEvalWidgetBase):
         """)
         layout.addWidget(self.write_area)
 
+        # Fan-out warning: only visible on a multi-selection.
+        self.scope_label = QtWidgets.QLabel()
+        self.scope_label.setWordWrap(True)
+        self.scope_label.setStyleSheet("color: #d9a441; font-size: 10px;")
+        self.scope_label.setVisible(False)
+        layout.addWidget(self.scope_label)
+
         # Buttons
         button_layout = QtWidgets.QHBoxLayout()
 
@@ -221,6 +229,7 @@ class CommentEditor(DynEvalWidgetBase):
         """Setup DataHub subscriptions."""
         self.subscribe(DynEvalKeys.CACHE_SELECTED, self._on_cache_selected)
         self.subscribe(DynEvalKeys.SELECTED_NODE, self._on_item_selected)
+        self.subscribe(DynEvalKeys.SELECTED_NODES, self._on_items_selected)
 
     # ========================================================================
     # HUB CALLBACKS
@@ -246,12 +255,41 @@ class CommentEditor(DynEvalWidgetBase):
         """Hub callback: node selection changed."""
         self._current_item = new_value
 
+        # A comment belongs to (item, version), so the moment the item changes
+        # the displayed text is no longer about anything. Clearing here rather
+        # than relying on the cache panel to publish CACHE_SELECTED = None
+        # first keeps this correct whatever order the panels were built in.
+        self.display_area.clear()
+
         if new_value:
             # Update title with node name
             node_name = getattr(new_value, 'short_name', None) or getattr(new_value, 'node', 'Node')
             if isinstance(node_name, str):
                 node_name = node_name.split('|')[-1].split(':')[-1]
             self.comment_title.setTitle(f"Comment: {node_name}")
+
+        self._update_scope_label()
+
+    def _on_items_selected(self, old_value, new_value):
+        """Hub callback: the full tree selection changed."""
+        self._selected_items = list(new_value or [])
+        self._update_scope_label()
+
+    def _update_scope_label(self):
+        """Say how many caches a save would write to.
+
+        A comment written against a multi-selection goes to every selected
+        item, which the artist has to be able to see before pressing Save -
+        it is the one thing about this panel that is not visible from the
+        text itself.
+        """
+        count = len(self._selected_items)
+        if count > 1:
+            self.scope_label.setText(
+                f"Saves the same comment to all {count} selected items")
+            self.scope_label.setVisible(True)
+        else:
+            self.scope_label.setVisible(False)
 
     # ========================================================================
     # PUBLIC METHODS
@@ -314,15 +352,43 @@ class CommentEditor(DynEvalWidgetBase):
             self.publish(DynEvalKeys.COMMENT_SAVED, comment)
 
     def _save_to_disk(self, comment: str) -> bool:
+        """Write the comment to every selected item's cache.
+
+        The displayed item gets it on the version the artist actually clicked;
+        every other selected item has no clicked version, so one is resolved
+        for it (attached, else newest). Writing the same text to each is the
+        defined semantic for a multi-selection - not a merge, not a pick-one.
+
+        Returns:
+            True when at least the displayed item was written.
+        """
         if not self._current_item or not self._current_cache:
             return False
+
+        from dw_maya.DynEval.sim_cmds import cache_metadata
+
+        version = getattr(self._current_cache, "version", 0)
         try:
-            from dw_maya.DynEval.sim_cmds import cache_metadata
-            version = getattr(self._current_cache, "version", 0)
-            return cache_metadata.set_comment(self._current_item, version, comment)
+            primary = cache_metadata.set_comment(
+                self._current_item, version, comment)
         except Exception as e:
             logger.error(f"Comment save failed: {e}")
             return False
+
+        for item in self._selected_items:
+            if item is self._current_item:
+                continue
+            try:
+                target = cache_metadata.resolve_comment_target(item)
+                if target is None:
+                    name = getattr(item, "short_name", "?")
+                    logger.warning(f"No cache to comment on for {name}, skipped")
+                    continue
+                cache_metadata.set_comment(item, target, comment)
+            except Exception as e:
+                logger.error(f"Comment save failed for {item!r}: {e}")
+
+        return primary
 
     def _clear_write_area(self):
         """Clear the write area."""

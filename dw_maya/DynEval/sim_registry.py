@@ -49,7 +49,10 @@ class SimSystem:
     discover        () -> [solver_node, …]  finds solvers currently in the scene
     make_item       (node) -> QStandardItem | None  creates the right tree item
     get_children    (solver_node) -> [child_node, …]  finds nodes owned by a solver
-    cache_ops       class that implements create / attach / delete (filled in later)
+    cache_ops       class that implements create / attach / delete (filled in later).
+                    May also implement create_many(items, frame_range, replace=)
+                    to cache a whole selection in ONE solve — Maya's native
+                    behaviour. Optional: callers fall back to looping create().
     get_links       optional (solver_node) -> {child: parent_child} — children
                     mapped here are nested under the other child instead of
                     the solver (e.g. nRigid under the nCloth it constrains)
