@@ -32,7 +32,7 @@ from typing import Dict, List, Optional, Tuple
 from maya import cmds, mel
 
 from dw_maya.DemBones.compat import QtCore
-from dw_maya.dw_decorators import dw_undo, dw_generic_undo
+from dw_maya.dw_decorators import dw_undo, dw_generic_undo, dw_viewportOff
 from dw_logger import get_logger
 
 logger = get_logger()
@@ -402,6 +402,54 @@ def _orthonormal_frame(p0: List[float],
             + list(p0) + [1.0])
 
 
+def visible_shape(mesh: str) -> str:
+    """The shape actually drawn - the deformed one when a deformer exists."""
+    node = mesh
+    try:
+        if cmds.objectType(node, isAType="shape"):
+            parents = cmds.listRelatives(node, parent=True, fullPath=True) or []
+            node = parents[0] if parents else node
+        shapes = cmds.listRelatives(node, shapes=True, fullPath=True,
+                                    noIntermediate=True) or []
+    except Exception as e:
+        logger.warning(f"Could not resolve the visible shape of '{mesh}': {e}")
+        return mesh
+    return shapes[0] if shapes else mesh
+
+
+def derive_bind_offset(target_mesh: str) -> Optional[List[float]]:
+    """The transform from a mesh's bind space into the space it is drawn in.
+
+    Removes the one hand-made prerequisite the return leg used to need. A
+    bind-pose *mesh* was never the requirement - the transform was, and both
+    shapes needed to solve it are already on the asset: its intermediate
+    ("Orig") shape holds the undeformed geometry in bind space, and its visible
+    shape holds the same geometry where the rig puts it. Same topology, so the
+    vertices correspond by index and the fit is exact.
+
+    Valid whenever the rig's placement is rigid at the frame this is called on,
+    which is the ordinary case at rest - a prop carried into the set does not
+    deform on the way. :func:`rigid_transform_between` verifies it and returns
+    None rather than approximating, so a genuinely deforming rest pose falls
+    back to the manual override instead of being fudged.
+
+    Args:
+        target_mesh: The asset mesh, at its rest frame.
+
+    Returns:
+        A flat 16-float matrix, or None when there is nothing to correct (no
+        deformer, so bind space is already the drawn space) or when the
+        difference is not rigid.
+    """
+    bind = bind_space_shape(target_mesh)
+    drawn = visible_shape(target_mesh)
+    if bind == drawn:
+        logger.info(f"'{target_mesh}' has no intermediate shape - its bind "
+                    f"space is the space it is drawn in, no offset needed.")
+        return None
+    return rigid_transform_between(bind, drawn)
+
+
 def rigid_transform_between(mesh_from: str,
                             mesh_to: str,
                             tolerance: float = 0.001,
@@ -758,6 +806,402 @@ def build_influence_map(source_influences: List[str],
     return mapping, missing
 
 
+def _match_scene_joints(solved_joints: List[str],
+                        ) -> Tuple[List[str], List[str]]:
+    """Pair each generation joint with the scene joint it came from.
+
+    Leaf names alone are NOT enough. A generation import nests the original
+    namespace inside its own (``dem009:_SKL_ACC_SHELTER_CURTAIN_I_:BB_M_0_Root``),
+    and other rigs in the shot follow the same joint-naming convention - a
+    scene with a camera rig also holding a ``BB_M_0_Root`` will hand the
+    curtain the camera's root and the mismatch is invisible afterwards.
+
+    So the leading generation namespace is dropped and the remainder matched
+    exactly; the leaf name is a fallback for a generation imported flat, and
+    then only when the answer is unambiguous.
+
+    Args:
+        solved_joints: Influences of the generation's skinCluster.
+
+    Returns:
+        (matched scene joints in the given order, unmatched leaf names).
+    """
+    leaf_index: Dict[str, List[str]] = {}
+    for joint in cmds.ls(type="joint", long=True) or []:
+        leaf_index.setdefault(_leaf_name(joint), []).append(joint)
+
+    matched: List[str] = []
+    missing: List[str] = []
+    for inf in solved_joints:
+        leaf = inf.split("|")[-1]
+        # Exact: everything after the generation's own namespace.
+        original = leaf.split(":", 1)[1] if ":" in leaf else leaf
+        exact = [j for j in cmds.ls(original, long=True, type="joint") or []
+                 if j.split("|")[-1] == original]
+        if exact:
+            matched.append(exact[0])
+            continue
+
+        source_ns = leaf.split(":")[0] if ":" in leaf else ""
+        candidates = [j for j in leaf_index.get(_leaf_name(inf), [])
+                      if not (source_ns and f"{source_ns}:" in j)]
+        if len(candidates) == 1:
+            matched.append(candidates[0])
+        elif candidates:
+            missing.append(f"{_leaf_name(inf)} (ambiguous: "
+                           f"{len(candidates)} candidates)")
+        else:
+            missing.append(_leaf_name(inf))
+    return matched, missing
+
+
+@dw_undo.singleUndoChunk
+def copy_skin_to_own_joints(source_mesh: str,
+                            target_mesh: str,
+                            bind_pose_mesh: Optional[str] = None,
+                            replace: bool = True,
+                            surface_association: str = "closestPoint",
+                            new_skin_name: Optional[str] = None,
+                            ) -> Optional[str]:
+    """Copy solved weights onto a mesh bound to ITS OWN joints.
+
+    The return leg, and the opposite of :func:`copy_skin_cluster`. That one
+    binds the target to the source's own joint nodes, which is right when
+    seeding a rest mesh from a generation and badly wrong when sending a solve
+    back: the published asset has to be driven by its own rig, not by the
+    joints of an imported fbx. Binding to the source's joints leaves the asset
+    depending on a `demNNN:` namespace that will be deleted.
+
+    So each source influence is paired to the scene joint of the same leaf
+    name, the target is bound to those, and only the WEIGHTS come across.
+
+    The geometric problem this has to solve: with differing vertex counts the
+    weights move by ``copySkinWeights``, which pairs vertices by their current
+    world positions - but the solved mesh sits in the solve's space while the
+    target's undeformed geometry sits in the asset's bind space. So when a
+    ``bind_pose_mesh`` is given, the source is moved into the target's bind
+    space for the duration of the copy and put back afterwards.
+
+    Args:
+        source_mesh: The solved, skinned mesh (an imported generation).
+        target_mesh: The published asset mesh.
+        bind_pose_mesh: A copy of ``source_mesh`` placed on the target's bind
+            pose, used to solve the rigid offset between the two spaces. Not
+            needed when both already sit in the same space.
+        replace: Delete the target's existing skinCluster first. Leaving this
+            off on the return leg is what produces a cluster bound to both
+            skeletons at once.
+        surface_association: ``copySkinWeights`` association for the differing
+            topology case.
+        new_skin_name: Name for a newly created target skinCluster.
+
+    Returns:
+        The target skinCluster name, or None on failure.
+    """
+    src_skin = find_skin_cluster(source_mesh)
+    if not src_skin:
+        logger.error(f"No skinCluster on source mesh '{source_mesh}'.")
+        return None
+
+    src_infs = skin_influences(src_skin)
+    if not src_infs:
+        logger.error(f"skinCluster '{src_skin}' has no influences.")
+        return None
+
+    target_infs, missing = _match_scene_joints(src_infs)
+    if missing:
+        logger.error(
+            f"{len(missing)} influence(s) have no counterpart in the scene: "
+            f"{missing[:10]}. Aborting rather than binding a partial "
+            f"skeleton.")
+        return None
+
+    # Derived from the target itself unless overridden: its Orig shape against
+    # its drawn shape gives the same transform a hand-placed bind-pose mesh
+    # does, with no preparation step for the artist.
+    if bind_pose_mesh:
+        offset = rigid_transform_between(bind_pose_mesh, source_mesh)
+        if offset is None:
+            logger.error("Could not solve the bind-pose offset from "
+                         f"'{bind_pose_mesh}'. Aborting.")
+            return None
+        logger.info(f"Bind-space offset taken from '{bind_pose_mesh}'.")
+    else:
+        offset = derive_bind_offset(target_mesh)
+
+    tgt_skin = find_skin_cluster(target_mesh)
+
+    if tgt_skin and replace:
+        logger.info(f"Removing existing skinCluster '{tgt_skin}'.")
+        cmds.delete(tgt_skin)
+        tgt_skin = None
+    if not tgt_skin:
+        name = new_skin_name or f"{_leaf_name(target_mesh)}_skinCluster"
+        tgt_skin = cmds.skinCluster(target_infs,
+                                    target_mesh,
+                                    toSelectedBones=True,
+                                    obeyMaxInfluences=False,
+                                    normalizeWeights=1,
+                                    name=name)[0]
+        logger.info(f"Bound '{target_mesh}' to {len(target_infs)} of its own "
+                    f"joints -> '{tgt_skin}'.")
+    else:
+        existing = set(skin_influences(tgt_skin))
+        for joint in target_infs:
+            if joint not in existing:
+                cmds.skinCluster(tgt_skin, edit=True, addInfluence=joint,
+                                 weight=0.0)
+
+    # The bind comes from the SOLVE, not from the asset's authored skin. The
+    # point of the return leg is to replace the asset's deformation with the
+    # solved one, so every influence takes bindPreMatrix from the generation -
+    # offset into the asset's space - and the result reproduces the solve
+    # rather than approximating it.
+    #
+    # It also removes the failure this replaced. Preserving the asset's bind
+    # can only cover influences that asset already had; joints added for the
+    # solve (contact joints, typically) had to come from somewhere else, and a
+    # rig's bindPose node is NOT that somewhere - it holds the current pose,
+    # not the authored one. Half the skeleton then binds in modelling space and
+    # the rest in set space, which reads as one joint flinging a slab of mesh
+    # away. One source for all of them, and the question does not arise.
+    _copy_bind_pre_matrices_by_name(src_skin, tgt_skin, src_infs, offset)
+
+    # Both meshes have to sit in one space for a positional lookup. Rather than
+    # depend on where the rig happens to be posed, the target is switched off
+    # (showing its undeformed geometry) for the duration.
+    envelope = None
+    try:
+        try:
+            envelope = cmds.getAttr(f"{tgt_skin}.envelope")
+            cmds.setAttr(f"{tgt_skin}.envelope", 0.0)
+        except Exception as e:
+            logger.warning(f"Could not mute '{tgt_skin}' for the copy: {e}")
+        if not transfer_weights_by_surface(src_skin, source_mesh,
+                                           tgt_skin, target_mesh, offset):
+            logger.warning(
+                "Falling back to copySkinWeights; its influence pairing is a "
+                "guess, so check the result.")
+            moved = _place_in_bind_space(source_mesh, offset) if offset else None
+            try:
+                cmds.copySkinWeights(
+                    sourceSkin=src_skin,
+                    destinationSkin=tgt_skin,
+                    noMirror=True,
+                    surfaceAssociation=surface_association,
+                    influenceAssociation=["name", "closestJoint"])
+            finally:
+                if moved is not None:
+                    cmds.xform(moved[0], worldSpace=True, matrix=moved[1])
+    finally:
+        if envelope is not None:
+            cmds.setAttr(f"{tgt_skin}.envelope", envelope)
+
+    logger.info(
+        f"Copied weights '{src_skin}' -> '{tgt_skin}' across "
+        f"{len(target_infs)} name-matched influences "
+        f"({surface_association}).")
+    return tgt_skin
+
+
+def _copy_bind_pre_matrices_by_name(src_skin: str,
+                                    tgt_skin: str,
+                                    src_influences: List[str],
+                                    offset: Optional[List[float]] = None,
+                                    ) -> None:
+    """Carry the solve's bind matrices onto a skinCluster bound to other joints.
+
+    Like :func:`_copy_bind_pre_matrices`, but the two clusters are bound to
+    different nodes - the generation's joints on one side, the asset's own on
+    the other - so the slots are paired on the leaf name they share.
+
+    ``offset`` maps the target's bind space into the solve's and is
+    pre-multiplied in, exactly as on the inbound leg: Maya deforms with
+    ``p * bindPreMatrix * jointWorldMatrix``, so the point is carried into the
+    space the solve happened in, deformed there, and the animation is left
+    alone.
+    """
+    import maya.api.OpenMaya as om
+    offset_matrix = om.MMatrix(offset) if offset else None
+
+    src_by_leaf = {_leaf_name(name): logical for name, logical
+                   in _influence_logical_indices(src_skin).items()}
+    tgt_by_leaf = {_leaf_name(name): logical for name, logical
+                   in _influence_logical_indices(tgt_skin).items()}
+
+    copied = 0
+    missing: List[str] = []
+    for inf in src_influences:
+        leaf = _leaf_name(inf)
+        source_slot = src_by_leaf.get(leaf)
+        target_slot = tgt_by_leaf.get(leaf)
+        if source_slot is None or target_slot is None:
+            missing.append(leaf)
+            continue
+        try:
+            matrix = cmds.getAttr(f"{src_skin}.bindPreMatrix[{source_slot}]")
+            if offset_matrix is not None:
+                matrix = list(offset_matrix * om.MMatrix(matrix))
+            cmds.setAttr(f"{tgt_skin}.bindPreMatrix[{target_slot}]",
+                         matrix, type="matrix")
+            copied += 1
+        except Exception as e:
+            logger.warning(f"Could not set bindPreMatrix for '{leaf}': {e}")
+
+    logger.info(f"Installed the solve's bind pose on {copied} influence(s)"
+                f"{' with a bind-space offset' if offset_matrix else ''}.")
+    if missing:
+        logger.warning(
+            f"{len(missing)} influence(s) had no matching bind slot: "
+            f"{missing[:10]}{' ...' if len(missing) > 10 else ''}. Those keep "
+            f"Maya's bind-time value and will not follow the solve.")
+
+
+def transfer_weights_by_surface(src_skin: str,
+                                source_mesh: str,
+                                tgt_skin: str,
+                                target_mesh: str,
+                                offset: Optional[List[float]] = None,
+                                ) -> bool:
+    """Copy weights vertex to vertex, resolving influences by NAME.
+
+    ``copySkinWeights`` has to be told how to pair influences, and every option
+    is a guess when the two skinClusters are bound to different skeletons:
+    ``closestJoint`` re-derives the pairing by proximity and smears a dense
+    joint cloud, ``oneToOne`` pairs by index and the two clusters do not share
+    an ordering - measured at 98% of vertices ending up on the wrong joint.
+
+    The pairing is already known: the influences share leaf names. So the
+    weights are read, re-columned by name, and written directly. Geometry is
+    matched by closest point on the source surface, then the nearest vertex of
+    that face - exact when the target is the source with points removed, which
+    is the case this exists for.
+
+    Args:
+        src_skin: The generation's skinCluster.
+        source_mesh: Its mesh.
+        tgt_skin: The asset's skinCluster.
+        target_mesh: The asset mesh.
+        offset: Maps the target's bind space into the solve's, applied to the
+            target points before the lookup.
+
+    Returns:
+        True when the weights were written.
+    """
+    import maya.api.OpenMaya as om
+    from dw_maya.dw_deformers import dw_skinning
+
+    n_source = mesh_vertex_count(source_mesh) or 0
+    n_target = mesh_vertex_count(target_mesh) or 0
+    if not n_source or not n_target:
+        logger.error("Could not read vertex counts for the weight transfer.")
+        return False
+
+    flat, names = _read_skin_weights(src_skin, source_mesh, n_source)
+    columns = len(names)
+
+    # Same joints, different namespaces: pair on the leaf name.
+    target_by_leaf = {_leaf_name(i): i for i in skin_influences(tgt_skin)}
+    target_columns = [target_by_leaf.get(_leaf_name(n)) for n in names]
+    missing = [_leaf_name(n) for n, c in zip(names, target_columns)
+               if c is None]
+    if missing:
+        logger.error(f"No target influence for {missing[:10]}; aborting.")
+        return False
+
+    # Matching topology is the ordinary case - the artist did not touch the
+    # mesh - and then the correspondence is the vertex index itself. No
+    # geometry query, no closest-point tolerance, and it stays exact on a mesh
+    # whose surface doubles back on itself.
+    if n_source == n_target:
+        out = list(flat)
+        previous, previous_names = _read_skin_weights(tgt_skin, target_mesh,
+                                                      n_target)
+
+        def _write_indexed(cols: List[str], values: List[float]) -> None:
+            dw_skinning.write_influence_columns(tgt_skin, target_mesh,
+                                                n_target, cols, values,
+                                                normalize=False)
+
+        dw_generic_undo.push_undo(
+            functools.partial(_write_indexed, target_columns, out),
+            functools.partial(_write_indexed, previous_names, previous))
+        logger.info(
+            f"Transferred weights for {n_target} vertices index to index "
+            f"(topologies match) across {columns} name-matched influences.")
+        return True
+
+    selection = om.MSelectionList()
+    selection.add(source_mesh)
+    source_dag = selection.getDagPath(0)
+    source_dag.extendToShape()
+    source_fn = om.MFnMesh(source_dag)
+
+    selection = om.MSelectionList()
+    selection.add(target_mesh)
+    target_dag = selection.getDagPath(0)
+    target_dag.extendToShape()
+    target_points = om.MFnMesh(target_dag).getPoints(om.MSpace.kWorld)
+
+    offset_matrix = om.MMatrix(offset) if offset else None
+    out: List[float] = []
+    for point in target_points:
+        probe = point * offset_matrix if offset_matrix else point
+        _, face = source_fn.getClosestPoint(probe, om.MSpace.kWorld)
+        best, best_distance = -1, None
+        for vertex in source_fn.getPolygonVertices(face):
+            d = (source_fn.getPoint(vertex, om.MSpace.kWorld)
+                 - probe).length()
+            if best_distance is None or d < best_distance:
+                best, best_distance = vertex, d
+        row = best * columns
+        out.extend(flat[row:row + columns])
+
+    previous, _ = _read_skin_weights(tgt_skin, target_mesh, n_target)
+    previous_names = skin_influences(tgt_skin)
+
+    def _write(cols: List[str], values: List[float]) -> None:
+        dw_skinning.write_influence_columns(tgt_skin, target_mesh, n_target,
+                                            cols, values, normalize=False)
+
+    dw_generic_undo.push_undo(
+        functools.partial(_write, target_columns, out),
+        functools.partial(_write, previous_names, previous))
+    logger.info(f"Transferred weights for {n_target} vertices across "
+                f"{columns} name-matched influences (vertex to vertex).")
+    return True
+
+
+def _place_in_bind_space(mesh: str, offset: List[float]):
+    """Temporarily move a mesh by the inverse of ``offset``.
+
+    ``offset`` maps the target's bind space INTO the solve's space, so its
+    inverse brings the solved mesh back to where the target's geometry lives.
+
+    Returns:
+        ``(transform, original world matrix)`` to restore, or None on failure.
+    """
+    import maya.api.OpenMaya as om
+    transforms = cmds.ls(mesh, long=True, type="transform") or []
+    if not transforms:
+        parents = cmds.listRelatives(mesh, parent=True, fullPath=True) or []
+        transforms = parents[:1]
+    if not transforms:
+        logger.warning(f"No transform to move for '{mesh}'.")
+        return None
+
+    node = transforms[0]
+    try:
+        original = cmds.xform(node, query=True, worldSpace=True, matrix=True)
+        current = om.MMatrix(original)
+        cmds.xform(node, worldSpace=True,
+                   matrix=list(current * om.MMatrix(offset).inverse()))
+    except Exception as e:
+        logger.warning(f"Could not move '{node}' into bind space: {e}")
+        return None
+    return node, original
+
+
 def transfer_skin_by_name(source_mesh: str,
                           target_mesh: str,
                           target_namespace: Optional[str] = None,
@@ -990,8 +1434,37 @@ def driving_control(node: str) -> Optional[str]:
     return None
 
 
+def remap_name(node: str,
+               find: str,
+               replace: str,
+               ) -> Optional[str]:
+    """Derive a node name by substring substitution, if the result exists.
+
+    The escape hatch for rigs with no constraint to follow: one find/replace
+    pair over the whole name, namespace included, is enough for the usual
+    convention gap - ``_SKL_ACC_X_:BB_`` -> ``_RIG_ACC_X_:MANIPFK_``.
+
+    Args:
+        node: Source node name.
+        find: Substring to replace. Empty disables the remap.
+        replace: What to put in its place.
+
+    Returns:
+        The remapped node when it exists in the scene, else None.
+    """
+    if not find:
+        return None
+    leaf = node.split("|")[-1]
+    if find not in leaf:
+        return None
+    candidate = leaf.replace(find, replace)
+    found = cmds.ls(candidate) or []
+    return found[0] if found else None
+
+
 def map_solved_to_targets(solved_joints: List[str],
                           to_controls: bool = True,
+                          name_remap: Optional[Tuple[str, str]] = None,
                           ) -> Tuple[Dict[str, str], List[str]]:
     """Pair each solved joint with the node that should receive its animation.
 
@@ -1006,10 +1479,19 @@ def map_solved_to_targets(solved_joints: List[str],
         to_controls: Resolve on to the rig control driving each joint. False
             targets the joints themselves - the case for a skeleton with no
             control rig over it.
+        name_remap: ``(find, replace)`` applied to the scene joint's name to
+            derive its control, for rigs that drive their joints by direct
+            connection rather than by a constraint. Tried FIRST when given,
+            with the constraint lookup as the fallback - never the other way
+            round by default, because names lie: on a validated rig the
+            drivers were ``MANIPFK_*`` where the convention said ``RESETFK_*``,
+            and the root's was ``MANIP_M_0_Root``. An explicit remap is the
+            artist overriding that, which is their call to make.
 
     Returns:
         ({solved joint: target}, list of solved joints left unresolved).
     """
+    find, replace = name_remap if name_remap else ("", "")
     index: Dict[str, List[str]] = {}
     for joint in cmds.ls(type="joint", long=True) or []:
         index.setdefault(_leaf_name(joint), []).append(joint)
@@ -1028,7 +1510,8 @@ def map_solved_to_targets(solved_joints: List[str],
         if not to_controls:
             mapping[solved] = candidates[0]
             continue
-        control = driving_control(candidates[0])
+        control = (remap_name(candidates[0], find, replace)
+                   or driving_control(candidates[0]))
         if not control:
             unresolved.append(solved)
             continue
@@ -1082,12 +1565,210 @@ def _copy_animation(source: str,
     return copied
 
 
+def channel_target(scene_joint: str,
+                   channel: str,
+                   control: Optional[str] = None,
+                   ) -> Optional[str]:
+    """Which node to write one channel on: the driving control, or the joint.
+
+    Resolving per node is not enough, because a rig does not necessarily drive
+    every channel the same way. The curtain rig is the ordinary case: its FK
+    controls carry rotation into the joints through an ``orientConstraint``
+    and have their translate **locked**, while the joints' own translate has no
+    input at all. A solve that translates its bones - which a cloth solve
+    always does, by 200 units here - therefore has to reach the joint directly
+    while rotation still goes through the control.
+
+    Args:
+        scene_joint: The asset joint the solved joint corresponds to.
+        channel: Attribute name, e.g. ``rotateX``.
+        control: The joint's driving control, when already resolved.
+
+    Returns:
+        The node to write, or None when the channel is driven by something
+        that cannot be fed and the value would be silently dropped.
+    """
+    plug = f"{scene_joint}.{channel}"
+    constrained = cmds.listConnections(plug, source=True, destination=False,
+                                       type="constraint") or []
+    if constrained:
+        driver = control or driving_control(scene_joint)
+        if driver and cmds.getAttr(f"{driver}.{channel}", settable=True):
+            return driver
+        return None
+    try:
+        if cmds.getAttr(plug, settable=True):
+            return scene_joint
+    except Exception:
+        pass
+    return None
+
+
+def _correct_translation(pairs: List[Tuple[str, str, str]]) -> int:
+    """Shift each control's translate curves so its joint lands on the solve.
+
+    Solved for, not derived. The value a control needs is its joint's motion
+    expressed in the control's own parent space, and that space is whatever
+    the rig happens to be - an offset group, a chain of them, or something
+    with rotation in it. Two attempts to compute the shift from rest values
+    (the joint's own, then the offset group's) were 300 and 428 units wrong
+    respectively, because each assumed a relationship the rig does not owe us.
+
+    So the error is measured instead: at the current frame, how far is the
+    joint from where the solve puts it, converted into the control's parent
+    space through ``parentInverseMatrix``. The residual was constant across
+    the range, which is what makes a single correction valid everywhere.
+
+    Args:
+        pairs: ``(solved joint, scene joint, control)`` triples, with the
+            curves already connected and the scene at the rest frame.
+
+    Returns:
+        The number of controls corrected.
+    """
+    import maya.api.OpenMaya as om
+    corrected = 0
+    for solved, joint, control in pairs:
+        if not control:
+            continue
+        try:
+            want = om.MPoint(cmds.xform(solved, query=True, worldSpace=True,
+                                        translation=True))
+            have = om.MPoint(cmds.xform(joint, query=True, worldSpace=True,
+                                        translation=True))
+            if (want - have).length() < 1e-6:
+                continue
+            parent_inverse = om.MMatrix(
+                cmds.getAttr(f"{control}.parentInverseMatrix[0]"))
+            delta = (want * parent_inverse) - (have * parent_inverse)
+            for axis, value in zip("XYZ", (delta.x, delta.y, delta.z)):
+                channel = f"translate{axis}"
+                curves = cmds.listConnections(f"{control}.{channel}",
+                                              source=True, destination=False,
+                                              type="animCurve") or []
+                if curves:
+                    cmds.keyframe(curves[0], edit=True, relative=True,
+                                  valueChange=value)
+                elif cmds.getAttr(f"{control}.{channel}", settable=True):
+                    cmds.setAttr(f"{control}.{channel}",
+                                 cmds.getAttr(f"{control}.{channel}") + value)
+            corrected += 1
+        except Exception as e:
+            logger.warning(f"Could not correct '{control}': {e}")
+    return corrected
+
+
+def _clear_animation(nodes: List[str]) -> int:
+    """Delete anim curves driving a set of nodes.
+
+    Relinking captures each target's REST value, so a target that still holds
+    animation from a previous transfer would have its "rest" read off that
+    animation and the offsets would compound - which is how a retarget quietly
+    drifts further every time it is re-run.
+    """
+    curves = []
+    for node in nodes:
+        curves += cmds.listConnections(node, source=True, destination=False,
+                                       type="animCurve") or []
+    curves = sorted(set(curves))
+    if curves:
+        cmds.delete(curves)
+    return len(curves)
+
+
+def _relink_animation(source: str,
+                      scene_joint: str,
+                      control: Optional[str] = None,
+                      duplicate: bool = True,
+                      ) -> Tuple[int, List[str]]:
+    """Drive a rig from a solved joint's existing anim curves, per channel.
+
+    No sampling and no baking: the solved curve itself is connected to
+    whichever node actually owns that channel - see :func:`channel_target`.
+    Valid because the generation is an import of the same skeleton, so its
+    local values mean the same thing on the asset's.
+
+    Args:
+        source: The generation joint holding the anim curves.
+        scene_joint: The asset joint it corresponds to.
+        control: The joint's driving control, when already resolved.
+        duplicate: Copy the curve so the asset owns it. Without this the rig
+            is driven by curves belonging to the imported generation, and
+            deleting that generation takes the animation with it.
+
+    Returns:
+        (channels connected, channels that had a curve but nowhere to put it).
+    """
+    connected = 0
+    dropped: List[str] = []
+    for channel in _ANIM_CHANNELS:
+        try:
+            curves = cmds.listConnections(f"{source}.{channel}", source=True,
+                                          destination=False,
+                                          type="animCurve") or []
+            if not curves:
+                continue
+            target = channel_target(scene_joint, channel, control)
+            if not target:
+                dropped.append(channel)
+                continue
+            curve = curves[0]
+            if duplicate:
+                curve = cmds.duplicate(
+                    curve, name=f"{_leaf_name(target)}_{channel}")[0]
+
+            cmds.connectAttr(f"{curve}.output", f"{target}.{channel}",
+                             force=True)
+            connected += 1
+        except Exception as e:
+            logger.warning(f"Could not relink '{channel}' to '{target}': {e}")
+    return connected, dropped
+
+
+def _rig_is_one_to_one(mapping: Dict[str, str],
+                       tolerance: float = 0.01,
+                       ) -> Tuple[bool, float]:
+    """Do the controls hold the same local values as the joints they drive?
+
+    The precondition for relinking. Compared on the joints' current state, so
+    it answers the structural question - is this a plain FK rig - rather than
+    anything about the animation.
+
+    Returns:
+        (one_to_one, median absolute rotate difference in degrees).
+    """
+    diffs = []
+    for solved, control in mapping.items():
+        joints, _ = _match_scene_joints([solved])
+        if not joints:
+            continue
+        try:
+            joint_rot = cmds.getAttr(f"{joints[0]}.rotate")[0]
+            control_rot = cmds.getAttr(f"{control}.rotate")[0]
+        except Exception:
+            continue
+        # 360-degree wraps are the same pose, not a mismatch.
+        deltas = []
+        for a, b in zip(joint_rot, control_rot):
+            d = abs(a - b) % 360.0
+            deltas.append(min(d, 360.0 - d))
+        diffs.append(max(deltas))
+    if not diffs:
+        return False, 0.0
+    diffs.sort()
+    median = diffs[len(diffs) // 2]
+    return median <= tolerance, median
+
+
+@dw_viewportOff.viewportOff
 @dw_undo.singleUndoChunk
 def transfer_solve_animation(solved_joints: List[str],
                              start: int,
                              end: int,
                              to_controls: bool = True,
                              rest_frame: Optional[int] = None,
+                             method: str = "auto",
+                             name_remap: Optional[Tuple[str, str]] = None,
                              dry_run: bool = False,
                              ) -> Dict[str, str]:
     """Hand a solved generation's animation back to the rig it came from.
@@ -1120,6 +1801,8 @@ def transfer_solve_animation(solved_joints: List[str],
     Returns:
         The {solved joint: target} pairing that was transferred (or would be).
     """
+    mapping, unresolved = map_solved_to_targets(solved_joints, to_controls,
+                                               name_remap)
     what = "rig controls" if to_controls else "scene joints"
     logger.info(f"Resolved {len(mapping)} of {len(solved_joints)} solved "
                 f"joints to {what}.")
@@ -1137,6 +1820,62 @@ def transfer_solve_animation(solved_joints: List[str],
             total += _copy_animation(solved, target, start, end)
         logger.info(f"Copied {total} channel(s) onto {len(mapping)} joint(s).")
         return mapping
+
+    # An FK control whose local values ARE its joint's needs no world-space
+    # work at all: the solved curve can drive it directly. Constrain-and-bake
+    # re-derives that relationship per frame through the whole chain, and the
+    # error compounds down it - measured at 0.06 units of joint drift at the
+    # rest frame growing to 86 by the end of the range on a production rig.
+    if method in ("auto", "relink"):
+        one_to_one, median = _rig_is_one_to_one(mapping)
+        if one_to_one or method == "relink":
+            if not one_to_one:
+                logger.warning(
+                    f"Relinking was asked for but the controls do not hold "
+                    f"their joints' local values (median {median:.3f} deg "
+                    f"apart). The result will be wrong; 'bake' is the mode "
+                    f"for this rig.")
+            # Both the rest capture and the solve's own rest pose are read at
+            # this frame, so get there before anything is connected.
+            cmds.currentTime(start if rest_frame is None else rest_frame)
+
+            pairs = []
+            targets = []
+            for solved, control in mapping.items():
+                joints, _ = _match_scene_joints([solved])
+                if not joints:
+                    continue
+                pairs.append((solved, joints[0], control))
+                targets += [joints[0], control]
+            cleared = _clear_animation(sorted(set(targets)))
+            if cleared:
+                logger.info(f"Cleared {cleared} existing anim curve(s) from "
+                            f"the targets before relinking.")
+
+            total = 0
+            dropped: Dict[str, int] = {}
+            for solved, joint, control in pairs:
+                count, missed = _relink_animation(solved, joint, control)
+                total += count
+                for channel in missed:
+                    dropped[channel] = dropped.get(channel, 0) + 1
+            corrected = _correct_translation(pairs)
+            logger.info(
+                f"Relinked {total} channel(s) across {len(mapping)} joint(s) - "
+                f"the solved curves drive the rig directly, with no baking. "
+                f"{corrected} control(s) had their translation re-based into "
+                f"the rig's own parent space.")
+            if dropped:
+                logger.warning(
+                    f"The rig has nowhere to put these solved channels, so "
+                    f"they are lost: {dropped}. A rotation-only control with "
+                    f"a locked translate cannot carry a solve that translates "
+                    f"its bones; the joint itself has to take it.")
+            return mapping
+        logger.info(
+            f"The controls do not mirror their joints (median {median:.3f} "
+            f"deg apart), so the animation is baked through constraints "
+            f"instead of relinked.")
 
     if rest_frame is None:
         rest_frame = start
@@ -1204,6 +1943,7 @@ _TRANSFORM_CHANNELS = [
 ]
 
 
+@dw_viewportOff.viewportOff
 def bake_target_skeleton(target_mesh: str,
                          start: int,
                          end: int,
