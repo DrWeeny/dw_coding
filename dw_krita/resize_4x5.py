@@ -30,4 +30,5 @@ for file in list_files:
             )
 
             print(target_w, height)
+            doc.setBatchmode(True)
             doc.saveAs(os.path.join(folder_to_export, file))
