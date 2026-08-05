@@ -4,7 +4,7 @@ from maya import cmds, mel
 from .dw_nx_mel import *
 import dw_maya.dw_maya_utils as dwu
 from dw_maya.dw_decorators import acceptString
-from. dw_add_active_to_nsystem import add_active_to_nsystem
+from .dw_add_active_to_nsystem import add_active_to_nsystem
 from .dw_attach_nobject_to_hairsystem import attach_nobject_to_hair
 from .dw_make_collide import set_collider_preset
 

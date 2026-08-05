@@ -5,7 +5,7 @@ from maya import cmds, mel
 from .dw_nx_mel import *
 from dw_maya.dw_decorators import acceptString
 from .dw_create_nucleus import create_nucleus
-from. dw_add_active_to_nsystem import add_active_to_nsystem
+from .dw_add_active_to_nsystem import add_active_to_nsystem
 
 
 import re
