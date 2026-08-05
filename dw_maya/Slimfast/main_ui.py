@@ -130,6 +130,14 @@ class SlimfastWidget(QtWidgets.QWidget):
         sel_value_mode = settings.value('sel_value_mode', False, type=bool)
         if sel_value_mode:
             self._sel_mode_check.setChecked(True)  # triggers _on_sel_mode_toggled
+        # Restore the range-select domain (weights / U / V).  Pushed straight
+        # to the controller — no refit here, there is no active source yet.
+        sel_domain = str(settings.value('sel_domain', 'w'))
+        if sel_domain in ('u', 'v'):
+            self._sel_domain_combo.blockSignals(True)
+            self._sel_domain_combo.setCurrentText(sel_domain.upper())
+            self._sel_domain_combo.blockSignals(False)
+        self._ctrl.set_selection_domain(sel_domain)
 
         # Restore storage buttons from in-session DataHub cache
         self._restore_storage_from_hub()
@@ -1092,9 +1100,37 @@ class SlimfastWidget(QtWidgets.QWidget):
         )
         range_action_row.addWidget(self._sel_range_btn)
 
+        # Domain — what the range slider reads: weights, or the current UV set.
+        self._sel_domain_combo = QtWidgets.QComboBox()
+        self._sel_domain_combo.addItems(['W', 'U', 'V'])
+        self._sel_domain_combo.setFixedWidth(44)
+        self._sel_domain_combo.setToolTip(
+            'What Select / min / max read on:\n'
+            'W = weight of the active map\n'
+            'U = horizontal UV coordinate (current UV set)\n'
+            'V = vertical UV coordinate (current UV set)\n\n'
+            'A vertex matches when ANY of its UVs is in range, so seam\n'
+            'vertices answer on both sides of the shell.\n'
+            'Press ⇥ to fit the limits — on a UDIM layout the slider\n'
+            'then spans every tile the mesh uses.'
+        )
+        # Per-entry tips, so the meaning is readable while the list is open.
+        domain_tips = (
+            'W — weight of the active map (the map shown in the source combo)',
+            'U — horizontal UV coordinate, current UV set',
+            'V — vertical UV coordinate, current UV set',
+        )
+        for i, tip in enumerate(domain_tips):
+            self._sel_domain_combo.setItemData(i, tip, QtCore.Qt.ToolTipRole)
+        range_action_row.addWidget(self._sel_domain_combo)
+
         self._sel_snap_min_btn = QtWidgets.QPushButton('min')
         self._sel_snap_min_btn.setFixedWidth(34)
-        self._sel_snap_min_btn.setToolTip('Snap both handles to the lower limit')
+        self._sel_snap_min_btn.setToolTip(
+            'Select the vertices at the lowest value of the W/U/V domain\n'
+            '(does not move the slider)\n'
+            '(Shift=add, Ctrl=deselect, Ctrl+Shift=toggle)'
+        )
         self._sel_snap_min_btn.setStyleSheet(
             'background-color: #282828; color: #aaaaaa; font-size: 10px;'
         )
@@ -1102,7 +1138,11 @@ class SlimfastWidget(QtWidgets.QWidget):
 
         self._sel_snap_max_btn = QtWidgets.QPushButton('max')
         self._sel_snap_max_btn.setFixedWidth(34)
-        self._sel_snap_max_btn.setToolTip('Snap both handles to the upper limit')
+        self._sel_snap_max_btn.setToolTip(
+            'Select the vertices at the highest value of the W/U/V domain\n'
+            '(does not move the slider)\n'
+            '(Shift=add, Ctrl=deselect, Ctrl+Shift=toggle)'
+        )
         self._sel_snap_max_btn.setStyleSheet(
             'background-color: #bbbbbb; color: #111111; font-size: 10px;'
         )
@@ -1216,6 +1256,7 @@ class SlimfastWidget(QtWidgets.QWidget):
         self._invert_btn.clicked.connect(self._on_invert_selection)
         self._border_btn.clicked.connect(self._on_border_sel)
         self._sel_range_btn.clicked.connect(self._on_select_by_range)
+        self._sel_domain_combo.currentTextChanged.connect(self._on_sel_domain_changed)
         self._sel_value_btn.clicked.connect(self._on_select_by_value)
         self._sel_snap_min_btn.clicked.connect(partial(self._on_select_by_limit, False))
         self._sel_snap_max_btn.clicked.connect(partial(self._on_select_by_limit, True))
@@ -2383,65 +2424,63 @@ class SlimfastWidget(QtWidgets.QWidget):
             self._ctrl._on_range_selection_released()
 
     def _on_select_by_limit(self, max_limit:bool=True):
-        """
-        When on clicking on min and max for selection of points
+        """Select the vertices sitting at the domain's lowest / highest value.
+
+        Deliberately leaves the range slider alone — these are a quick "grab
+        the extremes" shortcut, and moving the handles under the artist made
+        the slider awkward to steer afterwards.
+
         Args:
             max_limit (bool): if False it takes the lowest value
         """
-        # check if something is selected
-        source = self._ctrl.active_source
-        if source:
-            weight_range = self._ctrl.get_weight_range()
-            # for updating slider widget if visible
-            gui_min_limit = self._range_sel.limit_min
-            gui_max_limit = self._range_sel.limit_max
-
-            if max_limit:
-                value = weight_range[1]
-                # updating slider
-                if self._range_sel.isVisible():
-                    if value > 1 and value != gui_max_limit:
-                        self._range_sel.set_range(gui_min_limit, value)
-                    self._range_sel.snap_to_max()
-
-            else:
-                value = weight_range[0]
-                # updating slider
-                if self._range_sel.isVisible():
-                    if value > 0 and value != gui_min_limit:
-                        self._range_sel.set_range(value, gui_max_limit)
-                    self._range_sel.snap_to_min()
-            # updating combobox
-            if self._sel_value_spin.isVisible():
-                # update single value selected
-                self._sel_value_spin.setValue(value)
-                # update tolerance
-                self._sel_tol_slider.value = 0
-            self._on_select_by_value(value, 0)
+        if self._ctrl.active_source is None:
+            return
+        mods = QtWidgets.QApplication.keyboardModifiers()
+        self._ctrl.select_vertices_at_limit(max_limit,
+                                            self._qt_mods_to_maya(mods))
 
     def _on_select_by_value(self, value=None, tolerance=None) -> None:
         """Select vertices equal to value ± tolerance."""
         mods = QtWidgets.QApplication.keyboardModifiers()
+        # Value mode is weight-only — the UV domain belongs to the range row.
         if value is None and tolerance is None:
             val = self._sel_value_spin.value()
             tol = self._sel_tol_slider.value
             self._ctrl.select_vertices_by_range(val - tol, val + tol,
-                                                self._qt_mods_to_maya(mods))
+                                                self._qt_mods_to_maya(mods),
+                                                domain='w')
         else:
             if not isinstance(tolerance, (float, int)):
                 tolerance = 0
             if isinstance(value, (float, int)):
                 self._ctrl.select_vertices_by_range(value - tolerance,
                                                     value + tolerance,
-                                                    self._qt_mods_to_maya(mods))
+                                                    self._qt_mods_to_maya(mods),
+                                                    domain='w')
 
     def _on_range_fit(self) -> None:
-        """Fit the range slider limits to the actual min/max of current weights."""
-        w_min, w_max = self._ctrl.get_weight_range()
+        """Fit the range slider limits to the active domain's min/max.
+
+        Weights in W mode, the current UV set's bounds in U/V mode — which is
+        how a UDIM layout gets covered without any extra UI: the slider simply
+        spans every tile the mesh actually uses.
+        """
+        w_min, w_max = self._ctrl.get_selection_range()
         if w_max <= w_min:
             w_max = w_min + 0.001
         self._range_sel.set_limits(w_min, w_max)
         self._range_sel.set_range(w_min, w_max)
+
+    def _on_sel_domain_changed(self, text: str) -> None:
+        """Switch the range slider between weights and the current UV set."""
+        domain = text.strip().lower() or 'w'
+        self._ctrl.set_selection_domain(domain)
+        settings = QtCore.QSettings(self._org, self._appname)
+        settings.setValue('sel_domain', domain)
+        # Weights live in 0-1 by convention, UVs do not — refit so the slider
+        # covers something usable straight away.
+        if self._ctrl.active_source is not None:
+            self._on_range_fit()
 
     def _on_sel_mode_toggled(self, value_mode: bool) -> None:
         """Switch between Range and Value selection mode, persist to QSettings."""
@@ -2516,6 +2555,9 @@ class SlimfastWidget(QtWidgets.QWidget):
             "&nbsp;&nbsp;&nbsp;&nbsp;numpy path works any time<br>"
             "<b>Select ALL:</b> select all vertices of the active mesh<br>"
             "<b>Invert:</b> invert current component selection (always active)<br>"
+            "<b>W / U / V combo:</b> what the range slider selects on —<br>"
+            "&nbsp;&nbsp;&nbsp;&nbsp;active map weights, or the mesh's current UV set<br>"
+            "&nbsp;&nbsp;&nbsp;&nbsp;(⇥ fits the limits, so UDIM tiles are covered)<br>"
             "<b>Weight = 0/1:</b><br>"
             "&nbsp;&nbsp;click = select<br>"
             "&nbsp;&nbsp;Ctrl+click = deselect<br>"

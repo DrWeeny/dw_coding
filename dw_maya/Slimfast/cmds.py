@@ -1,4 +1,7 @@
+import math
+
 from maya import cmds, mel
+from maya.api import OpenMaya as om
 from typing import Callable, List, Optional, Tuple, Union
 
 from dw_maya.dw_decorators.dw_keep_selection import keep_selection
@@ -73,6 +76,11 @@ class SlimfastController:
         self._live_selection_cache = None
         self._cached_weights = None
         self._cached_mesh = None
+
+        # Range-select domain — which per-vertex scalar the range slider reads.
+        # 'w' = the active map's weights, 'u' / 'v' = the current UV set.
+        self._sel_domain: str = 'w'
+        self._cached_uv = None
 
     # ------------------------------------------------------------------
     # Source / map management
@@ -666,18 +674,124 @@ class SlimfastController:
         else:
             cmds.select(vtx_list, replace=True)
 
+    # ------------------------------------------------------------------
+    # Range selection — domain is either the active map or the UV set
+    # ------------------------------------------------------------------
+
+    def set_selection_domain(self, domain: str = 'w') -> None:
+        """Set what the range slider selects on.
+
+        Args:
+            domain: ``'w'`` for the active map's weights, ``'u'`` or ``'v'``
+                    for the mesh's current UV set.
+        """
+        if domain not in ('w', 'u', 'v'):
+            logger.warning(f"Unknown selection domain '{domain}' - falling back to 'w'.")
+            domain = 'w'
+        self._sel_domain = domain
+        self._cached_uv = None
+
+    def _get_uv_data(self, mesh: str) -> Optional[Tuple[List[int], List[float], List[float]]]:
+        """Face-vertex UV data on *mesh* for the current UV set.
+
+        Returns ``(vertex_ids, u_values, v_values)`` — three parallel lists,
+        one entry per face-vertex, so a vertex sitting on a UV seam appears
+        once per shell it belongs to with its own U/V each time. Vertices with
+        no UV assignment simply do not appear.
+
+        Returns ``None`` when the mesh has no usable UVs.
+        """
+        try:
+            sel = om.MSelectionList()
+            sel.add(mesh)
+            fn_mesh = om.MFnMesh(sel.getDagPath(0))
+            # No uvSet argument — reads the mesh's current UV set.
+            u_vals, v_vals = fn_mesh.getUVs()
+            if not len(u_vals):
+                return None
+            uv_counts, uv_ids = fn_mesh.getAssignedUVs()
+            vtx_counts, vtx_ids = fn_mesh.getVertices()
+        except Exception as e:
+            logger.warning(f"Could not read UVs on '{mesh}': {e}")
+            return None
+
+        # Both arrays walk faces in the same order, but a face with no UVs
+        # assigned contributes 0 entries to uv_ids while still contributing its
+        # vertices to vtx_ids — so the flat lists only line up per face, and
+        # each cursor has to advance on its own count.
+        out_vtx = []
+        out_u = []
+        out_v = []
+        uv_cursor = 0
+        vtx_cursor = 0
+        for face in range(len(vtx_counts)):
+            n_vtx = vtx_counts[face]
+            n_uv = uv_counts[face] if face < len(uv_counts) else 0
+            if n_uv == n_vtx:
+                for i in range(n_vtx):
+                    uv_id = uv_ids[uv_cursor + i]
+                    out_vtx.append(vtx_ids[vtx_cursor + i])
+                    out_u.append(u_vals[uv_id])
+                    out_v.append(v_vals[uv_id])
+            uv_cursor += n_uv
+            vtx_cursor += n_vtx
+
+        if not out_vtx:
+            return None
+        return (out_vtx, out_u, out_v)
+
+    def get_uv_range(self, axis: str = 'u') -> Tuple[float, float]:
+        """Return ``(min, max)`` of the current UV set along *axis*.
+
+        Rounded outwards to 1 decimal. A UDIM layout simply reports bounds
+        beyond 0-1, which is what feeds the range slider limits on Fit.
+        """
+        mesh = self._active.mesh_name if self._active is not None else self._mesh
+        if not mesh:
+            return (0.0, 1.0)
+        uv_data = self._get_uv_data(mesh)
+        if uv_data is None:
+            return (0.0, 1.0)
+        _vtx_ids, fv_u, fv_v = uv_data
+        values = fv_u if axis == 'u' else fv_v
+        lo = math.floor(min(values) * 10.0) / 10.0
+        hi = math.ceil(max(values) * 10.0) / 10.0
+        return (lo, hi)
+
+    def get_selection_range(self) -> Tuple[float, float]:
+        """Return the Fit bounds for the active selection domain.
+
+        Always a usable pair — get_weight_range returns None when the read
+        fails, which callers feeding slider limits cannot unpack.
+        """
+        if self._sel_domain in ('u', 'v'):
+            return self.get_uv_range(self._sel_domain)
+        return self.get_weight_range() or (0.0, 1.0)
+
     def select_vertices_by_range(self,
                                  min_value: float = 0,
                                  max_value: float = 1,
                                  key_mod: int = 0,
-                                 use_cache: bool = False) -> None:
-        """Select vertices in [min_value, max_value] weight range.
+                                 use_cache: bool = False,
+                                 domain: Optional[str] = None) -> None:
+        """Select vertices whose domain value falls in [min_value, max_value].
 
         Args:
-            use_cache: If True, use pre-cached weights from _on_range_press.
+            use_cache: If True, use pre-cached data from _on_range_press.
                        Speeds up live updates during slider drag.
+            domain: Override the current selection domain for this call
+                    ('w', 'u' or 'v'). None uses the domain set by
+                    :meth:`set_selection_domain`.
         """
         if not self._require_active():
+            return
+
+        if domain is None:
+            domain = self._sel_domain
+
+        if domain in ('u', 'v'):
+            self.select_vertices_by_uv(domain, min_value, max_value,
+                                       key_mod, use_cache)
             return
 
         # Use cached weights during live drag, else fetch fresh
@@ -701,18 +815,118 @@ class SlimfastController:
         vtx_list = [f'{mesh}.vtx[{r}]' for r in ranges]
         self.select_by_mod(vtx_list, key_mod)
 
-    # Add these methods
-    def _on_range_selection_pressed(self) -> None:
-        """Called when user presses slider handle — cache weights once."""
+    def select_vertices_by_uv(self,
+                              axis: str = 'u',
+                              min_value: float = 0.0,
+                              max_value: float = 1.0,
+                              key_mod: int = 0,
+                              use_cache: bool = False) -> None:
+        """Select vertices whose UV falls in [min_value, max_value] along *axis*.
+
+        A vertex is selected when *any* of its face-vertex UVs is in range, so
+        a seam vertex split between u=0.02 and u=0.98 answers to both a low-U
+        and a high-U selection instead of averaging out to mid-shell.
+        """
         if not self._require_active():
             return
-        self._cached_weights = self._active.get_weights()
+
+        mesh = self._active.mesh_name
+        if use_cache and self._cached_uv is not None and self._cached_mesh == mesh:
+            uv_data = self._cached_uv
+        else:
+            uv_data = self._get_uv_data(mesh)
+
+        if uv_data is None:
+            logger.warning(f"'{mesh}' has no UVs on the current UV set.")
+            return
+
+        vtx_ids, fv_u, fv_v = uv_data
+        values = fv_u if axis == 'u' else fv_v
+
+        # UVs are float32 and a shell edge lands a hair either side of its
+        # nominal bound — a seam column nominally at u=0 reads as -1e-7, which
+        # a bare `0.0 <= val` silently drops.  Widen the band by an epsilon so
+        # the fitted limits actually catch the vertices they were fitted to.
+        eps = 1e-5
+        lo = min_value - eps
+        hi = max_value + eps
+        indices = sorted({vtx_ids[i] for i, val in enumerate(values)
+                          if lo <= val <= hi})
+
+        if not indices:
+            cmds.select(clear=True)
+            return
+
+        mel.eval(f'doMenuComponentSelection("{mesh}", "vertex")')
+        ranges = dw_maya.dw_maya_utils.create_maya_ranges(indices)
+        vtx_list = [f'{mesh}.vtx[{r}]' for r in ranges]
+        self.select_by_mod(vtx_list, key_mod)
+
+    def select_vertices_at_limit(self,
+                                 use_max: bool = False,
+                                 key_mod: int = 0) -> None:
+        """Select the vertices sitting at the domain's true min or max.
+
+        Works off the *unrounded* extreme, unlike :meth:`get_weight_range`
+        which rounds to 1 decimal for display — selecting against the rounded
+        bound matches nothing on any map whose extremes are not already round
+        (a map peaking at 0.9734 would look for an exact 1.0).
+        """
+        if not self._require_active():
+            return
+
+        mesh = self._active.mesh_name
+
+        if self._sel_domain in ('u', 'v'):
+            uv_data = self._get_uv_data(mesh)
+            if uv_data is None:
+                logger.warning(f"'{mesh}' has no UVs on the current UV set.")
+                return
+            vtx_ids, fv_u, fv_v = uv_data
+            values = fv_u if self._sel_domain == 'u' else fv_v
+            if not values:
+                return
+            extreme = max(values) if use_max else min(values)
+            eps = 1e-6
+            indices = sorted({vtx_ids[i] for i, val in enumerate(values)
+                              if abs(val - extreme) <= eps})
+        else:
+            weights = self._active.get_weights()
+            if not weights:
+                logger.warning("No weights to read on the active map.")
+                return
+            extreme = max(weights) if use_max else min(weights)
+            eps = 1e-6
+            indices = [i for i, w in enumerate(weights)
+                       if abs(w - extreme) <= eps]
+
+        if not indices:
+            cmds.select(clear=True)
+            return
+
+        mel.eval(f'doMenuComponentSelection("{mesh}", "vertex")')
+        ranges = dw_maya.dw_maya_utils.create_maya_ranges(indices)
+        vtx_list = [f'{mesh}.vtx[{r}]' for r in ranges]
+        self.select_by_mod(vtx_list, key_mod)
+        label = 'max' if use_max else 'min'
+        logger.info(f"Selected {len(indices)} vertices at {self._sel_domain} {label} = {extreme:.4f}")
+
+    # Add these methods
+    def _on_range_selection_pressed(self) -> None:
+        """Called when user presses slider handle — cache the domain data once."""
+        if not self._require_active():
+            return
         self._cached_mesh = self._active.mesh_name
+        if self._sel_domain in ('u', 'v'):
+            self._cached_uv = self._get_uv_data(self._cached_mesh)
+        else:
+            self._cached_weights = self._active.get_weights()
 
     def _on_range_selection_released(self) -> None:
         """Called when user releases slider — clear cache."""
         self._cached_weights = None
         self._cached_mesh = None
+        self._cached_uv = None
 
     def select_vertices_by_weight(self,
                                   from_zero: bool = True,
