@@ -54,9 +54,45 @@ class PresetManager:
 
     def __init__(self, root_path: Optional[Path] = None):
         super().__init__()
-        self.root_path = root_path or Path(dw_folder.get_folder())
+        self.root_path = Path(root_path) if root_path else self._resolve_root()
         self.backup_path = self.root_path / '.backups'
         self.backup_path.mkdir(parents=True, exist_ok=True)
+
+    @staticmethod
+    def _resolve_root() -> Path:
+        """Preset root, guaranteed usable even with no scene open.
+
+        dw_folder.get_folder() derives its path from the *saved* scene, and
+        returns False on an untitled one - Path(False) then raised and took
+        the whole Preset tab down with it. Falls back to the project, which
+        exists whether or not the scene was ever saved, then to temp.
+        """
+        try:
+            folder = dw_folder.get_folder()
+        except Exception as e:
+            logger.warning(f"PresetManager: get_folder failed ({e})")
+            folder = None
+        if folder and isinstance(folder, str):
+            return Path(folder)
+
+        import getpass
+        user = getpass.getuser()
+
+        try:
+            project = cmds.workspace(query=True, rootDirectory=True)
+            if project:
+                root = Path(project) / 'json' / user
+                logger.info(
+                    f"PresetManager: scene not saved, using the project "
+                    f"preset root {root}")
+                return root
+        except Exception as e:
+            logger.warning(f"PresetManager: no workspace root ({e})")
+
+        root = Path(tempfile.gettempdir()) / 'dw_presets' / user
+        logger.warning(
+            f"PresetManager: no scene and no project, falling back to {root}")
+        return root
 
     def create_backup(self, preset_info: PresetInfo) -> Path:
         """Create backup of preset before modification."""
