@@ -925,26 +925,103 @@ class CacheVersionPanel(DynEvalWidgetBase):
                 continue
             groups.setdefault(system.name, (system, []))[1].append(item)
 
+        # Text sitting unsaved in the Comment tab is meant for the version
+        # this create is about to produce — read it before the solve, so a
+        # long simulation can't race the artist editing the box.
+        pending_comment = (self.hub_get(DynEvalKeys.COMMENT_CURRENT) or "").strip()
+
         done, failed = 0, []
+        created = []   # [(item, cache_info)] — what the comment lands on
         for system, items in groups.values():
             try:
                 if hasattr(system.cache_ops, "create_many"):
-                    done += len(system.cache_ops.create_many(
-                        items, frame_range, replace=replace))
+                    infos = system.cache_ops.create_many(
+                        items, frame_range, replace=replace)
+                    done += len(infos)
+                    created.extend(self._pair_created(items, infos))
                 else:
                     for item in items:
-                        system.cache_ops.create(item, frame_range, replace=replace)
+                        info = system.cache_ops.create(
+                            item, frame_range, replace=replace)
                         done += 1
+                        if info is not None:
+                            created.append((item, info))
             except Exception as e:
                 logger.error(f"Cache creation failed for {system.name}: {e}")
                 failed.append(f"{system.name}: {e}")
 
+        # Written before the rebuild so the Comment column shows it in the
+        # same refresh the new version appears in.
+        if pending_comment and created:
+            self._apply_pending_comment(pending_comment, created)
+
         self._rebuild_list()
+
         if failed:
             cmds.warning(f"{done} cache(s) created, {len(failed)} group(s) "
                          f"failed - {'; '.join(failed)}")
         else:
             logger.info(f"{done} cache(s) created.")
+
+    @staticmethod
+    def _pair_created(items: list, infos: list) -> list:
+        """Match each returned CacheInfo back to the item it was cached from.
+
+        Paired on node name rather than list position: create_many may skip an
+        item, and a comment written to the wrong item's metadata would be
+        silently misfiled.
+        """
+        by_node = {}
+        for item in items:
+            node = getattr(item, "node", None)
+            if node:
+                by_node[node] = item
+
+        pairs = []
+        unmatched = []
+        for info in infos or []:
+            item = by_node.get(getattr(info, "node", None))
+            if item is not None:
+                pairs.append((item, info))
+            else:
+                unmatched.append(info)
+
+        # One item, one cache, names disagree (full path vs short) — that
+        # pairing is still unambiguous.
+        if not pairs and len(items) == 1 and len(unmatched) == 1:
+            pairs.append((items[0], unmatched[0]))
+        elif unmatched:
+            logger.warning(
+                f"{len(unmatched)} cache(s) could not be matched to an item - "
+                "no comment written for those.")
+        return pairs
+
+    def _apply_pending_comment(self, comment: str, created: list) -> None:
+        """Save the Comment tab's unsaved text onto every version just created.
+
+        Same fan-out semantic as a manual save on a multi-selection: the same
+        text goes to each item, on the version this create produced for it.
+        """
+        written = 0
+        for item, cache_info in created:
+            version = getattr(cache_info, "version", None)
+            if version is None:
+                continue
+            try:
+                if cache_metadata.set_comment(item, version, comment):
+                    written += 1
+            except Exception as e:
+                name = getattr(item, "short_name", "?")
+                logger.error(f"Comment not saved for {name} v{version}: {e}")
+
+        if written:
+            logger.info(f"Comment saved on {written} new cache(s).")
+            # Tells the editor its pending text was consumed (clears the box).
+            self.publish(DynEvalKeys.COMMENT_SAVED, comment)
+        else:
+            logger.warning(
+                "Cache created but the comment could not be saved - it is "
+                "still in the New Comment box.")
 
     def _on_cache_mode_changed(self, replace_checked: bool):
         try:

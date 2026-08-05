@@ -230,6 +230,9 @@ class CommentEditor(DynEvalWidgetBase):
         self.subscribe(DynEvalKeys.CACHE_SELECTED, self._on_cache_selected)
         self.subscribe(DynEvalKeys.SELECTED_NODE, self._on_item_selected)
         self.subscribe(DynEvalKeys.SELECTED_NODES, self._on_items_selected)
+        # Someone else wrote this text for us (cache create auto-saves whatever
+        # is pending in the box) — reflect it and empty the box.
+        self.subscribe(DynEvalKeys.COMMENT_SAVED, self._on_comment_saved)
 
     # ========================================================================
     # HUB CALLBACKS
@@ -269,6 +272,19 @@ class CommentEditor(DynEvalWidgetBase):
             self.comment_title.setTitle(f"Comment: {node_name}")
 
         self._update_scope_label()
+
+    def _on_comment_saved(self, _old_value, comment):
+        """Hub callback: a comment was written (possibly by the cache create).
+
+        Only consumes the box when the saved text is what is still sitting in
+        it — a save triggered from elsewhere must not throw away something the
+        artist has since retyped.
+        """
+        if not comment:
+            return
+        if self.write_area.toPlainText().strip() == str(comment).strip():
+            self.display_area.setText(comment)
+            self.write_area.clear()
 
     def _on_items_selected(self, old_value, new_value):
         """Hub callback: the full tree selection changed."""
@@ -332,13 +348,19 @@ class CommentEditor(DynEvalWidgetBase):
 
     def _on_text_changed(self):
         """Handle text changes in write area."""
-        has_text = bool(self.write_area.toPlainText().strip())
+        text = self.write_area.toPlainText()
+        has_text = bool(text.strip())
         has_cache = self._current_cache is not None
 
         self.save_btn.setEnabled(has_text and has_cache)
 
+        # Published, not just emitted: creating a cache picks this up and
+        # saves it onto the new version, so an artist can write the comment
+        # first and press Create without a separate Save.
+        self.publish(DynEvalKeys.COMMENT_CURRENT, text)
+
         # Emit signal
-        self.comment_changed.emit(self.write_area.toPlainText())
+        self.comment_changed.emit(text)
 
     def _emit_save(self):
         comment = self.getComment()
@@ -350,6 +372,12 @@ class CommentEditor(DynEvalWidgetBase):
             self.save_requested.emit(comment)
             # Cache panel subscribes to refresh its Comment column
             self.publish(DynEvalKeys.COMMENT_SAVED, comment)
+        else:
+            # Never fail mute: the write area keeps the text (so nothing is
+            # lost), but without this the button just looked inert.
+            logger.warning(
+                "Comment not saved - see the log above for the metadata write "
+                "error. The text is still in the New Comment box.")
 
     def _save_to_disk(self, comment: str) -> bool:
         """Write the comment to every selected item's cache.
@@ -363,6 +391,9 @@ class CommentEditor(DynEvalWidgetBase):
             True when at least the displayed item was written.
         """
         if not self._current_item or not self._current_cache:
+            logger.warning(
+                "Comment not saved: no sim item / cache version in context "
+                "(select the item in the tree and a version in the list).")
             return False
 
         from dw_maya.DynEval.sim_cmds import cache_metadata

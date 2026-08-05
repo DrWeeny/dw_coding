@@ -67,32 +67,42 @@ def unique_name(sel: Union[str, List[str]],
         if custom_pattern:
             name_pattern = custom_pattern
         else:
-            # Strip namespace and attributes
-            base_name = obj.split('.')[-1].split(':')[-1]
+            # Strip DAG path, namespace and attributes. The path must go
+            # before the regex is built: Maya hands out full/partial paths
+            # whenever a short name is ambiguous, and an unescaped '|' is
+            # regex alternation — '^GRP_B|CLOTH_001_v\d{1,2}$' then matches
+            # every node starting with 'GRP_B'.
+            base_name = obj.split('.')[-1].split('|')[-1].split(':')[-1]
             if re.search(f'_{frame}_v\\d{{1}}$', base_name):
                 base_name = '_'.join(base_name.split('_')[:-2])
-            name_pattern = f'^{base_name}_{frame}_v\\d{{1,2}}$'
+            name_pattern = f'^{re.escape(base_name)}_{frame}_v\\d{{1,2}}$'
 
         # Get existing objects to check against
         existing = (kwargs.get('forbiddenName', []) +
                     cmds.ls(type='transform'))
 
-        # Find highest version number
+        # Find highest version number. Read the digits off the trailing _v###
+        # rather than the last character — 'foo_001_v10' used to report
+        # version 0, and a name ending in a letter raised ValueError.
         name_pattern_re = re.compile(name_pattern)
-        versions = [
-            int(i[-1]) for i in existing
-            if name_pattern_re.search(i)
-        ]
+        trailing_version_re = re.compile(r'_v(\d{1,2})$')
+        versions = []
+        for i in existing:
+            if not name_pattern_re.search(i):
+                continue
+            match = trailing_version_re.search(i)
+            if match:
+                versions.append(int(match.group(1)))
         version = max(versions, default=0) + 1
 
-        # Generate new name
-        if dup_pattern.search(obj.split(':')[-1]):
-            new_name = dup_pattern.sub(
-                f'_{frame}_v{version}',
-                obj.split(':')[-1]
-            )
+        # Generate new name. Strip the DAG path too, else the result carries
+        # pipes and Maya silently rewrites them to '_' on rename
+        # ('GRP_B|CLOTH_001_v1' -> 'GRP_B_CLOTH_001_v1').
+        short_obj = obj.split('|')[-1].split(':')[-1]
+        if dup_pattern.search(short_obj):
+            new_name = dup_pattern.sub(f'_{frame}_v{version}', short_obj)
         else:
-            new_name = f'{obj.split(":")[-1]}_{frame}_v{version}'
+            new_name = f'{short_obj}_{frame}_v{version}'
 
         # Add prefix/suffix
         if prefix:

@@ -247,8 +247,15 @@ class BaseSimulationItem(QtGui.QStandardItem):
         Never return a ':' sentinel here — this value is used as a path
         component by cache_dir()/metadata() and ':' is invalid in Windows
         directory names (WinError 123).
+
+        The DAG path is stripped first for the same reason: self.node is a
+        full path whenever the short name is ambiguous, and splitting that on
+        ':' keeps the leading pipe ('|NS'), which is just as invalid on
+        Windows — it made every metadata write fail silently, so comments
+        were never stored.
         """
-        return self.node.split(":")[0] if ":" in self.node else ""
+        node = self.node.split("|")[-1]
+        return node.split(":")[0] if ":" in node else ""
 
     @property
     def solver_name(self):
