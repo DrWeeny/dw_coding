@@ -9,16 +9,23 @@ except ImportError:
     from shiboken2 import wrapInstance
 
 from dataclasses import dataclass, field
+from functools import partial
 from typing import Optional, Dict, Set, List, Any
 from datetime import datetime
 from enum import Enum
 from pathlib import Path
 import maya.cmds as cmds
 from dw_logger import get_logger
+import os
 import re
 import shutil
+import subprocess
+import sys
 import tempfile
 from dw_maya.dw_presets_io import dw_folder, dw_json
+from dw_maya.DynEval.hub_keys import DynEvalKeys
+from dw_maya.DynEval.sim_cmds.compat import qt_exec
+from dw_maya.DynEval.sim_widget.wgt_base import DynEvalWidgetBase
 
 logger = get_logger()
 
@@ -41,6 +48,9 @@ class PresetInfo:
     cache_name: Optional[str] = None
     solver: Optional[str] = None
     is_readonly: bool = False
+    # True when a dynamicConstraint envelope was written next to the preset,
+    # in the dynC subfolder PresetTool also reads.
+    has_constraints: bool = False
     created_by: Optional[str] = None
     created_at: datetime = field(default_factory=datetime.now)
     last_modified: datetime = field(default_factory=datetime.now)
@@ -57,6 +67,9 @@ class PresetManager:
         self.root_path = Path(root_path) if root_path else self._resolve_root()
         self.backup_path = self.root_path / '.backups'
         self.backup_path.mkdir(parents=True, exist_ok=True)
+        # Set by load_preset, read by the widget's delete confirmation.
+        self.current_preset = None
+        logger.info(f"PresetManager root: {self.root_path}")
 
     @staticmethod
     def _resolve_root() -> Path:
@@ -199,8 +212,21 @@ class PresetManager:
 
         return differences
 
-    def save_preset(self, nodes: List[str], preset_name: str, cache_name: Optional[str] = None) -> PresetInfo:
-        """Save node attributes as a preset."""
+    def save_preset(self,
+                    nodes: List[str],
+                    preset_name: str,
+                    cache_name: Optional[str] = None,
+                    constraints: Optional[List[str]] = None) -> PresetInfo:
+        """Save node attributes as a preset.
+
+        Args:
+            nodes: every node in the save scope. The first one is the anchor -
+                it decides the preset type, hence the folder it lands in.
+            preset_name: file base name.
+            cache_name: optional cache this preset belongs to.
+            constraints: dynamicConstraint nodes to save alongside, as a
+                separate dw_preset envelope in the dynC subfolder.
+        """
         try:
             from dw_maya.dw_presets_io import dw_preset
 
@@ -220,10 +246,15 @@ class PresetManager:
                 name=preset_name,
                 node_type=node_type,
                 attributes=preset_data,
-                version=self._get_next_version(preset_name),
+                version=self._get_next_version(preset_name, node_type),
                 cache_name=cache_name,
                 solver=solver
             )
+
+            if constraints:
+                preset_info.has_constraints = self._save_constraints(preset_info,
+                                                                     nodes[0],
+                                                                     constraints)
 
             # Save to file
             self._save_preset_to_file(preset_info)
@@ -234,23 +265,105 @@ class PresetManager:
             logger.error(f"Failed to save preset {preset_name}: {e}")
             raise
 
-    def load_preset(self, preset_info: PresetInfo, target_nodes: List[str], blend: float = 1.0) -> bool:
-        """Load and apply a preset to target nodes."""
+    def _save_constraints(self,
+                          preset_info: PresetInfo,
+                          anchor_node: str,
+                          constraints: List[str]) -> bool:
+        """Write the constraint network beside the preset, PresetTool style.
+
+        Same writer (saveNConstraintRig), same envelope and same dynC
+        subfolder layout PresetTool uses, so a file written here can be
+        rebuilt from either tool.
+        """
+        import dw_maya.dw_nucleus_utils as dwnx
+
+        dyn_path = self.get_constraint_dir(preset_info)
+        dyn_path.mkdir(parents=True, exist_ok=True)
+        namespace = anchor_node.split(':')[0] if ':' in anchor_node else ':'
+
+        try:
+            dwnx.saveNConstraintRig(
+                namespace=namespace,
+                path=str(dyn_path),
+                file=f"{preset_info.name}_{preset_info.version}",
+                nconstraint=constraints,
+            )
+            return True
+        except Exception as e:
+            logger.error(f"Failed to save constraints for {preset_info.name}: {e}")
+            return False
+
+    def get_constraint_dir(self, preset_info: PresetInfo) -> Path:
+        """Directory holding the constraint envelope for a preset."""
+        return self.root_path / preset_info.node_type.value / 'dynC'
+
+    def get_constraint_file_path(self, preset_info: PresetInfo) -> Path:
+        """Constraint envelope path for a preset (may not exist)."""
+        return (self.get_constraint_dir(preset_info) /
+                f"{preset_info.name}_{preset_info.version}.json")
+
+    def load_preset(self,
+                    preset_info: PresetInfo,
+                    target_nodes: List[str],
+                    blend: float = 1.0,
+                    with_constraints: bool = False) -> bool:
+        """Load and apply a preset to target nodes.
+
+        Two apply modes, because a preset can hold one node or a whole
+        solver scope:
+
+        - single entry + single target: applied to that target whatever it
+          is called. This is the "copy these settings onto this cloth" case.
+        - several entries: each is matched back to the scene by its stored
+          (namespace-stripped) name, preferring the target's namespace.
+
+        Constraints, when asked for and present, are rebuilt from the dynC
+        envelope - the same call PresetTool makes.
+        """
         try:
             from dw_maya.dw_presets_io import dw_preset
 
-            # Validate target nodes
-            if not all(self._get_preset_type(node) == preset_info.node_type for node in target_nodes):
-                raise ValueError("Target nodes must match preset type")
+            entries = {key: value
+                       for key, value in preset_info.attributes.items()
+                       if isinstance(value, dict)}
+            if not entries:
+                raise ValueError(f"Preset {preset_info.name} holds no node entry")
 
-            # Apply preset attributes with blending
-            for node in target_nodes:
+            namespace = ':'
+            if target_nodes and ':' in target_nodes[0]:
+                namespace = target_nodes[0].split(':')[0]
+
+            applied = 0
+            if len(entries) == 1 and len(target_nodes) == 1:
+                source = list(entries.keys())[0]
+                if self._get_preset_type(target_nodes[0]) != preset_info.node_type:
+                    raise ValueError("Target node must match preset type")
                 dw_preset.blendAttrDic(
-                    srcNode=list(preset_info.attributes.keys())[0],
-                    targetNode=node,
+                    srcNode=source,
+                    targetNode=target_nodes[0],
                     preset=preset_info.attributes,
-                    blendValue=blend
+                    blendValue=blend,
                 )
+                applied = 1
+            else:
+                for source in entries:
+                    target = self._resolve_node(source, namespace)
+                    if not target:
+                        continue
+                    dw_preset.blendAttrDic(
+                        srcNode=source,
+                        targetNode=target,
+                        preset=preset_info.attributes,
+                        blendValue=blend,
+                    )
+                    applied += 1
+
+            if with_constraints and preset_info.has_constraints:
+                self.load_constraints(preset_info, namespace)
+
+            if not applied:
+                logger.warning(f"Preset {preset_info.name}: no node matched in the scene")
+                return False
 
             self.current_preset = preset_info
             return True
@@ -258,6 +371,45 @@ class PresetManager:
         except Exception as e:
             logger.error(f"Failed to load preset {preset_info.name}: {e}")
             return False
+
+    def load_constraints(self, preset_info: PresetInfo, namespace: str = ':') -> List[str]:
+        """Rebuild the saved dynamicConstraint network.
+
+        Returns the created constraint transforms (empty when there is no
+        constraint file for this preset).
+        """
+        import dw_maya.dw_nucleus_utils as dwnx
+
+        constraint_file = self.get_constraint_file_path(preset_info)
+        if not constraint_file.is_file():
+            logger.warning(f"No constraint file for preset {preset_info.name}")
+            return []
+
+        created = dwnx.createAllConstraintPresets(str(constraint_file),
+                                                  targ_ns=namespace)
+        logger.info(f"Rebuilt {len(created)} constraint(s) from {constraint_file}")
+        return created
+
+    def _resolve_node(self, stored_name: str, namespace: str = ':') -> Optional[str]:
+        """Resolve a namespace-stripped stored node name to a scene node.
+
+        Same resolution order as PresetTool: the given namespace first, then
+        root, then an unambiguous any-namespace lookup.
+        """
+        if namespace and namespace != ':':
+            candidate = f"{namespace}:{stored_name}"
+            if cmds.objExists(candidate):
+                return candidate
+        if cmds.objExists(stored_name):
+            return stored_name
+
+        hits = cmds.ls(stored_name, recursive=True) or []
+        if len(hits) == 1:
+            return hits[0]
+        if hits:
+            logger.warning(f"'{stored_name}' is ambiguous across namespaces "
+                           f"({hits}), skipped")
+        return None
 
     def get_presets_for_node(self, node: str) -> List[PresetInfo]:
         """Get all available presets for a given node type."""
@@ -302,9 +454,15 @@ class PresetManager:
         except:
             return None
 
-    def _get_next_version(self, preset_name: str) -> str:
-        """Get next available version number for preset."""
-        existing = list(self.root_path.glob(f"{preset_name}_v*.json"))
+    def _get_next_version(self, preset_name: str, node_type: PresetType) -> str:
+        """Get next available version number for preset.
+
+        Presets are written to root_path/<node_type>/, so the existing
+        versions have to be looked up there - globbing root_path itself
+        always returned v001 and silently overwrote the previous save.
+        """
+        preset_dir = self.root_path / node_type.value
+        existing = list(preset_dir.glob(f"{preset_name}_v*.json"))
         if not existing:
             return "v001"
 
@@ -327,7 +485,11 @@ class PresetManager:
                 "type": preset_info.node_type.value,
                 "version": preset_info.version,
                 "cache_name": preset_info.cache_name,
-                "solver": preset_info.solver
+                "solver": preset_info.solver,
+                "has_constraints": preset_info.has_constraints,
+                "is_readonly": preset_info.is_readonly,
+                "created_at": preset_info.created_at.isoformat(),
+                "last_modified": datetime.now().isoformat()
             },
             "attributes": preset_info.attributes
         }
@@ -349,7 +511,9 @@ class PresetManager:
                 attributes=data["attributes"],
                 version=data["info"]["version"],
                 cache_name=data["info"].get("cache_name"),
-                solver=data["info"].get("solver")
+                solver=data["info"].get("solver"),
+                is_readonly=data["info"].get("is_readonly", False),
+                has_constraints=data["info"].get("has_constraints", False)
             )
         except Exception as e:
             logger.warning(f"Failed to parse preset file {preset_file}: {e}")
@@ -412,6 +576,11 @@ class PresetManager:
             meta_file = preset_dir / f"{base_name}{ext}"
             if meta_file.exists():
                 associated_files.append(meta_file)
+
+        # The constraint envelope written beside the preset
+        constraint_file = self.get_constraint_file_path(preset_info)
+        if constraint_file.exists():
+            associated_files.append(constraint_file)
 
         # Check for cache-specific metadata if this preset is associated with a cache
         if preset_info.cache_name:
@@ -487,6 +656,7 @@ class PresetManager:
                         cache_name=data['info'].get('cache_name'),
                         solver=data['info'].get('solver'),
                         is_readonly=data['info'].get('is_readonly', False),
+                        has_constraints=data['info'].get('has_constraints', False),
                         created_by=data['info'].get('created_by'),
                         created_at=datetime.fromisoformat(data['info'].get('created_at', datetime.now().isoformat())),
                         last_modified=datetime.fromisoformat(
@@ -595,24 +765,40 @@ class PresetManager:
 
 
 
-class PresetWidget(QtWidgets.QWidget):
-    """Widget for managing simulation presets."""
+class PresetWidget(DynEvalWidgetBase):
+    """Widget for managing simulation presets.
+
+    Follows the selection published by the tree (SELECTED_NODE) - the panel
+    was previously built without any hub subscription, so set_node() was
+    never called and current_node did not exist at all.
+    """
 
     preset_applied = QtCore.Signal(PresetInfo)  # Emitted when preset is applied
 
-    def __init__(self, parent=None):
-        super().__init__(parent)
+    def __init__(self, hub, parent=None):
+        super().__init__(hub, parent)
+        self.current_node = None   # Maya node name (str)
+        self.current_item = None   # tree item, kept for the parent/child scope
         self.preset_manager = PresetManager()
         self._setup_ui()
+        self.subscribe(DynEvalKeys.SELECTED_NODE, self._on_node_selected)
+        self.set_node(self.hub_get(DynEvalKeys.SELECTED_NODE))
 
     def _setup_ui(self):
         """Initialize UI components."""
         layout = QtWidgets.QVBoxLayout(self)
 
+        # Current node the presets apply to
+        self.node_label = QtWidgets.QLabel("No node selected")
+        self.node_label.setWordWrap(True)
+        layout.addWidget(self.node_label)
+
         # Preset list
         self.preset_list = QtWidgets.QTreeWidget()
-        self.preset_list.setHeaderLabels(["Name", "Version", "Type"])
+        self.preset_list.setHeaderLabels(["Name", "Version", "Type", "nC"])
         self.preset_list.setSelectionMode(QtWidgets.QAbstractItemView.ExtendedSelection)
+        self.preset_list.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
+        self.preset_list.setToolTip(f"Preset root: {self.preset_manager.root_path}")
         layout.addWidget(self.preset_list)
 
         # Blend value slider
@@ -626,6 +812,31 @@ class PresetWidget(QtWidgets.QWidget):
         blend_layout.addWidget(self.blend_label)
         layout.addLayout(blend_layout)
 
+        # Scope — what goes into a save besides the selected node itself.
+        scope_box = QtWidgets.QGroupBox("Scope")
+        scope_layout = QtWidgets.QVBoxLayout(scope_box)
+
+        self.parent_check = QtWidgets.QCheckBox("Include parent")
+        self.parent_check.setToolTip(
+            "Save the whole branch above the selection too - the nCloth a "
+            "collider hangs under, and the solver above it."
+        )
+        self.children_check = QtWidgets.QCheckBox("Include children")
+        self.children_check.setToolTip(
+            "Save everything nested under the selection: for a solver, all "
+            "its cloths / hairs / colliders."
+        )
+        self.constraint_check = QtWidgets.QCheckBox("Include nConstraints")
+        self.constraint_check.setToolTip(
+            "Save the dynamicConstraint network of every cloth / hair in the "
+            "scope, in the dynC subfolder. Same envelope as PresetTool, so "
+            "either tool can rebuild it. On load, ticking this rebuilds them."
+        )
+
+        for check in (self.parent_check, self.children_check, self.constraint_check):
+            scope_layout.addWidget(check)
+        layout.addWidget(scope_box)
+
         # Action buttons
         button_layout = QtWidgets.QHBoxLayout()
         self.save_btn = QtWidgets.QPushButton("Save Preset")
@@ -638,6 +849,8 @@ class PresetWidget(QtWidgets.QWidget):
 
         # Connect signals
         self.blend_slider.valueChanged.connect(self._update_blend_label)
+        self.preset_list.itemSelectionChanged.connect(self._update_button_states)
+        self.preset_list.customContextMenuRequested.connect(self._show_context_menu)
         self.save_btn.clicked.connect(self._save_preset)
         self.load_btn.clicked.connect(self._load_preset)
         self.delete_btn.clicked.connect(self._delete_preset)
@@ -646,10 +859,195 @@ class PresetWidget(QtWidgets.QWidget):
         """Update blend value label."""
         self.blend_label.setText(f"{value}%")
 
+    def _on_node_selected(self, old_value, new_value):
+        """Hub callback: tree selection changed."""
+        self.set_node(new_value)
+
     def set_node(self, node):
-        """Update preset list for current node."""
-        self.current_node = node
+        """Update preset list for current node.
+
+        Accepts either a Maya node name or a tree item (BaseSimulationItem),
+        since the hub publishes the item, not the node string.
+        """
+        node_name = getattr(node, 'node', node)
+        if node_name is not None and not isinstance(node_name, str):
+            logger.warning(f"PresetWidget: unusable selection {node!r}")
+            node_name = None
+
+        self.current_node = node_name
+        self.current_item = node if node_name and node is not node_name else None
+        self.node_label.setText(node_name or "No node selected")
+        self._update_button_states()
         self._refresh_presets()
+
+    def _update_button_states(self):
+        """Enable actions only when they can actually run."""
+        has_node = bool(self.current_node)
+        has_selection = bool(self.preset_list.selectedItems())
+        self.save_btn.setEnabled(has_node)
+        self.load_btn.setEnabled(has_node and has_selection)
+        self.delete_btn.setEnabled(has_selection)
+
+        # A scope option nothing can be collected for is only confusing.
+        item = self.current_item
+        self.parent_check.setEnabled(bool(item is not None and item.parent()))
+        self.children_check.setEnabled(bool(item is not None and item.rowCount()))
+
+    # ------------------------------------------------------------------
+    # SAVE SCOPE
+    # ------------------------------------------------------------------
+
+    def _scope_nodes(self) -> List[str]:
+        """Nodes a save covers, anchor first (it decides the preset type)."""
+        nodes = [self.current_node]
+        item = self.current_item
+
+        if item is not None:
+            if self.parent_check.isChecked() and self.parent_check.isEnabled():
+                nodes.extend(self._ancestor_nodes(item))
+            if self.children_check.isChecked() and self.children_check.isEnabled():
+                nodes.extend(self._descendant_nodes(item))
+
+        return self._clean_nodes(nodes)
+
+    def _constraint_nodes(self) -> List[str]:
+        """dynamicConstraints to save with the preset.
+
+        Looked up over the save scope, plus - when the anchor is a solver
+        with children left out of the scope - its cloths and hairs, since a
+        nucleus carries no constraint of its own and "the constraints of the
+        selected solver" means the ones of what it simulates.
+        """
+        from dw_maya.DynEval.sim_cmds import preset_management
+
+        lookup = self._scope_nodes()
+        item = self.current_item
+        if item is not None and not self.children_check.isChecked():
+            lookup = self._clean_nodes(lookup + self._descendant_nodes(item))
+
+        try:
+            return preset_management.get_constraints(lookup)
+        except Exception as e:
+            logger.error(f"Constraint lookup failed: {e}")
+            return []
+
+    @staticmethod
+    def _ancestor_nodes(item) -> List[str]:
+        """Every tree item above this one, closest first."""
+        nodes = []
+        parent = item.parent()
+        while parent is not None:
+            node = getattr(parent, 'node', None)
+            if node:
+                nodes.append(node)
+            parent = parent.parent()
+        return nodes
+
+    @classmethod
+    def _descendant_nodes(cls, item) -> List[str]:
+        """Every tree item below this one, depth first."""
+        nodes = []
+        for row in range(item.rowCount()):
+            child = item.child(row, 0)
+            if child is None:
+                continue
+            node = getattr(child, 'node', None)
+            if node:
+                nodes.append(node)
+            nodes.extend(cls._descendant_nodes(child))
+        return nodes
+
+    @staticmethod
+    def _clean_nodes(nodes: List[str]) -> List[str]:
+        """Drop empties, duplicates and dead nodes, keeping order."""
+        seen = set()
+        cleaned = []
+        for node in nodes:
+            if not node or node in seen:
+                continue
+            seen.add(node)
+            if cmds.objExists(node):
+                cleaned.append(node)
+            else:
+                logger.warning(f"PresetWidget: skipping missing node {node}")
+        return cleaned
+
+    # ------------------------------------------------------------------
+    # CONTEXT MENU
+    # ------------------------------------------------------------------
+
+    def _show_context_menu(self, pos):
+        """Right-click menu on the preset list.
+
+        The preset root is derived from the scene (or falls back to the
+        project / temp), so "where did that file go" is a fair question -
+        every entry here answers it.
+        """
+        item = self.preset_list.itemAt(pos)
+        preset = item.data(0, QtCore.Qt.UserRole) if item else None
+
+        menu = QtWidgets.QMenu(self)
+
+        if preset is not None:
+            preset_file = self.preset_manager.get_preset_file_path(preset)
+            action = menu.addAction("Reveal preset in explorer")
+            action.triggered.connect(partial(self._reveal, preset_file))
+
+            constraint_file = self.preset_manager.get_constraint_file_path(preset)
+            action = menu.addAction("Reveal nConstraint file in explorer")
+            action.setEnabled(constraint_file.is_file())
+            action.triggered.connect(partial(self._reveal, constraint_file))
+
+            action = menu.addAction("Copy path")
+            action.triggered.connect(partial(self._copy_path, preset_file))
+
+            menu.addSeparator()
+
+        action = menu.addAction("Open preset root folder")
+        action.triggered.connect(partial(self._reveal, self.preset_manager.root_path))
+
+        action = menu.addAction("Copy preset root path")
+        action.triggered.connect(partial(self._copy_path, self.preset_manager.root_path))
+
+        qt_exec(menu, self.preset_list.viewport().mapToGlobal(pos))
+
+    def _reveal(self, path: Path):
+        """Show a file (selected) or a folder in the OS file browser."""
+        path = Path(path)
+        target = path if path.exists() else path.parent
+
+        if not target.exists():
+            QtWidgets.QMessageBox.warning(
+                self,
+                "Reveal",
+                f"Path does not exist:\n{target}"
+            )
+            return
+
+        try:
+            if sys.platform == 'win32':
+                if target.is_dir():
+                    os.startfile(str(target))
+                else:
+                    # /select needs the whole thing as one string, quoted
+                    subprocess.Popen(f'explorer /select,"{target}"')
+            elif sys.platform == 'darwin':
+                subprocess.Popen(['open', '-R', str(target)])
+            else:
+                folder = target if target.is_dir() else target.parent
+                subprocess.Popen(['xdg-open', str(folder)])
+        except Exception as e:
+            logger.error(f"Failed to reveal {target}: {e}")
+            QtWidgets.QMessageBox.warning(
+                self,
+                "Reveal",
+                f"Could not open the file browser:\n{e}"
+            )
+
+    def _copy_path(self, path: Path):
+        """Put a path on the clipboard - handy when explorer is not around."""
+        QtWidgets.QApplication.clipboard().setText(str(path))
+        logger.info(f"Path copied to clipboard: {path}")
 
     def _refresh_presets(self):
         """Refresh preset list."""
@@ -662,15 +1060,36 @@ class PresetWidget(QtWidgets.QWidget):
             item = QtWidgets.QTreeWidgetItem([
                 preset.name,
                 preset.version,
-                preset.node_type.value
+                preset.node_type.value,
+                "yes" if preset.has_constraints else ""
             ])
+            node_count = sum(1 for v in preset.attributes.values() if isinstance(v, dict))
+            item.setToolTip(0, f"{node_count} node(s) in this preset")
             item.setData(0, QtCore.Qt.UserRole, preset)
             self.preset_list.addTopLevelItem(item)
+
+        self._update_button_states()
 
     def _save_preset(self):
         """Save current node settings as preset."""
         if not self.current_node:
+            QtWidgets.QMessageBox.information(
+                self,
+                "Save Preset",
+                "Select a simulation node in the tree first."
+            )
             return
+
+        if not cmds.objExists(self.current_node):
+            QtWidgets.QMessageBox.warning(
+                self,
+                "Save Preset",
+                f"Node no longer exists: {self.current_node}"
+            )
+            return
+
+        nodes = self._scope_nodes()
+        constraints = self._constraint_nodes() if self.constraint_check.isChecked() else []
 
         name, ok = QtWidgets.QInputDialog.getText(
             self, "Save Preset", "Enter preset name:"
@@ -678,15 +1097,19 @@ class PresetWidget(QtWidgets.QWidget):
         if ok and name:
             try:
                 preset = self.preset_manager.save_preset(
-                    [self.current_node],
-                    name
+                    nodes,
+                    name,
+                    constraints=constraints
                 )
                 self._refresh_presets()
 
+                detail = f"{len(nodes)} node(s)"
+                if preset.has_constraints:
+                    detail += f", {len(constraints)} constraint(s)"
                 QtWidgets.QMessageBox.information(
                     self,
                     "Success",
-                    f"Preset '{name}' saved successfully!"
+                    f"Preset '{name}' {preset.version} saved.\n{detail}"
                 )
 
             except Exception as e:
@@ -709,7 +1132,8 @@ class PresetWidget(QtWidgets.QWidget):
             success = self.preset_manager.load_preset(
                 preset,
                 [self.current_node],
-                blend_value
+                blend_value,
+                with_constraints=self.constraint_check.isChecked()
             )
 
             if success:

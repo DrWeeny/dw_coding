@@ -70,6 +70,7 @@ from dw_maya.DynEval.sim_widget.wgt_base import DynEvalMainWindow, DynEvalWidget
 from dw_maya.DynEval.sim_widget.wgt_commentary import CommentEditor
 from dw_maya.DynEval.sim_widget.wgt_preset_manager import PresetWidget
 from dw_maya.DynEval.sim_cmds import cache_metadata, dyn_prefs
+import dw_maya.dw_maya_utils as dwu
 logger = get_logger()
 
 
@@ -143,6 +144,90 @@ class DynEvalUI(DynEvalMainWindow):
             action.triggered.connect(partial(self._set_cache_distribution, value))
             self._dist_group.addAction(action)
             dist_menu.addAction(action)
+
+        # Project — cache and preset paths are derived from it, so it gets a
+        # menu here rather than sending the artist back to File > Set Project.
+        self._project_menu = pref_menu.addMenu("Project")
+        self._project_menu.aboutToShow.connect(self._build_project_menu)
+
+    # ------------------------------------------------------------------
+    # Project menu
+    # ------------------------------------------------------------------
+
+    def _build_project_menu(self):
+        """Rebuilt on every open - scene, project and history all move."""
+        menu = self._project_menu
+        menu.clear()
+
+        current = dwu.get_current_project()
+        action = menu.addAction(f"Current: {current or 'none'}")
+        action.setEnabled(False)
+
+        menu.addSeparator()
+
+        derived = None
+        try:
+            derived = dwu.get_project_from_scene()
+        except Exception as e:
+            logger.error(f"Could not derive a project from the scene: {e}")
+
+        action = menu.addAction("Set Project from Scene")
+        action.setEnabled(bool(derived))
+        if derived:
+            tip = (f"Set the project to {derived}\n"
+                   "Scene in a 'scenes' folder: its parent is the project.\n"
+                   "Otherwise the scene folder becomes the project.")
+            action.setStatusTip(tip)
+            action.setToolTip(tip)
+            action.triggered.connect(self._set_project_from_scene)
+        else:
+            action.setStatusTip("The scene has never been saved")
+
+        history = dwu.get_project_history()
+        back_menu = menu.addMenu("Go Back To")
+        back_menu.setEnabled(bool(history))
+        for project in history:
+            entry = back_menu.addAction(project)
+            entry.triggered.connect(partial(self._set_project, project))
+
+        action = menu.addAction("Restore Previous Project")
+        action.setEnabled(bool(history))
+        if history:
+            action.setStatusTip(f"Back to {history[0]}")
+        action.triggered.connect(self._restore_previous_project)
+
+    def _set_project_from_scene(self, *_args):
+        try:
+            project = dwu.set_project_from_scene()
+        except Exception as e:
+            logger.error(f"Set project from scene failed: {e}")
+            return
+        self._report_project(project, "Project set from scene")
+
+    def _set_project(self, path, *_args):
+        try:
+            dwu.set_project(path)
+        except Exception as e:
+            logger.error(f"Could not set project {path}: {e}")
+            return
+        self._report_project(path, "Project set")
+
+    def _restore_previous_project(self, *_args):
+        try:
+            project = dwu.restore_previous_project()
+        except Exception as e:
+            logger.error(f"Could not restore the previous project: {e}")
+            return
+        self._report_project(project, "Previous project restored")
+
+    def _report_project(self, project, title):
+        """Say what happened - a silent global switch is what caused the
+        inconsistencies this menu exists to avoid."""
+        if not project:
+            QtWidgets.QMessageBox.warning(self, title, "Nothing was changed.")
+            return
+        logger.info(f"{title}: {project}")
+        QtWidgets.QMessageBox.information(self, title, str(project))
 
     def _set_cache_distribution(self, value, *_args):
         try:
@@ -631,7 +716,7 @@ class SimUtilPanel(DynEvalWidgetBase):
         # able to stop DynEval from opening.
         self.preset_tab = None
         try:
-            self.preset_tab = PresetWidget()
+            self.preset_tab = PresetWidget(hub)
             self.tabs.addTab(self.preset_tab, "Preset")
         except Exception as e:
             logger.error(f"Preset panel unavailable: {e}")

@@ -9,6 +9,11 @@ Functions:
     get_current_fps(): Get current scene's FPS setting
     make_project_dir(): Create Maya project directory structure
     set_project(): Set Maya project with proper workspace settings
+    get_project_from_scene(): Derive the project root from a scene path
+    set_project_from_scene(): Set the project from the scene location
+    get_current_project(): Project Maya currently points at
+    get_project_history(): Projects active before this one, newest first
+    restore_previous_project(): Undo the last project switch
     get_scene_name(): Get current scene name/path
 
 Main Features:
@@ -22,6 +27,7 @@ Common Usage:
     >>> from dw_maya_utils import get_maya_version, set_project
     >>> version = get_maya_version()
     >>> set_project("/path/to/project")
+    >>> set_project_from_scene()   # project derived from the open scene
 
 Version: 1.0.0
 
@@ -29,6 +35,7 @@ Author:
     DrWeeny
 """
 
+import json
 import os
 from pathlib import Path
 from typing import Dict, List, Optional, Union
@@ -39,6 +46,14 @@ import maya.OpenMaya as om
 from dw_logger import get_logger
 
 logger = get_logger()
+
+#: optionVar holding the projects set before the current one, newest first.
+#: An optionVar rather than a module global so a tool reload, or a second
+#: tool in the same session, still sees the history.
+PROJECT_HISTORY_OPTVAR = 'dw_maya_project_history'
+
+#: How many previous projects are remembered.
+PROJECT_HISTORY_SIZE = 10
 
 
 @dataclass
@@ -166,13 +181,96 @@ def make_project_dir(path: Union[str, Path]) -> List[Path]:
     return created_dirs
 
 
+def get_current_project() -> Optional[str]:
+    """Project Maya is currently pointing at, or None."""
+    try:
+        return cmds.workspace(query=True, rootDirectory=True) or None
+    except Exception as e:
+        logger.warning(f"Could not query the current project: {e}")
+        return None
+
+
+def get_project_history() -> List[str]:
+    """Projects that were active before the current one, newest first."""
+    if not cmds.optionVar(exists=PROJECT_HISTORY_OPTVAR):
+        return []
+    try:
+        history = json.loads(cmds.optionVar(query=PROJECT_HISTORY_OPTVAR))
+        return [entry for entry in history if isinstance(entry, str)]
+    except (ValueError, TypeError):
+        logger.warning("Unreadable project history, starting a new one")
+        return []
+
+
+def _push_project_history(project: Optional[str]) -> None:
+    """Remember a project before it is replaced.
+
+    Switching project is global state other tools read for their default
+    paths, so every switch is recorded and can be walked back.
+    """
+    if not project:
+        return
+
+    project = Path(project).as_posix().rstrip('/')
+    history = get_project_history()
+    if history and history[0] == project:
+        return
+
+    history = [project] + [entry for entry in history if entry != project]
+    cmds.optionVar(stringValue=(PROJECT_HISTORY_OPTVAR,
+                                json.dumps(history[:PROJECT_HISTORY_SIZE])))
+
+
+def restore_previous_project() -> Optional[Path]:
+    """Go back to the project that was active before the last switch.
+
+    The project being left is pushed on the history in turn, so calling
+    this twice returns where you started.
+
+    Returns:
+        Path to the restored project, or None when nothing is remembered.
+    """
+    history = get_project_history()
+    if not history:
+        logger.warning("No previous project recorded")
+        return None
+
+    previous = history[0]
+    cmds.optionVar(stringValue=(PROJECT_HISTORY_OPTVAR,
+                                json.dumps(history[1:])))
+
+    if not Path(previous).is_dir():
+        logger.error(f"Previous project no longer exists: {previous}")
+        return None
+
+    set_project(previous)
+    return Path(previous)
+
+
+def clear_project_history() -> None:
+    """Forget every remembered project."""
+    if cmds.optionVar(exists=PROJECT_HISTORY_OPTVAR):
+        cmds.optionVar(remove=PROJECT_HISTORY_OPTVAR)
+
+
 def set_project(path: Union[str, Path]) -> None:
     """Set Maya project and configure workspace.
+
+    A folder with no workspace.mel is not a project as far as Maya is
+    concerned - setProject on it warns and leaves the rules half applied.
+    So the file rules are written out (saveWorkspace) when the marker is
+    missing, which turns a plain folder into a real project.
 
     Args:
         path: Project root directory path
     """
     project_path = str(Path(path))
+    is_new = not (Path(path) / 'workspace.mel').is_file()
+
+    # Record what we are leaving, so the switch can be walked back
+    current = get_current_project()
+    if current and Path(current).as_posix().rstrip('/') != Path(project_path).as_posix():
+        _push_project_history(current)
 
     # Define workspace rules
     workspace_rules = {
@@ -189,17 +287,71 @@ def set_project(path: Union[str, Path]) -> None:
         'templates': 'assets'
     }
 
-    # Set project using MEL (required for some internal Maya operations)
-    mel.eval(f'setProject "{project_path}"')
+    # Ensure directories exist before the workspace points at them
+    make_project_dir(project_path)
+
+    # Set project using MEL (required for some internal Maya operations).
+    # Forward slashes: MEL reads a backslash as an escape character.
+    mel.eval(f'setProject "{Path(project_path).as_posix()}"')
 
     # Configure workspace rules
     for rule, directory in workspace_rules.items():
         cmds.workspace(fileRule=(rule, directory))
 
-    # Ensure directories exist
-    make_project_dir(project_path)
+    if is_new:
+        cmds.workspace(saveWorkspace=True)
+        logger.info(f"workspace.mel created in: {project_path}")
 
     logger.info(f"Project set to: {project_path}")
+
+
+def get_project_from_scene(path: Union[str, Path, None] = None) -> Optional[Path]:
+    """Work out which folder should be the project for a scene.
+
+    Two rules, no guessing beyond them:
+
+    - the scene sits in a ``scenes`` folder  -> its parent is the project
+      (the standard Maya layout, the project already exists around it).
+    - anything else -> the scene's own folder is the project, and the
+      project structure gets created inside it.
+
+    Args:
+        path: Scene file. Defaults to the current scene.
+
+    Returns:
+        Path to the project root, or None when the scene was never saved.
+    """
+    scene = str(path) if path else get_scene_name()
+    if not scene or scene == "untitled":
+        logger.warning("Scene has never been saved, no project can be derived")
+        return None
+
+    scene_dir = Path(scene).parent
+    if scene_dir.name.lower() == 'scenes':
+        return scene_dir.parent
+    return scene_dir
+
+
+def set_project_from_scene(path: Union[str, Path, None] = None) -> Optional[Path]:
+    """Set the Maya project from the scene location.
+
+    Resolution is get_project_from_scene(); the project structure and its
+    workspace.mel are created when missing, so this is safe on a scene
+    saved in a plain folder.
+
+    Args:
+        path: Scene file. Defaults to the current scene.
+
+    Returns:
+        Path to the project that was set, or None when the scene was never
+        saved (nothing is changed in that case).
+    """
+    project_path = get_project_from_scene(path)
+    if not project_path:
+        return None
+
+    set_project(project_path)
+    return project_path
 
 
 def get_scene_name(short: bool = False) -> str:

@@ -7,7 +7,16 @@ from dw_maya.dw_maya_utils.dw_maya_components import (component_in_list, chunks,
                                  grow_component_selection, grow_component_selection_max)
 from dw_maya.dw_maya_utils.dw_maya_time import current_timerange
 from dw_maya.dw_maya_utils.dw_maya_message import message, warning, error
-from dw_maya.dw_maya_utils.dw_maya_prefs import MayaVersionInfo
+from dw_maya.dw_maya_utils.dw_maya_prefs import (MayaVersionInfo,
+                                                 get_scene_name,
+                                                 make_project_dir,
+                                                 set_project,
+                                                 get_project_from_scene,
+                                                 set_project_from_scene,
+                                                 get_current_project,
+                                                 get_project_history,
+                                                 restore_previous_project,
+                                                 clear_project_history)
 from dw_maya.dw_maya_utils.dw_uv import closest_uv_on_mesh, nearest_uv_on_mesh, get_uv_from_vtx
 from dw_maya.dw_maya_utils.dw_mesh_utils import extract_faces, separate_mesh
 from dw_maya.dw_maya_utils.dw_vtx import change_curve_pivot, get_common_roots

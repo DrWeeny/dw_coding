@@ -12,6 +12,47 @@ import dw_maya.dw_presets_io as dwpreset
 from dw_maya.dw_decorators import acceptString
 
 
+def get_constraints(nodes: list) -> list:
+    """
+    Find the dynamicConstraint nodes acting on the given nBase shapes.
+
+    Maya links a constraint to its objects indirectly:
+        dynamicConstraint.componentIds <- nComponent.objectId <- nBase
+    so the whole scene's constraints are walked and kept when their
+    component set intersects `nodes`. Comparison is on short names, since
+    the tree hands out short names while listConnections may return paths.
+
+    Args:
+        nodes (list): nCloth / hairSystem / nRigid shapes to look up.
+
+    Returns:
+        list: dynamicConstraint node names, no duplicates, scene order.
+    """
+    if not nodes:
+        return []
+
+    wanted = {n.split('|')[-1].split(':')[-1] for n in nodes}
+    found = []
+
+    for constraint in cmds.ls(type='dynamicConstraint') or []:
+        components = cmds.listConnections(f'{constraint}.componentIds',
+                                          source=True,
+                                          destination=False) or []
+        driven = set()
+        for component in set(components):
+            nbases = cmds.listConnections(f'{component}.objectId',
+                                          source=True,
+                                          destination=False,
+                                          shapes=True) or []
+            for nbase in nbases:
+                driven.add(nbase.split('|')[-1].split(':')[-1])
+
+        if driven & wanted:
+            found.append(constraint)
+
+    return found
+
+
 def save_preset(nxnodes: list, json_file: str) -> bool:
     """
     Saves the preset attributes of specified Maya nodes to a JSON file.
