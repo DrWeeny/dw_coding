@@ -190,8 +190,12 @@ class ParamsPanel(QtWidgets.QWidget):
         self.trans_affine.setSingleStep(1.0)
         self.trans_affine.setValue(10.0)
         self._add_row(adv, r, self.trans_affine, "transAffine",
-                      "Allowed affine (non-rigid) bone transformation.\n"
-                      "0 = pure rigid bones.")
+                      "Bone translation affinity: anchors each bone's "
+                      "translation to the skin it influences.\n"
+                      "Higher = more anchored; raise it (50-100) if bones "
+                      "jitter or wander.\n"
+                      "Not a rigid/affine switch - DemBones bones are always "
+                      "rigid (rotation + translation).")
         r += 1
 
         self.trans_affine_norm = QtWidgets.QDoubleSpinBox()
@@ -200,7 +204,10 @@ class ParamsPanel(QtWidgets.QWidget):
         self.trans_affine_norm.setSingleStep(1.0)
         self.trans_affine_norm.setValue(4.0)
         self._add_row(adv, r, self.trans_affine_norm, "transAffineNorm",
-                      "Normalization p-norm applied to the affine constraint.")
+                      "p-norm weighting the translation-affinity constraint "
+                      "per vertex.\n"
+                      "Higher = each bone is judged by the vertices it "
+                      "influences most, ignoring its weak ones.")
         r += 1
 
         self.bind_update = QtWidgets.QComboBox()

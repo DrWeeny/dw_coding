@@ -18,6 +18,62 @@ def _get_skin_fn(skin_node: str):
 
 
 # ---------------------------------------------------------------------------
+# get_influence_weights
+# ---------------------------------------------------------------------------
+
+def get_influence_weights(skin_node: str,
+                          mesh_transform: str,
+                          ) -> Tuple[List[str], List[int], List[float]]:
+    """Read a skinCluster's influences and its full weight array.
+
+    The read counterpart of ``MFnSkinCluster.setWeights``: one C++ call for the
+    whole mesh, no per-vertex Python loop.
+
+    The weight array is flat and **vertex-major** — ``weights[v * n + i]`` is
+    the weight of ``influences[i]`` on vertex ``v``, where ``n`` is the
+    influence count. Columns follow ``influenceObjects()`` order.
+
+    ``indices`` are the skinCluster's *logical* influence indices (its
+    ``matrix[]`` plug numbers), which are what ``setWeights`` expects. They are
+    **not** always ``0..n-1``: removing an influence leaves a hole, so a
+    3-influence cluster can sit at ``[0, 1, 5]``. Writing back with
+    ``range(n)`` instead would land on the wrong plugs.
+
+    Args:
+        skin_node:      skinCluster node name.
+        mesh_transform: Transform (or shape) of the deformed mesh.
+
+    Returns:
+        ``(influences, indices, weights)`` — names, logical indices, flat
+        vertex-major weights.
+
+    Example::
+
+        infs, idx, w = get_influence_weights('skinCluster1', 'pSphere1')
+        n = len(infs)
+        vtx0 = {infs[i]: w[i] for i in range(n)}      # vertex 0's weights
+
+        # safe round trip
+        skin_fn.setWeights(dag, om.MObject(),
+                           om.MIntArray(idx), om.MDoubleArray(w))
+    """
+    skin_fn, influences = _get_skin_fn(skin_node)
+
+    indices = [skin_fn.indexForInfluenceObject(p)
+               for p in skin_fn.influenceObjects()]
+
+    sel = om.MSelectionList()
+    sel.add(mesh_transform)
+    dag_path = sel.getDagPath(0)
+    dag_path.extendToShape()
+
+    # MObject() == all components; returns (weights, influence_count)
+    weights, _ = skin_fn.getWeights(dag_path, om.MObject())
+
+    return influences, indices, list(weights)
+
+
+# ---------------------------------------------------------------------------
 # get_vertex_influence_weights
 # ---------------------------------------------------------------------------
 def get_vertex_influence_weights(skin_node: str,

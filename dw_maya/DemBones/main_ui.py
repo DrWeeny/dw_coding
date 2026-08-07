@@ -31,6 +31,7 @@ from dw_maya.DemBones.wgt_params import ParamsPanel
 from dw_maya.DemBones.wgt_generations import GenerationsPanel
 from dw_maya.DemBones import wgt_bind_skin
 from dw_maya.DemBones import wgt_transfer
+from dw_maya.DemBones import wgt_bones_to_asset
 from dw_maya.DemBones import dem_cmds
 from dw_logger import get_logger
 
@@ -165,6 +166,20 @@ class DemBonesUI(QtWidgets.QMainWindow):
             "mesh, and its animation onto the rig's controls or joints.")
         transfer_action.triggered.connect(self._on_transfer)
         menu.addAction(transfer_action)
+
+        to_asset_action = QAction("Solve -> Asset (joints in asset space)...",
+                                  self)
+        to_asset_action.setToolTip(
+            "The return leg: rebuild the solved joints in ASSET space, bind "
+            "the asset mesh to them and carry the animation across.\n"
+            "Reports which correspondence the two meshes support (rigid / "
+            "topology / uv) instead of asking.")
+        to_asset_action.triggered.connect(self._on_bones_to_asset)
+        menu.addAction(to_asset_action)
+
+    def _on_bones_to_asset(self) -> None:
+        """Open the Solve -> Asset dialog (kept alive on the window)."""
+        self._dialogs["to_asset"] = wgt_bones_to_asset.launch(parent=self)
 
     def _on_bind_skin(self) -> None:
         """Open the bind-skin dialog (kept alive on the window)."""
