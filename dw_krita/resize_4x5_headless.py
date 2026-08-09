@@ -65,18 +65,23 @@ def process_images():
         height = doc.height()
         width = doc.width()
 
-        if width < height:
-            # need to change it to 4x5
-            target_w = int(height * 4 / 5.95)
+        if width >= height:
+            # landscape: skip entirely for now
+            print(f"Skipped (landscape): {file}")
+            doc.close()
+            continue
 
-            if width < target_w:
-                doc.resizeImage(
-                    (width - target_w) // 2,
-                    0,
-                    target_w,
-                    height
-                )
-                print(f"Resized {file}: {width}x{height} -> {target_w}x{height}")
+        # need to change it to 4x5
+        target_w = int(height * 4 / 5.95)
+
+        if width < target_w:
+            doc.resizeImage(
+                (width - target_w) // 2,
+                0,
+                target_w,
+                height
+            )
+            print(f"Resized {file}: {width}x{height} -> {target_w}x{height}")
 
         doc.setBatchmode(True)
         doc.saveAs(str(folder_to_export / file))
