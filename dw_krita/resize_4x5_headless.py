@@ -46,7 +46,7 @@ def process_images():
     from krita import Krita
 
     folder_to_process = Path(__file__).resolve().parent
-    folder_to_export = folder_to_process / "out"
+    folder_to_export = folder_to_process / "out_4x5"
     folder_to_export.mkdir(exist_ok=True)
 
     _instance = Krita.instance()
