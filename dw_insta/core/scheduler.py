@@ -26,8 +26,3 @@ def overdue_groups(state: SeriesState, today: Optional[date] = None) -> list[Gro
     if idx is None:
         return []
     return [g for g in state.groups[: idx + 1] if not g.is_posted]
-
-
-def activate(state: SeriesState, today: Optional[date] = None) -> None:
-    if state.start_date is None:
-        state.start_date = (today or date.today()).isoformat()

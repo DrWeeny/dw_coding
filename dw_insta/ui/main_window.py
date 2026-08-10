@@ -3,12 +3,12 @@ from __future__ import annotations
 from datetime import date, timedelta
 from pathlib import Path
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QDate, Qt
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QCheckBox,
     QComboBox,
-    QDialog,
+    QDateEdit,
     QFileDialog,
     QHBoxLayout,
     QHeaderView,
@@ -34,10 +34,9 @@ from core.comment import accept_all_caption_suggestions, accept_all_hashtags_sug
 from core.contact_sheet import build_contact_sheet
 from core.paths import resolve_group_cover
 from core.scanner import sync_series
-from core.scheduler import activate, overdue_groups
+from core.scheduler import overdue_groups
 from core.series import SeriesState
 
-from .activate_dialog import ActivateSeriesDialog
 from .collapsible_section import CollapsibleSection
 from .mosaic_view import MosaicView
 from .preview_dialog import PreviewDialog
@@ -103,6 +102,12 @@ class MainWindow(QMainWindow):
         self.series_combo = QComboBox()
         self.series_combo.currentTextChanged.connect(self._on_series_changed)
         top_row.addWidget(self.series_combo, 1)
+        top_row.addWidget(QLabel("Start:"))
+        self.start_date_edit = QDateEdit()
+        self.start_date_edit.setCalendarPopup(True)
+        self.start_date_edit.setDisplayFormat("yyyy-MM-dd")
+        self.start_date_edit.dateChanged.connect(self._on_start_date_changed)
+        top_row.addWidget(self.start_date_edit)
         refresh_btn = QPushButton("Refresh")
         refresh_btn.clicked.connect(self._refresh_series)
         top_row.addWidget(refresh_btn)
@@ -287,16 +292,16 @@ class MainWindow(QMainWindow):
         state = sync_series(series_dir)
 
         if state.start_date is None:
-            dialog = ActivateSeriesDialog(name, self)
-            if dialog.exec() == QDialog.DialogCode.Accepted:
-                activate(state, dialog.selected_date())
-            else:
-                activate(state)
+            state.start_date = date.today().isoformat()
         state.save()
 
         self.state = state
         self.config.active_series = name
         self.config.save()
+
+        self.start_date_edit.blockSignals(True)
+        self.start_date_edit.setDate(QDate.fromString(state.start_date, Qt.DateFormat.ISODate))
+        self.start_date_edit.blockSignals(False)
 
         self.model = SeriesTableModel(
             state,
@@ -318,6 +323,22 @@ class MainWindow(QMainWindow):
         self.gear_line_checkbox.setChecked(state.include_gear_line)
         self.gear_line_checkbox.blockSignals(False)
 
+        self._refresh_labels()
+
+    def _on_start_date_changed(self, qdate: QDate) -> None:
+        """Lets you plan several series ahead of time: pick any series from
+        the combo and set/move its start date (today's schedule counts
+        elapsed calendar days from this), independent of which series is
+        actually active day-to-day."""
+        if not self.state:
+            return
+        new_date = date(qdate.year(), qdate.month(), qdate.day()).isoformat()
+        if self.state.start_date == new_date:
+            return
+        self.state.start_date = new_date
+        self.state.save()
+        if self.model:
+            self.model.refresh()
         self._refresh_labels()
 
     def _refresh_series(self) -> None:
