@@ -13,6 +13,7 @@ DEFAULTS = {
     "root_dir": "",
     "active_series": None,
     "instagram_profile_url": INSTAGRAM_BASE_URL,
+    "discord_webhook_url": None,
 }
 
 
@@ -21,6 +22,7 @@ class AppConfig:
     root_dir: str
     active_series: Optional[str] = None
     instagram_profile_url: str = DEFAULTS["instagram_profile_url"]
+    discord_webhook_url: Optional[str] = None
 
     @classmethod
     def load(cls) -> "AppConfig":

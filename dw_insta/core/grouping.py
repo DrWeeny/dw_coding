@@ -18,10 +18,24 @@ def merge_groups(state: SeriesState, group_ids: list[str]) -> Group:
     ordered = [by_id[gid] for gid in group_ids]
 
     merged_photos: list[str] = []
+    merged_suggested_captions: dict[str, str] = {}
+    merged_suggested_hashtags: dict[str, str] = {}
     for g in ordered:
         merged_photos.extend(g.photos)
+        merged_suggested_captions.update(g.suggested_captions)
+        merged_suggested_hashtags.update(g.suggested_hashtags)
 
-    merged = Group(id=ordered[0].id, date=ordered[0].date, photos=merged_photos)
+    first = ordered[0]
+    merged = Group(
+        id=first.id,
+        date=first.date,
+        photos=merged_photos,
+        caption=first.caption,
+        caption_ja=first.caption_ja,
+        hashtags=first.hashtags,
+        suggested_captions=merged_suggested_captions,
+        suggested_hashtags=merged_suggested_hashtags,
+    )
 
     insert_at = min(positions)
     state.groups = [g for g in state.groups if g.id not in ids]
@@ -44,8 +58,24 @@ def split_group(state: SeriesState, group_id: str, photos_to_split_off: list[str
     if not split_off or not remaining:
         raise ValueError("split must leave photos on both sides")
 
+    def _partition(suggestions: dict[str, str], keep: list[str]) -> dict[str, str]:
+        keep_set = set(keep)
+        return {filename: text for filename, text in suggestions.items() if filename in keep_set}
+
+    split_off_captions = _partition(group.suggested_captions, split_off)
+    split_off_hashtags = _partition(group.suggested_hashtags, split_off)
+
     group.photos = remaining
-    new_group = Group(id=f"{group.id}-split", date=group.date, photos=split_off)
+    group.suggested_captions = _partition(group.suggested_captions, remaining)
+    group.suggested_hashtags = _partition(group.suggested_hashtags, remaining)
+
+    new_group = Group(
+        id=f"{group.id}-split",
+        date=group.date,
+        photos=split_off,
+        suggested_captions=split_off_captions,
+        suggested_hashtags=split_off_hashtags,
+    )
     state.groups.insert(idx + 1, new_group)
     return new_group
 

@@ -23,6 +23,7 @@ class DraggableThumbnail(QLabel):
     ) -> None:
         super().__init__(parent)
         self._photo_path: Optional[Path] = None
+        self._drag_paths: list[Path] = []
         self._size = size
         self._drag_start: Optional[QPoint] = None
 
@@ -38,8 +39,17 @@ class DraggableThumbnail(QLabel):
         self.setPixmap(get_thumbnail(self._photo_path, self._size))
         self.setToolTip(self._photo_path.name)
 
+    def set_drag_paths(self, paths: list[Path]) -> None:
+        """Set the full ordered set of files to drag out together (e.g. every
+        photo in a carousel post, in posting order). Separate from
+        set_photo(), which only controls what's previewed — Instagram reads
+        carousel order from the order files are listed in the OS-level
+        drop, so this must stay in sync with the carousel's current order."""
+        self._drag_paths = [Path(p) for p in paths]
+
     def clear_photo(self) -> None:
         self._photo_path = None
+        self._drag_paths = []
         self.clear()
         self.setToolTip("")
 
@@ -64,8 +74,10 @@ class DraggableThumbnail(QLabel):
         if self._photo_path is None or not self._photo_path.is_file():
             return
 
+        paths = [p for p in self._drag_paths if p.is_file()] or [self._photo_path]
+
         mime = QMimeData()
-        mime.setUrls([QUrl.fromLocalFile(str(self._photo_path))])
+        mime.setUrls([QUrl.fromLocalFile(str(p)) for p in paths])
 
         drag = QDrag(self)
         drag.setMimeData(mime)

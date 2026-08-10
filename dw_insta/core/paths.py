@@ -15,6 +15,15 @@ def resolve_photo_path(state: SeriesState, filename: str) -> Optional[Path]:
     return None
 
 
+def resolve_original_photo_path(state: SeriesState, filename: str) -> Optional[Path]:
+    """Find the original, pre-4x5-crop photo — for uses that don't need
+    Instagram's aspect ratio, e.g. posting to Discord."""
+    for candidate in (Path(state.source_dir) / filename, state.archive_source_dir / filename):
+        if candidate.is_file():
+            return candidate
+    return None
+
+
 def resolve_group_cover(state: SeriesState, group: Group) -> Optional[Path]:
     if not group.photos:
         return None

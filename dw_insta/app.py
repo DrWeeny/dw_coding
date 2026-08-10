@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import sys
 
+from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import QApplication
 
 from config import AppConfig
@@ -25,4 +26,6 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+
+    appinsta = main()
+

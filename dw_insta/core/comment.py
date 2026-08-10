@@ -26,37 +26,52 @@ def compose_comment(state: SeriesState, group: Group) -> str:
     return "\n\n".join(parts)
 
 
-def accept_caption_suggestion(group: Group) -> None:
-    if group.suggested_caption is not None:
-        group.caption = group.suggested_caption
-        group.suggested_caption = None
+def accept_caption_suggestion(group: Group, filename: str | None = None) -> bool:
+    """Accept a pending suggested caption as the group's confirmed caption.
+    Defaults to the earliest-in-post-order photo with a pending suggestion;
+    pass filename to accept a specific photo's suggestion instead (e.g. from
+    the Today widget, where the pink dot tracks whichever photo is
+    currently selected in the carousel). Returns whether anything changed."""
+    if filename is None:
+        pending = group.primary_suggested_caption()
+        if pending is None:
+            return False
+        filename, text = pending
+    else:
+        text = group.suggested_captions.get(filename)
+        if text is None:
+            return False
+    group.caption = text
+    del group.suggested_captions[filename]
+    return True
 
 
-def accept_hashtags_suggestion(group: Group) -> None:
-    if group.suggested_hashtags is not None:
-        group.hashtags = group.suggested_hashtags
-        group.suggested_hashtags = None
+def accept_hashtags_suggestion(group: Group, filename: str | None = None) -> bool:
+    if filename is None:
+        pending = group.primary_suggested_hashtags()
+        if pending is None:
+            return False
+        filename, text = pending
+    else:
+        text = group.suggested_hashtags.get(filename)
+        if text is None:
+            return False
+    group.hashtags = text
+    del group.suggested_hashtags[filename]
+    return True
 
 
 def accept_all_caption_suggestions(state: SeriesState) -> int:
-    """Bulk-accept every pending suggested_caption. Saves once if anything changed."""
-    count = 0
-    for group in state.groups:
-        if group.suggested_caption is not None:
-            accept_caption_suggestion(group)
-            count += 1
+    """Bulk-accept every group's primary pending suggested caption. Saves once if anything changed."""
+    count = sum(1 for group in state.groups if accept_caption_suggestion(group))
     if count:
         state.save()
     return count
 
 
 def accept_all_hashtags_suggestions(state: SeriesState) -> int:
-    """Bulk-accept every pending suggested_hashtags. Saves once if anything changed."""
-    count = 0
-    for group in state.groups:
-        if group.suggested_hashtags is not None:
-            accept_hashtags_suggestion(group)
-            count += 1
+    """Bulk-accept every group's primary pending suggested hashtags. Saves once if anything changed."""
+    count = sum(1 for group in state.groups if accept_hashtags_suggestion(group))
     if count:
         state.save()
     return count

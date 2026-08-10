@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from PySide6.QtCore import QAbstractTableModel, QModelIndex, QSize, Qt
 
+from core.comment import accept_caption_suggestion, accept_hashtags_suggestion
 from core.paths import resolve_group_cover
 from core.series import Group, SeriesState
 
@@ -97,9 +98,11 @@ class SeriesTableModel(QAbstractTableModel):
 
         if role == SUGGESTION_ROLE:
             if col == COL_CAPTION:
-                return group.suggested_caption
+                pending = group.primary_suggested_caption()
+                return pending[1] if pending else None
             if col == COL_HASHTAGS:
-                return group.suggested_hashtags
+                pending = group.primary_suggested_hashtags()
+                return pending[1] if pending else None
 
         return None
 
@@ -128,13 +131,13 @@ class SeriesTableModel(QAbstractTableModel):
 
     def accept_suggestion(self, row: int, column: int) -> None:
         group = self.group_at(row)
-        if column == COL_CAPTION and group.suggested_caption is not None:
-            group.caption = group.suggested_caption
-            group.suggested_caption = None
-        elif column == COL_HASHTAGS and group.suggested_hashtags is not None:
-            group.hashtags = group.suggested_hashtags
-            group.suggested_hashtags = None
+        if column == COL_CAPTION:
+            accepted = accept_caption_suggestion(group)
+        elif column == COL_HASHTAGS:
+            accepted = accept_hashtags_suggestion(group)
         else:
+            return
+        if not accepted:
             return
         self.state.save()
         idx = self.index(row, column)

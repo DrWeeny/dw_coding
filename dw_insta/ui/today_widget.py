@@ -4,7 +4,7 @@ from datetime import date
 from pathlib import Path
 from typing import Optional
 
-from PySide6.QtCore import QTimer, Qt, QUrl
+from PySide6.QtCore import QEvent, QTimer, Qt, QUrl
 from PySide6.QtGui import QColor, QDesktopServices, QGuiApplication, QIcon, QPainter, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
@@ -23,8 +23,9 @@ from PySide6.QtWidgets import (
 
 from config import AppConfig
 from core.archive import archive_group
-from core.comment import compose_comment
-from core.paths import resolve_photo_path
+from core.comment import accept_caption_suggestion, accept_hashtags_suggestion, compose_comment
+from core.discord_post import post_photo_to_discord
+from core.paths import resolve_original_photo_path, resolve_photo_path
 from core.scanner import sync_series
 from core.scheduler import today_group
 from core.series import Group, SeriesState
@@ -151,6 +152,9 @@ class TodayPanel(QWidget):
         copy_btn = QPushButton("Copy comment")
         copy_btn.clicked.connect(self._copy_comment)
         buttons_row.addWidget(copy_btn)
+        discord_btn = QPushButton("Post to Discord")
+        discord_btn.clicked.connect(self._post_to_discord)
+        buttons_row.addWidget(discord_btn)
         self.posted_btn = QPushButton("Mark as posted")
         self.posted_btn.clicked.connect(self._mark_posted)
         buttons_row.addWidget(self.posted_btn)
@@ -177,6 +181,7 @@ class TodayPanel(QWidget):
 
         self.order_widget.set_photos(self.group.photos)
         self._show_photo_by_filename(self.group.photos[0] if self.group.photos else None)
+        self.thumb.set_drag_paths(self._resolve_ordered_paths())
 
         self.date_label.setText(date.today().strftime("%b %d, %Y"))
 
@@ -185,12 +190,8 @@ class TodayPanel(QWidget):
         self.caption_edit.blockSignals(False)
         self._update_char_count()
 
-        self.caption_suggestion_btn.setVisible(bool(self.group.suggested_caption))
-        self.caption_suggestion_btn.setToolTip(self.group.suggested_caption or "")
-
         self._rebuild_hashtag_chips()
-        self.hashtags_suggestion_btn.setVisible(bool(self.group.suggested_hashtags))
-        self.hashtags_suggestion_btn.setToolTip(self.group.suggested_hashtags or "")
+        self._update_suggestion_buttons()
 
         self.posted_btn.setEnabled(not self.group.is_posted)
         self.status_label.setText("Already marked posted" if self.group.is_posted else "")
@@ -219,16 +220,28 @@ class TodayPanel(QWidget):
         else:
             self.thumb.clear_photo()
 
+    def _resolve_ordered_paths(self) -> list[Path]:
+        if not self.state or not self.group:
+            return []
+        paths = [resolve_photo_path(self.state, filename) for filename in self.group.photos]
+        return [p for p in paths if p is not None]
+
+    def _current_photo_filename(self) -> Optional[str]:
+        item = self.order_widget.currentItem()
+        return item.data(Qt.ItemDataRole.UserRole) if item else None
+
     def _on_photo_selected(self, row: int) -> None:
         item = self.order_widget.item(row)
         filename = item.data(Qt.ItemDataRole.UserRole) if item else None
         self._show_photo_by_filename(filename)
+        self._update_suggestion_buttons()
 
     def _on_photos_reordered(self, new_order: list[str]) -> None:
         if not self.state or not self.group:
             return
         self.group.photos = new_order
         self.state.save()
+        self.thumb.set_drag_paths(self._resolve_ordered_paths())
 
     # --- caption ---
 
@@ -251,16 +264,29 @@ class TodayPanel(QWidget):
         self.group.caption = self.caption_edit.toPlainText() or None
         self.state.save()
 
+    def _update_suggestion_buttons(self) -> None:
+        """Pink-dot suggestion buttons track whichever photo is currently
+        selected in the carousel order widget, not the group as a whole —
+        each photo can carry its own pending AI-drafted caption/hashtags."""
+        filename = self._current_photo_filename()
+        caption_text = self.group.suggested_captions.get(filename) if (self.group and filename) else None
+        hashtags_text = self.group.suggested_hashtags.get(filename) if (self.group and filename) else None
+        self.caption_suggestion_btn.setVisible(bool(caption_text))
+        self.caption_suggestion_btn.setToolTip(caption_text or "")
+        self.hashtags_suggestion_btn.setVisible(bool(hashtags_text))
+        self.hashtags_suggestion_btn.setToolTip(hashtags_text or "")
+
     def _accept_caption_suggestion(self) -> None:
-        if not self.state or not self.group or not self.group.suggested_caption:
+        filename = self._current_photo_filename()
+        if not self.state or not self.group or not filename:
             return
-        self.group.caption = self.group.suggested_caption
-        self.group.suggested_caption = None
+        if not accept_caption_suggestion(self.group, filename=filename):
+            return
         self.state.save()
         self.caption_edit.blockSignals(True)
         self.caption_edit.setPlainText(self.group.caption or "")
         self.caption_edit.blockSignals(False)
-        self.caption_suggestion_btn.setVisible(False)
+        self._update_suggestion_buttons()
         self._update_char_count()
 
     # --- hashtags ---
@@ -312,13 +338,14 @@ class TodayPanel(QWidget):
         self._set_group_hashtags(tags)
 
     def _accept_hashtags_suggestion(self) -> None:
-        if not self.state or not self.group or not self.group.suggested_hashtags:
+        filename = self._current_photo_filename()
+        if not self.state or not self.group or not filename:
             return
-        self.group.hashtags = self.group.suggested_hashtags
-        self.group.suggested_hashtags = None
+        if not accept_hashtags_suggestion(self.group, filename=filename):
+            return
         self.state.save()
         self._rebuild_hashtag_chips()
-        self.hashtags_suggestion_btn.setVisible(False)
+        self._update_suggestion_buttons()
         self._update_char_count()
 
     # --- actions ---
@@ -330,6 +357,29 @@ class TodayPanel(QWidget):
 
     def _open_instagram(self) -> None:
         QDesktopServices.openUrl(QUrl(self.config.instagram_profile_url))
+
+    def _post_to_discord(self) -> None:
+        if not self.state or not self.group:
+            return
+        if not self.config.discord_webhook_url:
+            QMessageBox.warning(
+                self,
+                "Discord",
+                "No Discord webhook configured — add \"discord_webhook_url\" to config.json "
+                "(channel Settings > Integrations > Webhooks > New Webhook > Copy Webhook URL).",
+            )
+            return
+        filename = self._current_photo_filename() or (self.group.photos[0] if self.group.photos else None)
+        path = resolve_original_photo_path(self.state, filename) if filename else None
+        if path is None:
+            QMessageBox.warning(self, "Discord", "Could not find the original photo file.")
+            return
+        try:
+            post_photo_to_discord(self.config.discord_webhook_url, path)
+        except Exception as exc:
+            QMessageBox.warning(self, "Discord", f"Failed to post to Discord:\n{exc}")
+            return
+        self.status_label.setText(f"Posted {filename} to Discord")
 
     def _mark_posted(self) -> None:
         if not self.state or not self.group or self.group.is_posted:
@@ -383,11 +433,38 @@ class TodayTray(QSystemTrayIcon):
             reset_window_action.triggered.connect(self._reset_main_window)
 
         quit_action = menu.addAction("Quit")
-        quit_action.triggered.connect(app.quit)
+        quit_action.triggered.connect(self._quit)
         self.setContextMenu(menu)
 
         self.setToolTip("dw_insta")
         self.activated.connect(self._on_activated)
+
+        # A visible QSystemTrayIcon holds a native window handle on Windows;
+        # if it's not hidden before quit() the process hangs on exit (shows
+        # up as repeated "not responding" prompts). aboutToQuit is a safety
+        # net for any quit path that doesn't go through _quit().
+        app.aboutToQuit.connect(self.hide)
+
+    def _quit(self) -> None:
+        self.hide()
+        self._teardown_windows()
+        self.app.quit()
+
+    def _teardown_windows(self) -> None:
+        """MainWindow/TodayPopupWindow close() just hides them (by design,
+        so 'Show main window'/tray click can bring them back while running
+        in the tray) — it never deletes the underlying Qt objects. Without
+        an explicit deleteLater() here those hidden windows, and everything
+        they own (child widgets, QTimers), are still alive when the
+        interpreter starts tearing down Qt, which is what stalls process
+        exit. Force the deferred deletes to run now, while the event loop
+        is still up, rather than leaving them queued."""
+        self.popup.close()
+        self.popup.deleteLater()
+        if self.main_window is not None:
+            self.main_window.close()
+            self.main_window.deleteLater()
+        QApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
 
     def _show_main_window(self) -> None:
         if self.main_window is not None:
