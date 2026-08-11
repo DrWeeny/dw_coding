@@ -51,6 +51,14 @@ def sync_series(source_dir: Path, caption_template: str = "") -> SeriesState:
             source_dir=str(source_dir),
             caption_template=caption_template,
         )
+    else:
+        # The state file's location is authoritative: the stored source_dir is
+        # only a convenience copy and goes stale as soon as the folder is moved
+        # or opened from another machine/user account. Rebinding here keeps
+        # save() (and every derived out/archive dir) writing next to the file
+        # we just read.
+        state.source_dir = str(source_dir)
+        state.series_name = source_dir.name
 
     out_dir = state.out_dir
     known_photos = {p for g in state.groups for p in g.photos}
