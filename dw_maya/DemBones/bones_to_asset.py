@@ -54,8 +54,8 @@ Example::
     info = b2a.classify("sim_mesh", "asset_mesh")
     print(info["regime"], info["detail"])
 
+    # General case: rig + skinCluster into asset space, no animation.
     result = b2a.bones_to_asset("sim_mesh", "asset_mesh",
-                                anim_mode="auto",
                                 joint_prefix="assetBone")
 
 TODO:
@@ -77,7 +77,10 @@ logger = get_logger()
 
 
 REGIMES = ("rigid", "topology", "uv")
-ANIM_MODES = ("auto", "relink", "bake", "none")
+# "none" leads: the general case is returning the rig and its skinCluster to
+# the asset at the A/T-pose, where the solved motion has no business. The other
+# three are for the case where the motion itself is the deliverable.
+ANIM_MODES = ("none", "auto", "relink", "bake")
 
 _CHANNELS = ("translateX", "translateY", "translateZ",
              "rotateX", "rotateY", "rotateZ")
@@ -495,9 +498,107 @@ def solve_placements(joints: List[str],
 # Joints, bind, weights
 # ---------------------------------------------------------------------------
 
+def solved_parents(joints: List[str]) -> Dict[str, Optional[str]]:
+    """Map each joint to its nearest ancestor that is also in ``joints``.
+
+    Nearest *solved* ancestor, not the DAG parent: a rig routinely has joints
+    between the influences and the root that the solve never saw (they carry no
+    weight, so DemBones cannot animate them). Skipping them reproduces the shape
+    of the skeleton that was actually solved, and since they are static by
+    definition nothing is lost by collapsing them.
+
+    Args:
+        joints: Solved joint names.
+
+    Returns:
+        ``{joint: parent joint or None}``, None for the roots of the set.
+    """
+    long_of = {}
+    for joint in joints:
+        found = cmds.ls(joint, long=True) or []
+        if found:
+            long_of[joint] = found[0]
+    by_long = {path: name for name, path in long_of.items()}
+
+    parents: Dict[str, Optional[str]] = {}
+    for joint in joints:
+        node = long_of.get(joint)
+        found = None
+        while node:
+            up = cmds.listRelatives(node, parent=True, fullPath=True) or []
+            node = up[0] if up else None
+            if node and node in by_long:
+                found = by_long[node]
+                break
+        parents[joint] = found
+    return parents
+
+
+def depth_order(parents: Dict[str, Optional[str]]) -> List[str]:
+    """Order joints parents-first.
+
+    Every operation that walks a hierarchy needs this: re-parenting must place a
+    parent before its children, and the bake must key a parent before the child
+    whose local values are measured against it.
+    """
+    depth: Dict[str, int] = {}
+
+    def _depth(name: str, guard: int = 0) -> int:
+        if name in depth:
+            return depth[name]
+        parent = parents.get(name)
+        # The guard is for a cycle a broken rig could present; a joint cannot
+        # legally be its own ancestor, but this must not hang if one is.
+        if parent is None or parent == name or guard > 512:
+            depth[name] = 0
+        else:
+            depth[name] = _depth(parent, guard + 1) + 1
+        return depth[name]
+
+    for name in parents:
+        _depth(name)
+    return sorted(parents, key=lambda name: (depth[name], name))
+
+
+#: Marks where the index goes in a naming pattern.
+NAME_TOKEN = "#"
+
+
+def joint_name(index: int,
+               joint_prefix: str = "assetBone",
+               name_pattern: Optional[str] = None,
+               ) -> str:
+    """Name for the ``index``-th created joint.
+
+    Two ways to ask, because a prefix cannot express a studio's suffix
+    convention (``BB_M_0_Shelter_JNT``) and a pattern is unreadable when all you
+    want is a prefix:
+
+    - prefix (default): ``<prefix>_<index>``
+    - pattern: the literal string with :data:`NAME_TOKEN` replaced by the index,
+      so ``bone_#_JNT`` gives ``bone_0_JNT``. A pattern with no token would name
+      every joint the same, so it is treated as a prefix instead.
+
+    Args:
+        index:        Position in the sorted joint order.
+        joint_prefix: Used when no pattern is given.
+        name_pattern: Pattern containing :data:`NAME_TOKEN`.
+    """
+    if name_pattern and NAME_TOKEN in name_pattern:
+        return name_pattern.replace(NAME_TOKEN, str(index))
+    if name_pattern:
+        logger.warning(
+            f"Naming pattern '{name_pattern}' has no '{NAME_TOKEN}' to put the "
+            f"index in - using it as a prefix so the names stay unique.")
+        return f"{name_pattern}_{index}"
+    return f"{joint_prefix}_{index}"
+
+
 def create_asset_joints(placements: Dict[str, om.MMatrix],
                         joint_prefix: str = "assetBone",
                         group_name: str = "assetBones_GRP",
+                        hierarchy: bool = True,
+                        name_pattern: Optional[str] = None,
                         ) -> Tuple[Dict[str, str], str]:
     """Create a fresh joint per solved joint, at its asset-space matrix.
 
@@ -507,18 +608,29 @@ def create_asset_joints(placements: Dict[str, om.MMatrix],
 
     Args:
         placements:   ``{solved_joint: asset-space MMatrix}``.
-        joint_prefix: Prefix for the created joints.
+        joint_prefix: Prefix for the created joints, when no pattern is given.
         group_name:   Group the new joints are parented under.
+        name_pattern: Naming pattern with :data:`NAME_TOKEN` marking the index
+                      (``bone_#_JNT``); overrides *joint_prefix*.
+        hierarchy:    Rebuild the solved skeleton's parenting (default). A rig
+                      arrives as a root with its joints below it, and a flat
+                      cloud of the same joints is not the same rig - it cannot
+                      be moved, cannot be exported as a skeleton, and hands
+                      rigging a pile to re-parent by hand. Off gives the flat
+                      cloud, which is what a bone cluster solved from scratch
+                      actually is.
 
     Returns:
         ``(pairs, group)`` - ``{solved_joint: new_joint}`` and the group name.
+        The new-joint names are the final ones, after any re-parenting.
     """
     group = cmds.group(empty=True, name=group_name)
     pairs: Dict[str, str] = {}
 
     for index, (source, matrix) in enumerate(sorted(placements.items())):
         cmds.select(clear=True)
-        name = f"{joint_prefix}_{index}"
+        name = joint_name(index, joint_prefix=joint_prefix,
+                          name_pattern=name_pattern)
         joint = cmds.joint(name=name)
         joint = cmds.parent(joint, group)[0]
         cmds.xform(joint, matrix=list(matrix), worldSpace=True)
@@ -530,6 +642,35 @@ def create_asset_joints(placements: Dict[str, om.MMatrix],
         cmds.xform(joint, matrix=list(matrix), worldSpace=True)
         pairs[source] = joint
 
+    if not hierarchy:
+        return pairs, group
+
+    # Re-parent parents-first, so a joint is always moved before its children
+    # and only its own path changes at that moment.
+    parents = solved_parents(list(placements))
+    order = depth_order(parents)
+    nested = 0
+    for source in order:
+        parent_source = parents.get(source)
+        if not parent_source:
+            continue
+        moved = cmds.parent(pairs[source], pairs[parent_source])[0]
+        pairs[source] = (cmds.ls(moved, long=True) or [moved])[0]
+        nested += 1
+
+    # Re-state the world matrices, again parents-first. Parenting preserves the
+    # world transform by writing into rotate and jointOrient; zeroing the orient
+    # and re-applying the matrix keeps the invariant the flat build relied on -
+    # the whole orientation lives in rotate, so a baked rotation means what it
+    # says.
+    for source in order:
+        joint = pairs[source]
+        for axis in ("X", "Y", "Z"):
+            cmds.setAttr(f"{joint}.jointOrient{axis}", 0.0)
+        cmds.xform(joint, matrix=list(placements[source]), worldSpace=True)
+
+    logger.info(f"Rebuilt the solved hierarchy: {nested} of {len(pairs)} "
+                f"joints parented under another.")
     return pairs, group
 
 
@@ -578,12 +719,116 @@ def bind_asset_mesh(target_mesh: str,
     return skin
 
 
+def uv_vertex_map(source_mesh: str,
+                  target_mesh: str,
+                  ) -> Tuple[List[int], Optional[str]]:
+    """Map every TARGET vertex to a SOURCE vertex **through UV space**.
+
+    The weights have to cross the same way the joints did. A positional lookup
+    cannot: it matches in world space, so it is only correct when the two meshes
+    are sitting on top of each other, and a solved rest mesh 400 units from the
+    asset resolves every target vertex onto whichever scrap of the source
+    happens to be nearest. That produces a full weight array in which most
+    influences were never selected at all - deformation that looks broken rather
+    than absent, and joints reported as zero-influence.
+
+    UV space is shared by construction, so it is indifferent to where either
+    mesh sits, which is exactly why :func:`solve_placements` already uses it in
+    this regime.
+
+    Speed is why this builds a **proxy mesh** whose vertices are the source's
+    UVs at ``(u, v, 0)``: ``_uv_triangle`` is linear over the faces, fine for the
+    tens of lookups a joint cloud needs and hopeless for tens of thousands of
+    vertices. The proxy keeps the source's face order, so a hit on proxy face
+    ``i`` is a hit on source face ``i``, and Maya's accelerated closest-point
+    does the search.
+
+    Args:
+        source_mesh: Mesh the weights are read from.
+        target_mesh: Mesh they are written to.
+
+    Returns:
+        ``(vertex_map, error)`` - ``vertex_map[target_vtx] = source_vtx``.
+    """
+    src_fn = _mesh_fn(source_mesh)
+    tgt_fn = _mesh_fn(target_mesh)
+
+    try:
+        u_array, v_array = src_fn.getUVs()
+        uv_counts, uv_ids = src_fn.getAssignedUVs()
+    except Exception as e:
+        return [], f"could not read the source UVs: {e}"
+    if not len(u_array):
+        return [], "the source mesh has no UVs"
+    if any(count < 3 for count in uv_counts):
+        return [], ("some source faces carry no UVs, so a UV correspondence "
+                    "cannot be built")
+
+    points = om.MPointArray()
+    for index in range(len(u_array)):
+        points.append(om.MPoint(u_array[index], v_array[index], 0.0))
+
+    proxy_fn = om.MFnMesh()
+    proxy_obj = proxy_fn.create(points, list(uv_counts), list(uv_ids))
+    proxy_path = om.MFnDagNode(proxy_obj).fullPathName()
+
+    vertex_map: List[int] = []
+    try:
+        tgt_points = tgt_fn.getPoints(om.MSpace.kWorld)
+        for point in tgt_points:
+            try:
+                u, v = tgt_fn.getUVAtPoint(point, om.MSpace.kWorld)[:2]
+            except Exception:
+                # No UV under this vertex: keep the array aligned, and let the
+                # caller see it in the coverage report rather than shifting
+                # every later vertex by one.
+                vertex_map.append(0)
+                continue
+            _, face_id = proxy_fn.getClosestPoint(om.MPoint(u, v, 0.0),
+                                                  om.MSpace.kObject)
+            verts = src_fn.getPolygonVertices(face_id)
+            best, best_dist = verts[0], None
+            for corner in range(len(verts)):
+                su, sv = src_fn.getPolygonUV(face_id, corner)
+                dist = (su - u) ** 2 + (sv - v) ** 2
+                if best_dist is None or dist < best_dist:
+                    best, best_dist = verts[corner], dist
+            vertex_map.append(best)
+    finally:
+        try:
+            cmds.delete(proxy_path)
+        except Exception as e:
+            logger.warning(f"Could not delete the UV proxy mesh: {e}")
+
+    return vertex_map, None
+
+
+def unweighted_influences(skin: str, mesh: str) -> List[str]:
+    """Influences of ``skin`` that carry no weight anywhere on ``mesh``.
+
+    The check that would have caught a bad correspondence immediately: a
+    transfer can report every column written and still leave most of the
+    skeleton doing nothing, which is what a mismatched vertex map produces.
+    """
+    import dw_maya.dw_deformers.dw_skinning as dw_skinning
+
+    influences, _, weights = dw_skinning.get_influence_weights(skin, mesh)
+    count = len(influences)
+    if not count:
+        return []
+    totals = [0.0] * count
+    for index, weight in enumerate(weights):
+        totals[index % count] += weight
+    return [influences[i] for i in range(count) if totals[i] <= 1e-6]
+
+
 def copy_solved_weights(src_skin: str,
                         source_mesh: str,
                         tgt_skin: str,
                         target_mesh: str,
                         pairs: Dict[str, str],
                         vertex_mode: str = "index",
+                        vertex_map: Optional[List[int]] = None,
                         ) -> Tuple[bool, str]:
     """Move the solved weights onto the fresh bind.
 
@@ -598,6 +843,7 @@ def copy_solved_weights(src_skin: str,
                                 tgt_skin, target_mesh,
                                 mapping=dict(pairs),
                                 vertex_mode=vertex_mode,
+                                vertex_map=vertex_map,
                                 add_missing_influences=False,
                                 normalize=True)
 
@@ -622,8 +868,16 @@ def link_animation(pairs: Dict[str, str],
     its OWN rest frame, re-applied at its new rest. This is the correct
     retarget once the joints have moved non-rigidly relative to each other, and
     a parent cannot express it - parenting multiplies on the right, and this
-    offset has to land on the left. A solved joint cloud is flat, so unlike an
-    FK chain nothing compounds down a hierarchy.
+    offset has to land on the left.
+
+    Whether the new joints are flat or a rebuilt hierarchy is read from the
+    scene, and it decides two things. The bake keys **parents first**, since a
+    child's local values are measured against its parent. And ``relink`` is
+    downgraded to ``bake`` on a hierarchy: it corrects each joint with a local
+    offset group, but down a chain the parent's correction is already in the
+    child's world, so the offsets stop composing. Baking writes world matrices
+    per frame and is indifferent to the chain - and a solved joint cloud is
+    shallow, so unlike an FK chain nothing compounds.
 
     Args:
         pairs: ``{solved_joint: new_joint}``.
@@ -633,6 +887,27 @@ def link_animation(pairs: Dict[str, str],
     """
     if mode not in ("relink", "bake"):
         return False, f"Unknown animation mode '{mode}'."
+
+    # Keying order and mode validity both depend on whether the new joints were
+    # built as a hierarchy, so read it off the scene rather than being told.
+    target_parents = solved_parents(list(pairs.values()))
+    nested = any(parent for parent in target_parents.values())
+    source_of = {target: source for source, target in pairs.items()}
+    ordered = [(source_of[target], target)
+               for target in depth_order(target_parents)
+               if target in source_of]
+
+    note = ""
+    if mode == "relink" and nested:
+        # Relink connects each joint's LOCAL curves and corrects them with a
+        # local offset group. Down a chain the parent's own correction is
+        # already in the child's world, so the offsets no longer compose and the
+        # result is plausible but wrong. Bake writes world matrices per frame
+        # and does not care about the chain. Reported, never silent.
+        note = (" Relink was replaced by bake: it is only exact on a flat "
+                "joint cloud, and the joints were built as a hierarchy.")
+        logger.warning(f"link_animation:{note}")
+        mode = "bake"
 
     if mode == "relink":
         for source, target in pairs.items():
@@ -670,7 +945,7 @@ def link_animation(pairs: Dict[str, str],
         end = cmds.playbackOptions(query=True, maxTime=True)
 
     rest: Dict[str, Tuple[om.MMatrix, om.MMatrix]] = {}
-    for source, target in pairs.items():
+    for source, target in ordered:
         rest[source] = (
             om.MMatrix(cmds.xform(source, query=True, matrix=True,
                                   worldSpace=True)),
@@ -682,7 +957,10 @@ def link_animation(pairs: Dict[str, str],
         frame = start
         while frame <= end:
             cmds.currentTime(frame, edit=True)
-            for source, target in pairs.items():
+            # Parents first: a child's local values are measured against its
+            # parent, so keying it before the parent has moved records the wrong
+            # ones. Harmless on a flat cloud, load-bearing on a hierarchy.
+            for source, target in ordered:
                 source_rest, target_rest = rest[source]
                 source_now = om.MMatrix(cmds.xform(source, query=True,
                                                    matrix=True,
@@ -696,7 +974,7 @@ def link_animation(pairs: Dict[str, str],
         cmds.currentTime(current, edit=True)
 
     return True, (f"Baked {len(pairs)} joints over frames "
-                  f"{int(start)}-{int(end)}.")
+                  f"{int(start)}-{int(end)}.{note}")
 
 
 # ---------------------------------------------------------------------------
@@ -714,10 +992,12 @@ STEPS = ("Classify the two meshes",
 
 def bones_to_asset(source_mesh: str,
                    target_mesh: str,
-                   anim_mode: str = "auto",
+                   anim_mode: str = "none",
                    joint_prefix: str = "assetBone",
+                   name_pattern: Optional[str] = None,
                    max_influences: int = 8,
                    replace_existing: bool = False,
+                   hierarchy: bool = True,
                    progress=None,
                    ) -> Dict:
     """Full return leg: solve space -> asset space, joints + skin + animation.
@@ -726,12 +1006,23 @@ def bones_to_asset(source_mesh: str,
         source_mesh:    The simulated / solved mesh, carrying the solve's
                         skinCluster.
         target_mesh:    The asset mesh, in asset space.
-        anim_mode:      ``auto`` picks relink for a rigid difference and bake
-                        otherwise; ``relink`` / ``bake`` force one; ``none``
-                        skips the animation entirely.
-        joint_prefix:   Prefix for the created joints.
+        anim_mode:      ``none`` (the default) skips the animation entirely,
+                        which is the general case: the asset wants its rig and
+                        skinCluster at the A/T-pose, and the solved motion
+                        belongs to the shot, not to the asset. ``auto`` picks
+                        relink for a rigid difference and bake otherwise;
+                        ``relink`` / ``bake`` force one. Carry the animation
+                        only when the motion IS the deliverable - a flag simmed
+                        once and returned to the origin as a loop for every
+                        future flag.
+        joint_prefix:   Prefix for the created joints, when no pattern is given.
+        name_pattern:   Naming pattern with :data:`NAME_TOKEN` marking the
+                        index (``bone_#_JNT``); overrides *joint_prefix*.
         max_influences: Should match the solve's ``nnz``.
         replace_existing: Delete an existing skinCluster on the asset first.
+        hierarchy:      Rebuild the solved skeleton's parenting (default), so a
+                        rig that arrived as a root with joints below it leaves
+                        as one. Off gives a flat cloud under the group.
         progress:       Optional ``callable(index, status, detail)`` called as
                         each :data:`STEPS` entry starts and finishes, so a UI
                         can show the build advancing rather than freezing.
@@ -741,7 +1032,7 @@ def bones_to_asset(source_mesh: str,
         ``messages``, and ``ok``.
     """
     report = {"regime": None, "detail": "", "joints": {}, "skin": None,
-              "failed": [], "messages": [], "ok": False}
+              "failed": [], "unweighted": [], "messages": [], "ok": False}
 
     def step(index, status, detail=""):
         if progress:
@@ -780,10 +1071,15 @@ def bones_to_asset(source_mesh: str,
         step(1, "ok", f"{len(placements)} joints placed")
 
     step(2, "run")
-    pairs, group = create_asset_joints(placements, joint_prefix=joint_prefix)
+    pairs, group = create_asset_joints(placements,
+                                       joint_prefix=joint_prefix,
+                                       name_pattern=name_pattern,
+                                       hierarchy=hierarchy)
     report["joints"] = pairs
-    report["messages"].append(f"Created {len(pairs)} joints under '{group}'.")
-    step(2, "ok", f"{len(pairs)} joints under '{group}'")
+    shape = "hierarchy" if hierarchy else "flat"
+    report["messages"].append(
+        f"Created {len(pairs)} joints under '{group}' ({shape}).")
+    step(2, "ok", f"{len(pairs)} joints under '{group}' ({shape})")
 
     step(3, "run")
     skin = bind_asset_mesh(target_mesh, list(pairs.values()),
@@ -797,11 +1093,44 @@ def bones_to_asset(source_mesh: str,
     step(3, "ok", skin)
 
     step(4, "run")
+    # The weights must cross the way the joints did. Under the uv regime a
+    # positional lookup matches in world space, so two meshes that are not
+    # sitting on top of each other resolve every target vertex onto whatever
+    # scrap of the source is nearest - a full weight array, most of the
+    # skeleton unused. UV space is shared, and it is what placed the joints.
     vertex_mode = "index" if regime["regime"] != "uv" else "closestPoint"
+    vertex_map = None
+    if regime["regime"] == "uv":
+        vertex_map, uv_error = uv_vertex_map(source_mesh, target_mesh)
+        if uv_error:
+            vertex_map = None
+            report["messages"].append(
+                f"UV vertex map unavailable ({uv_error}); falling back to a "
+                f"positional lookup, which is only valid if the two meshes "
+                f"overlap.")
+            logger.warning(report["messages"][-1])
+
     ok, message = copy_solved_weights(src_skin, source_mesh, skin, target_mesh,
-                                      pairs, vertex_mode=vertex_mode)
+                                      pairs, vertex_mode=vertex_mode,
+                                      vertex_map=vertex_map)
+    if ok and vertex_map is not None:
+        message += " Vertices paired through UV space."
     report["messages"].append(message)
-    step(4, "ok" if ok else "fail", message)
+
+    # A transfer can write every column and still leave most of the skeleton
+    # doing nothing, which is what a mismatched correspondence looks like.
+    # Report it here rather than leaving it to be noticed in the viewport.
+    idle = unweighted_influences(skin, target_mesh) if ok else []
+    report["unweighted"] = idle
+    if idle:
+        detail = (f"{message} WARNING: {len(idle)} of {len(pairs)} influences "
+                  f"received no weight (first: {idle[0]}) - the correspondence "
+                  f"is suspect.")
+        report["messages"].append(detail)
+        logger.warning(detail)
+        step(4, "warn", detail)
+    else:
+        step(4, "ok" if ok else "fail", message)
     if not ok:
         return report
 

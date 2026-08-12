@@ -946,11 +946,19 @@ def copy_skin_to_own_joints(source_mesh: str,
         logger.info(f"Bound '{target_mesh}' to {len(target_infs)} of its own "
                     f"joints -> '{tgt_skin}'.")
     else:
-        existing = set(skin_influences(tgt_skin))
+        # Compare on full paths: `skinCluster -q -influence` answers with the
+        # shortest unique name while the joints were matched as full paths, so
+        # a plain set test never hits and every existing influence is re-added
+        # - which Maya refuses with "is already attached".
+        existing = set()
+        for joint in skin_influences(tgt_skin):
+            existing.update(cmds.ls(joint, long=True) or [joint])
         for joint in target_infs:
-            if joint not in existing:
+            long_name = (cmds.ls(joint, long=True) or [joint])[0]
+            if long_name not in existing:
                 cmds.skinCluster(tgt_skin, edit=True, addInfluence=joint,
                                  weight=0.0)
+                existing.add(long_name)
 
     # The bind comes from the SOLVE, not from the asset's authored skin. The
     # point of the return leg is to replace the asset's deformation with the

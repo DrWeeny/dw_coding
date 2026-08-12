@@ -60,6 +60,93 @@ _REGIME_BLURB = {
 }
 
 
+class NamingWidget(QtWidgets.QWidget):
+    """How the created joints are named: a prefix, or a pattern.
+
+    Two exclusive buttons over one field, because the two are alternatives
+    rather than options - a prefix cannot express a suffix convention
+    (``bone_0_JNT``), and a pattern is noise when a prefix is all you want. The
+    preview under the field spells out what joint 0 will actually be called, so
+    the placeholder token needs no explaining.
+    """
+
+    def __init__(self, parent=None) -> None:
+        super().__init__(parent)
+        layout = QtWidgets.QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(2)
+
+        row = QtWidgets.QHBoxLayout()
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(4)
+
+        self.prefix_btn = QtWidgets.QToolButton()
+        self.prefix_btn.setText("prefix")
+        self.prefix_btn.setCheckable(True)
+        self.prefix_btn.setChecked(True)
+        self.prefix_btn.setToolTip(
+            "The field is a prefix; the index is appended.\n"
+            "'assetBone' gives assetBone_0, assetBone_1, ...")
+
+        self.pattern_btn = QtWidgets.QToolButton()
+        self.pattern_btn.setText("pattern")
+        self.pattern_btn.setCheckable(True)
+        self.pattern_btn.setToolTip(
+            f"The field is the whole name, with '{b2a.NAME_TOKEN}' marking "
+            f"where the index goes - so a suffix is just part of the pattern.\n"
+            f"'bone_{b2a.NAME_TOKEN}_JNT' gives bone_0_JNT, bone_1_JNT, ...")
+
+        # One or the other, never neither: an exclusive group keeps the two
+        # buttons honest without a third state to handle.
+        self.group = QtWidgets.QButtonGroup(self)
+        self.group.setExclusive(True)
+        self.group.addButton(self.prefix_btn)
+        self.group.addButton(self.pattern_btn)
+
+        self.field = QtWidgets.QLineEdit("assetBone")
+        row.addWidget(self.prefix_btn)
+        row.addWidget(self.pattern_btn)
+        row.addWidget(self.field, 1)
+        layout.addLayout(row)
+
+        self.preview = QtWidgets.QLabel("")
+        self.preview.setStyleSheet("QLabel { color: #8a8a8a; }")
+        layout.addWidget(self.preview)
+
+        self.field.textChanged.connect(self._refresh)
+        self.prefix_btn.toggled.connect(self._on_mode)
+        self._refresh()
+
+    def _on_mode(self, prefix_on: bool) -> None:
+        """Seed the field with a usable example when switching to pattern."""
+        text = self.field.text()
+        if not prefix_on and b2a.NAME_TOKEN not in text:
+            self.field.setText(f"{text or 'assetBone'}_{b2a.NAME_TOKEN}_JNT")
+        elif prefix_on and b2a.NAME_TOKEN in text:
+            self.field.setText(text.split(b2a.NAME_TOKEN)[0].rstrip("_")
+                               or "assetBone")
+        self._refresh()
+
+    def _refresh(self) -> None:
+        first = b2a.joint_name(0, joint_prefix=self.joint_prefix(),
+                               name_pattern=self.name_pattern())
+        second = b2a.joint_name(1, joint_prefix=self.joint_prefix(),
+                                name_pattern=self.name_pattern())
+        self.preview.setText(f"-> {first}, {second}, ...")
+
+    # -- Public API -------------------------------------------------------
+
+    def joint_prefix(self) -> str:
+        if self.pattern_btn.isChecked():
+            return "assetBone"
+        return self.field.text().strip() or "assetBone"
+
+    def name_pattern(self) -> Optional[str]:
+        if not self.pattern_btn.isChecked():
+            return None
+        return self.field.text().strip() or None
+
+
 class BonesToAssetUI(QtWidgets.QMainWindow):
     """Solve -> Asset: joints, skin and animation, in asset space."""
 
@@ -202,7 +289,7 @@ class BonesToAssetUI(QtWidgets.QMainWindow):
         grid.setContentsMargins(12, 2, 0, 0)
         grid.setVerticalSpacing(3)
 
-        self.prefix_field = QtWidgets.QLineEdit("assetBone")
+        self.naming = NamingWidget()
         self.max_inf_spin = QtWidgets.QSpinBox()
         self.max_inf_spin.setRange(1, 32)
         self.max_inf_spin.setValue(8)
@@ -211,23 +298,44 @@ class BonesToAssetUI(QtWidgets.QMainWindow):
             "weights on arrival.")
         self.anim_combo = QtWidgets.QComboBox()
         self.anim_combo.addItems(b2a.ANIM_MODES)
+        self.anim_combo.setCurrentText("none")
         self.anim_combo.setToolTip(
+            "none (default): no animation. What the asset wants is the rig and "
+            "its skinCluster at the A/T-pose - the solved motion belongs to the "
+            "shot it was simmed in.\n"
+            "Carry it only when the motion IS the deliverable: something simmed "
+            "once and brought back to the origin as a loop to reuse, a flag "
+            "being the usual example.\n"
             "auto: relink when rigid, bake otherwise.\n"
             "relink is exact but only correct for a rigid difference; bake is "
             "the right retarget once joints have moved non-rigidly.")
+        self.hierarchy_chk = QtWidgets.QCheckBox(
+            "Rebuild the solved skeleton's hierarchy")
+        self.hierarchy_chk.setChecked(True)
+        self.hierarchy_chk.setToolTip(
+            "On (default): the new joints keep the parenting they had - a root "
+            "with its joints below it leaves as one skeleton, movable and "
+            "exportable as it stands.\n"
+            "Joints the solve never saw (no weight, so nothing could animate "
+            "them) are skipped, and their children attach to the nearest joint "
+            "that was solved.\n"
+            "Off: a flat cloud under the group, which is what a bone set solved "
+            "from scratch actually is.")
+
         self.replace_chk = QtWidgets.QCheckBox(
             "Replace an existing skinCluster on the asset")
         self.replace_chk.setToolTip(
             "Without this, binding an already-skinned asset would stack a "
             "second skinCluster, so the build refuses instead.")
 
-        rows = (("Joint prefix", self.prefix_field),
+        rows = (("Joint names", self.naming),
                 ("Max influences", self.max_inf_spin),
                 ("Animation", self.anim_combo))
         for row, (text, widget) in enumerate(rows):
             grid.addWidget(QtWidgets.QLabel(text), row, 0)
             grid.addWidget(widget, row, 1)
-        grid.addWidget(self.replace_chk, len(rows), 0, 1, 2)
+        grid.addWidget(self.hierarchy_chk, len(rows), 0, 1, 2)
+        grid.addWidget(self.replace_chk, len(rows) + 1, 0, 1, 2)
         grid.setColumnStretch(1, 1)
         self._adv.setVisible(False)
 
@@ -342,9 +450,11 @@ class BonesToAssetUI(QtWidgets.QMainWindow):
                 self.src_field.text(),
                 self.tgt_field.text(),
                 anim_mode=self.anim_combo.currentText(),
-                joint_prefix=self.prefix_field.text() or "assetBone",
+                joint_prefix=self.naming.joint_prefix(),
+                name_pattern=self.naming.name_pattern(),
                 max_influences=self.max_inf_spin.value(),
                 replace_existing=self.replace_chk.isChecked(),
+                hierarchy=self.hierarchy_chk.isChecked(),
                 progress=self._on_step)
         finally:
             self.build_btn.setEnabled(True)
