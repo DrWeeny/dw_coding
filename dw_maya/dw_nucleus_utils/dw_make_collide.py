@@ -1,4 +1,5 @@
 from math import sqrt
+from typing import List, Union
 from maya import cmds, mel
 from .dw_nx_mel import *
 import dw_maya.dw_maya_utils as dwu
@@ -7,17 +8,66 @@ from dw_maya.dw_decorators import acceptString
 import dw_maya.dw_duplication as dwdup
 import dw_maya.dw_deformers as dwdef
 from .dw_create_nucleus import create_nucleus
+from ._naming_convention import get_naming
 
 
-def make_collide_ncloth(sel_mesh: str, nucleus: str = None, **kwargs) -> list:
+def resolve_collider_names(meshes: List[str],
+                           name: Union[str, List[str]] = None) -> dict:
+    """
+    Pair every mesh with the name its nRigid should take.
+
+    Args:
+        meshes (list): Mesh shapes, in the order returned by `cmds.ls`.
+        name: Naming request.
+            - None: derive from each mesh through the active naming
+              convention (see `dw_naming.NucleusNaming`).
+            - str with `{}`: format pattern, fed the 1-based mesh index.
+            - str: used as-is for a single mesh, suffixed with the 1-based
+              index when several meshes are given.
+            - list: one name per mesh, must match `len(meshes)`.
+
+    Returns:
+        dict: {mesh: collider name}. Keyed by mesh so that filtering the
+            mesh list afterwards cannot shift the pairing.
+
+    Raises:
+        RuntimeError: If a name list does not match the mesh count.
+    """
+    if name is None:
+        naming = get_naming()
+        return {mesh: naming.name(mesh, 'collider') for mesh in meshes}
+
+    if isinstance(name, (list, tuple)):
+        if len(name) != len(meshes):
+            cmds.error(f'Got {len(name)} names for {len(meshes)} meshes: '
+                       f'{list(meshes)}')
+        return dict(zip(meshes, name))
+
+    if '{' in name and '}' in name:
+        return {mesh: name.format(i)
+                for i, mesh in enumerate(meshes, start=1)}
+
+    if len(meshes) == 1:
+        return {meshes[0]: name}
+
+    return {mesh: f'{name}{i}' for i, mesh in enumerate(meshes, start=1)}
+
+
+def make_collide_ncloth(sel_mesh: Union[str, List[str]],
+                        nucleus: str = None,
+                        **kwargs) -> list:
     """
     Sets up selected meshes as passive colliders in a nucleus simulation.
 
     Args:
-        sel_mesh (str): The selected mesh that will act as a passive collider.
+        sel_mesh: Mesh(es) that will act as passive colliders. Anything
+            `cmds.ls` accepts: a mesh, a transform, a group, or a list.
         nucleus (str): The name of the nucleus node to use for the simulation. If not provided, a new one will be created.
         **kwargs: Additional arguments:
-            - name (str): Custom name for the nRigid node.
+            - name (str or list): Custom name(s) for the nRigid node(s).
+              Defaults to a name derived from each mesh (`_msh` becomes
+              `_collider`, otherwise `_collider` is appended). See
+              `resolve_collider_names` for the str/pattern/list forms.
             - preset (int): Collider preset to use, defaults to 2.
             - thickness (float): Custom thickness for the collider.
 
@@ -25,7 +75,12 @@ def make_collide_ncloth(sel_mesh: str, nucleus: str = None, **kwargs) -> list:
         list: List of new nRigid nodes created.
 
     Raises:
-        RuntimeError: If no valid meshes are provided.
+        RuntimeError: If no valid meshes are provided, or if an item of
+            `sel_mesh` holds no mesh (typo, wrong namespace, empty group).
+
+    Example:
+        >>> make_collide_ncloth(['body_msh', 'props_grp'])
+        ['body_collider', 'helmet_collider']
     """
 
     # Unpacking kwargs with default values
@@ -33,21 +88,39 @@ def make_collide_ncloth(sel_mesh: str, nucleus: str = None, **kwargs) -> list:
     preset = kwargs.get('preset', 2)
     thickness = kwargs.get('thickness')
 
-    # Get the list of selected meshes
+    # Get the list of selected meshes. cmds.ls drops a name that matches
+    # nothing without raising, so a typo would silently skip a collider:
+    # check every requested item before touching the scene.
+    requested = sel_mesh if isinstance(sel_mesh, (list, tuple)) else [sel_mesh]
+    empty = [item for item in requested
+             if not cmds.ls(item, ni=True, dag=True, type="mesh")]
+    if empty:
+        cmds.error(f"No mesh under: {empty}")
+
     meshes = cmds.ls(sel_mesh, ni=True, dag=True, type="mesh")
     if not meshes:
         cmds.error("Please specify a valid mesh.")
+
+    # Names are resolved against the full mesh list, before the nCloth
+    # filtering below, so a skipped mesh cannot shift the pairing
+    collider_names = resolve_collider_names(meshes, name)
 
     # Create or retrieve the nucleus
     nucleus = create_nucleus(nucleus)
 
     input_meshes = []
+    skipped = []
 
     for mesh in meshes:
         # Check if the mesh is connected to an nCloth
         nBase = find_type_in_history(mesh, "nCloth", future=0, past=1)
         if not nBase:
             input_meshes.append(mesh)
+        else:
+            skipped.append(mesh)
+
+    if skipped:
+        cmds.warning(f"Driven by an nCloth, skipped: {skipped}")
 
     if not input_meshes:
         cmds.error("Nothing to make passive collider.")
@@ -77,12 +150,11 @@ def make_collide_ncloth(sel_mesh: str, nucleus: str = None, **kwargs) -> list:
             rigid_node = dwnn.MayaNode(cmds.createNode('nRigid',
                                                        parent=mesh_node.tr))
 
-            if name:
-                # Rename the nRigid shape itself, never the user's mesh
-                # transform. Plain cmds.rename on purpose: MayaNode.rename()
-                # has transform/shape-pair semantics and would rename the
-                # mesh transform the nRigid is parented under.
-                cmds.rename(rigid_node.node, name)
+            # Rename the nRigid shape itself, never the user's mesh
+            # transform. Plain cmds.rename on purpose: MayaNode.rename()
+            # has transform/shape-pair semantics and would rename the
+            # mesh transform the nRigid is parented under.
+            cmds.rename(rigid_node.node, collider_names[mesh])
 
             new_rigid_nodes.append(rigid_node.node)
 

@@ -564,7 +564,8 @@ class ColliderOp(OpBackend):
             kwargs = {'preset': params.get('preset', 2)}
             if params.get('thickness') is not None:
                 kwargs['thickness'] = params['thickness']
-            kwargs['name'] = f"{mesh.split('|')[-1].split(':')[-1]}_collider"
+            # Naming is the library's job now (dw_nucleus_utils.dw_naming):
+            # this used to build 'body_msh_collider', suffix included
             rigids += make_collide_ncloth(sel_mesh=mesh,
                                           nucleus=staging,
                                           **kwargs)
