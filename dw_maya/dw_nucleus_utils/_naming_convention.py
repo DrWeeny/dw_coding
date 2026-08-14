@@ -24,15 +24,15 @@ Functions:
     set_naming: Replace the active convention (studio override).
 
 Example:
-    >>> import dw_maya.dw_nucleus_utils.dw_naming as dw_naming
-    >>> naming = dw_naming.get_naming()
+    >>> from dw_maya.dw_nucleus_utils import _naming_convention
+    >>> naming = _naming_convention.get_naming()
     >>> naming.name('|grp|ns:tissus_sim_msh', 'ncloth')
     'tissus_sim_ncloth'
     >>> naming.name('tissus_sim_msh', 'output', shape=True)
     'tissus_sim_outputcloth_mshShape'
 
     Studio override, once at startup:
-    >>> dw_naming.set_naming(dw_naming.NucleusNaming(
+    >>> _naming_convention.set_naming(_naming_convention.NucleusNaming(
     ...     source_suffixes=['_geo'],
     ...     collider='_rigid'))
 

@@ -20,7 +20,7 @@ def resolve_collider_names(meshes: List[str],
         meshes (list): Mesh shapes, in the order returned by `cmds.ls`.
         name: Naming request.
             - None: derive from each mesh through the active naming
-              convention (see `dw_naming.NucleusNaming`).
+              convention (see `_naming_convention.NucleusNaming`).
             - str with `{}`: format pattern, fed the 1-based mesh index.
             - str: used as-is for a single mesh, suffixed with the 1-based
               index when several meshes are given.
