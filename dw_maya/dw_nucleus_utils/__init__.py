@@ -10,4 +10,6 @@ from .dw_ncache_utils import attach_ncache, find_existing_caches
 from .dw_create_ncloth import create_ncloth, resolve_cloth_names
 from .dw_make_collide import make_collide_ncloth, resolve_collider_names
 from ._naming_convention import NucleusNaming, get_naming, set_naming
+from . import dw_wind
+from .dw_wind import WindSettings, bake_wind
 

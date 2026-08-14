@@ -27,10 +27,14 @@ class OpBackend(object):
     Attributes:
         op_type: Recipe node type this backend fulfils (e.g. 'group').
         dcc: Implementation domain ('core' = DCC-agnostic pure python).
+        edit_kind: What an artist can hand-edit on this op and capture back
+            ('preset', 'skin', 'map', ...). Empty means the op has no
+            editable state, and the executor never looks for a sidecar.
     """
 
     op_type = ''
     dcc = 'core'
+    edit_kind = ''
 
     def execute(self, node_id: str, params: dict, inputs: dict, ctx) -> dict:
         """Run the op. Returns the node's named outputs.
@@ -61,6 +65,52 @@ class OpBackend(object):
     def validate_params(self, params: dict) -> list:
         """Return a list of param error strings (empty = valid)."""
         return []
+
+    # ------------------------------------------------------------------
+    # Hand-edit sidecars (ops declaring an edit_kind)
+    # ------------------------------------------------------------------
+
+    def capture(self,
+                node_id: str,
+                params: dict,
+                inputs: dict,
+                ctx,
+                path: str) -> str:
+        """Write the artist's hand edits on this node to ``path``.
+
+        Called on demand (a Save Edit action), never during a build. The
+        backend owns the file format on purpose: a captured skinCluster
+        should stay a document the rest of the toolkit can already read,
+        not a CfxForge-only wrapper.
+
+        Args:
+            node_id: Recipe node id.
+            params: The node's params dict.
+            inputs: Resolved upstream outputs.
+            ctx: BuildContext - ``ctx.outputs[node_id]`` still holds what
+                the node created during the build being captured from.
+            path: Where to write, resolved by ``ctx.edit_path``.
+
+        Returns:
+            str: The written path, or None when there was nothing to save.
+        """
+        raise NotImplementedError(f"'{self.op_type}': capture not implemented")
+
+    def apply_edit(self,
+                   node_id: str,
+                   params: dict,
+                   inputs: dict,
+                   ctx,
+                   path: str):
+        """Re-apply a previously captured edit, straight after execute.
+
+        The executor calls this only when the sidecar exists, so a node
+        that has never been hand-edited costs nothing. An edit that fails
+        to apply fails the node: silently building the un-edited version
+        is how a retake gets lost.
+        """
+        raise NotImplementedError(f"'{self.op_type}': apply_edit not "
+                                  f"implemented")
 
 
 def register(backend_class):

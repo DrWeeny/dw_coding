@@ -97,6 +97,66 @@ class Recipe(object):
             deps.append(str(ref).split('.')[0])
         return deps
 
+    def ancestors(self, node_id: str, include_self: bool = True) -> set:
+        """Return every node a node transitively depends on.
+
+        Args:
+            node_id: The node to walk up from.
+            include_self: Include ``node_id`` in the result.
+
+        Returns:
+            set: Node ids. Unknown references are ignored here - that is
+                ``validate``'s job, and slicing must stay usable on a
+                half-authored recipe.
+
+        Raises:
+            RecipeError: When the node is not in the recipe.
+        """
+        if node_id not in self.nodes:
+            raise RecipeError(f"Unknown node '{node_id}'")
+
+        seen = set()
+        stack = [node_id]
+        while stack:
+            current = stack.pop()
+            if current in seen or current not in self.nodes:
+                continue
+            seen.add(current)
+            stack.extend(self.dependencies(current))
+
+        if not include_self:
+            seen.discard(node_id)
+        return seen
+
+    def build_order(self, until=None) -> list:
+        """Return the execution order, optionally cut at a node.
+
+        ``until`` keeps only the target(s) and what they depend on - the
+        rest of the graph is not merely stopped at, it is never visited,
+        so a sibling branch that has nothing to do with the target does
+        not run either. That is what makes "build to here" reproducible:
+        the same slice always builds the same scene.
+
+        Args:
+            until: Node id, or list of node ids, to build up to. None
+                builds everything.
+
+        Returns:
+            list: Node ids in dependency order.
+
+        Raises:
+            RecipeError: On a cycle, or an unknown target node.
+        """
+        order = self.topological_order()
+        if until is None:
+            return order
+
+        targets = [until] if isinstance(until, str) else list(until)
+        keep = set()
+        for target in targets:
+            keep.update(self.ancestors(target))
+        return [node_id for node_id in order if node_id in keep]
+
     # ------------------------------------------------------------------
     # Validation / ordering
     # ------------------------------------------------------------------

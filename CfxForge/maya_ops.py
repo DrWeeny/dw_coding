@@ -637,10 +637,19 @@ class StepOp(OpBackend):
 class PresetOp(OpBackend):
     """Apply a saved dw_preset envelope (v2 component presets).
 
+    Hand edits: after the preset is applied an artist can retune the nodes
+    in the scene and capture them back. The sidecar is written as a plain
+    dw_preset envelope - a normal preset file PresetTool and the clipboard
+    can read - and is re-applied on top of ``path`` on every later build,
+    so the artist's tuning wins over the published preset without either
+    file overwriting the other.
+
     Params:
         path (str): Preset json path.
         target_ns (str): Namespace lookups resolve against (default ':').
         create (bool): Allow creating missing nodes (default True).
+        edit_file (str): Sidecar name, relative to the context edit_dir
+            (default '<node_id>.json').
 
     Outputs:
         {'nodes': names of the nodes the preset touched}
@@ -648,6 +657,7 @@ class PresetOp(OpBackend):
 
     op_type = 'preset'
     dcc = 'maya'
+    edit_kind = 'preset'
 
     def validate_params(self, params: dict) -> list:
         path = params.get('path')
@@ -664,6 +674,27 @@ class PresetOp(OpBackend):
         names = [n.node for n in nodes]
         ctx.info(node_id, f'preset applied to {len(names)} node(s)')
         return {'nodes': names}
+
+    def apply_edit(self, node_id, params, inputs, ctx, path):
+        # create=False on purpose: the edit retunes what the build already
+        # made. A missing node means the build changed under the edit, and
+        # creating it here would paper over exactly that.
+        pcomp.load_preset_file(path,
+                               target_ns=params.get('target_ns', ':'),
+                               create=False)
+
+    def capture(self, node_id, params, inputs, ctx, path):
+        names = (ctx.outputs.get(node_id) or {}).get('nodes') or []
+        alive = [name for name in names if cmds.objExists(name)]
+
+        missing = [name for name in names if name not in alive]
+        if missing:
+            ctx.warning(node_id, f'{len(missing)} node(s) gone since the '
+                                 f'build, not captured: {missing[:5]}')
+        if not alive:
+            return None
+
+        return pcomp.save_preset_file(alive, path)
 
 
 @register
