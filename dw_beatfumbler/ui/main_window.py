@@ -12,6 +12,7 @@ from PySide6.QtWidgets import (
     QFileDialog,
     QHBoxLayout,
     QLabel,
+    QLineEdit,
     QListWidget,
     QListWidgetItem,
     QMainWindow,
@@ -37,7 +38,7 @@ class MainWindow(QMainWindow):
     def __init__(self, config: AppConfig):
         super().__init__()
         self.config = config
-        self.setWindowTitle("dw_yt")
+        self.setWindowTitle("BeatFumbler")
         self.resize(760, 560)
 
         database.init_db()
@@ -130,12 +131,21 @@ class MainWindow(QMainWindow):
         cookies_row.addStretch(1)
         layout.addLayout(cookies_row)
 
+        lastfm_row = QHBoxLayout()
+        lastfm_row.addWidget(QLabel("Last.fm API key (for \"Find Similar\" in Library):"))
+        self.lastfm_input = QLineEdit(self.config.lastfm_api_key)
+        self.lastfm_input.setPlaceholderText("Free key at last.fm/api/account/create")
+        self.lastfm_input.editingFinished.connect(self._on_lastfm_key_changed)
+        lastfm_row.addWidget(self.lastfm_input, stretch=1)
+        layout.addLayout(lastfm_row)
+
         self.queue_list = QListWidget()
         layout.addWidget(self.queue_list, stretch=1)
 
         tabs.addTab(queue_tab, "Queue")
 
-        self.library_panel = LibraryPanel()
+        self.library_panel = LibraryPanel(self.config)
+        self.library_panel.queue_requested.connect(self._queue_similar)
         tabs.addTab(self.library_panel, "Library")
 
         # Tags created via the Library tab (Add Tag / Set Tags) should show
@@ -166,6 +176,17 @@ class MainWindow(QMainWindow):
         self.config.cookies_browser = text.lower() if text != "None" else ""
         self.config.save()
 
+    def _on_lastfm_key_changed(self) -> None:
+        self.config.lastfm_api_key = self.lastfm_input.text().strip()
+        self.config.save()
+
+    def _queue_similar(self, entries: list[dict]) -> None:
+        if not self.config.download_dir:
+            QMessageBox.warning(self, "No folder set", "Choose a download folder first.")
+            return
+        for entry in entries:
+            self._add_pending_item(entry["url"], playlist=False, tags=entry["tags"], video=False, label=entry["label"])
+
     def _paste_links(self) -> None:
         self._queue_links(extract_links(QApplication.clipboard().text()))
 
@@ -192,14 +213,18 @@ class MainWindow(QMainWindow):
         for url in urls:
             self._add_pending_item(url, bulk, tags, video)
 
-    def _add_pending_item(self, url: str, playlist: bool, tags: list[str], video: bool = False) -> None:
+    def _add_pending_item(
+        self, url: str, playlist: bool, tags: list[str], video: bool = False, label: str | None = None
+    ) -> None:
         prefix = "Pending (playlist)" if playlist else "Pending"
         prefix = f"{prefix} [video]" if video else prefix
         tag_suffix = f"  [{', '.join(tags)}]" if tags else ""
         item = QListWidgetItem()
-        item.setData(Qt.ItemDataRole.UserRole, {"url": url, "playlist": playlist, "tags": tags, "video": video})
+        item.setData(
+            Qt.ItemDataRole.UserRole, {"url": url, "playlist": playlist, "tags": tags, "video": video, "label": label}
+        )
 
-        row = QueueRow(f"{prefix}  —  {url}{tag_suffix}")
+        row = QueueRow(f"{prefix}  —  {label or url}{tag_suffix}")
         row.remove_clicked.connect(lambda item=item: self._remove_item(item))
 
         self.queue_list.addItem(item)
@@ -246,9 +271,9 @@ class MainWindow(QMainWindow):
         if not self._current_item:
             return
         row = self.queue_list.itemWidget(self._current_item)
-        url = self._current_item.data(Qt.ItemDataRole.UserRole)["url"]
+        data = self._current_item.data(Qt.ItemDataRole.UserRole)
         suffix = f" ({status})" if status else ""
-        row.set_text(f"Downloading {percent}%{suffix}  —  {url}")
+        row.set_text(f"Downloading {percent}%{suffix}  —  {data['label'] or data['url']}")
 
     def _on_finished(self, results: list[TrackResult]) -> None:
         if self._current_item:
@@ -276,11 +301,13 @@ class MainWindow(QMainWindow):
         if self._current_item:
             row = self.queue_list.itemWidget(self._current_item)
             data = self._current_item.data(Qt.ItemDataRole.UserRole)
-            row.set_text(f"Failed ({message})  —  {data['url']}")
+            row.set_text(f"Failed ({message})  —  {data['label'] or data['url']}")
             row.remove_btn.setEnabled(True)
             row.show_retry()
             row.retry_clicked.connect(
-                lambda: self._add_pending_item(data["url"], data["playlist"], data["tags"], data["video"])
+                lambda: self._add_pending_item(
+                    data["url"], data["playlist"], data["tags"], data["video"], data["label"]
+                )
             )
         self._worker = None
         self._current_item = None

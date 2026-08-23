@@ -9,6 +9,7 @@ CONFIG_PATH = Path(__file__).resolve().parent / "config.json"
 DEFAULTS = {
     "download_dir": "",
     "cookies_browser": "",  # empty = disabled; otherwise a yt-dlp browser key ("chrome", "firefox", "edge", "brave")
+    "lastfm_api_key": "",  # empty = "Find Similar" disabled; free key at last.fm/api/account/create
 }
 
 
@@ -16,6 +17,7 @@ DEFAULTS = {
 class AppConfig:
     download_dir: str = DEFAULTS["download_dir"]
     cookies_browser: str = DEFAULTS["cookies_browser"]
+    lastfm_api_key: str = DEFAULTS["lastfm_api_key"]
 
     @classmethod
     def load(cls) -> "AppConfig":
