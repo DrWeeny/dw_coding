@@ -65,6 +65,8 @@ TODO:
 Author: DrWeeny
 """
 
+import re
+
 import maya.cmds as cmds
 import maya.api.OpenMaya as om
 
@@ -594,6 +596,19 @@ def joint_name(index: int,
     return f"{joint_prefix}_{index}"
 
 
+def _natural_key(name: str) -> List:
+    """Sort key that reads digit runs as numbers, so joint9 precedes joint10.
+
+    Args:
+        name: Any node name or path.
+
+    Returns:
+        A list of alternating text and int parts, comparable against another.
+    """
+    parts = re.split(r"(\d+)", name or "")
+    return [int(p) if p.isdigit() else p for p in parts]
+
+
 def create_asset_joints(placements: Dict[str, om.MMatrix],
                         joint_prefix: str = "assetBone",
                         group_name: str = "assetBones_GRP",
@@ -627,7 +642,15 @@ def create_asset_joints(placements: Dict[str, om.MMatrix],
     group = cmds.group(empty=True, name=group_name)
     pairs: Dict[str, str] = {}
 
-    for index, (source, matrix) in enumerate(sorted(placements.items())):
+    # Natural sort, not plain sorted(). A solve names its bones joint0..joint29,
+    # and lexicographically that is joint0, joint1, joint10, joint11, ... so
+    # index 9 would be joint17 and the created joint named '..._9' would sit
+    # where solved joint17 is. The returned `pairs` is the correspondence that
+    # matters and is unaffected either way - but a name encoding a different
+    # index from the joint it was built from invites exactly the mistake of
+    # pairing the two skeletons by name later, which is silent and wrong.
+    for index, (source, matrix) in enumerate(
+            sorted(placements.items(), key=lambda item: _natural_key(item[0]))):
         cmds.select(clear=True)
         name = joint_name(index, joint_prefix=joint_prefix,
                           name_pattern=name_pattern)

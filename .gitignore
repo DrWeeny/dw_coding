@@ -5,6 +5,7 @@
 .local_data/
 .venv/
 /DemBonesRnD/
+/DemBonesMacro/
 /dw_davinci/report/
 /dw_insta/config.json
 /dw_insta/window_settings.ini

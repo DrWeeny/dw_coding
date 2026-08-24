@@ -1,7 +1,9 @@
 import importlib
 import sys
 from typing import List
-
+# registring
+import dw_maya.dw_deformers.dw_deformer_class
+import dw_maya.dw_deformers.dw_skinning_class
 
 def reload_dw_toolkit():
     """

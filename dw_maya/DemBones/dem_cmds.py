@@ -1777,6 +1777,7 @@ def transfer_solve_animation(solved_joints: List[str],
                              rest_frame: Optional[int] = None,
                              method: str = "auto",
                              name_remap: Optional[Tuple[str, str]] = None,
+                             pairing: Optional[Dict[str, str]] = None,
                              dry_run: bool = False,
                              ) -> Dict[str, str]:
     """Hand a solved generation's animation back to the rig it came from.
@@ -1804,13 +1805,31 @@ def transfer_solve_animation(solved_joints: List[str],
         to_controls: Target the driving controls rather than the joints.
         rest_frame: Frame at which to capture the control offsets (controls
             mode only). Defaults to ``start``, where the solve's bind pose is.
+        pairing: Explicit ``{solved leaf name: target node}`` correspondence.
+            Overrides name matching entirely. Use it whenever the caller
+            CREATED the targets and therefore knows the true pairing -
+            matching by name is a guess, and a wrong guess is silent:
+            every joint pairs, the mesh deforms, and the motion is not
+            the solve's.
         dry_run: Resolve and log the pairing without touching anything.
 
     Returns:
         The {solved joint: target} pairing that was transferred (or would be).
     """
-    mapping, unresolved = map_solved_to_targets(solved_joints, to_controls,
-                                               name_remap)
+    if pairing:
+        # An explicit correspondence supplied by the caller. Preferred whenever
+        # one exists: name matching is a GUESS, and a wrong guess here is silent
+        # - every joint pairs with something, the mesh deforms, and the result
+        # is simply not the solve. A caller that created the target joints knows
+        # the true pairing and must be able to say so.
+        mapping = {solved: pairing[_leaf_name(solved)]
+                   for solved in solved_joints
+                   if _leaf_name(solved) in pairing
+                   and cmds.objExists(pairing[_leaf_name(solved)])}
+        unresolved = [s for s in solved_joints if s not in mapping]
+    else:
+        mapping, unresolved = map_solved_to_targets(solved_joints, to_controls,
+                                                   name_remap)
     what = "rig controls" if to_controls else "scene joints"
     logger.info(f"Resolved {len(mapping)} of {len(solved_joints)} solved "
                 f"joints to {what}.")

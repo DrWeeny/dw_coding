@@ -458,6 +458,6 @@ The alternation between those two is what `nIters` counts, and `tolerance` /
   and the skin/animation transfer directions.
 - `dw_maya/dw_deformers/ssdr_dembones_cloth_baking.md` - background theory on
   SSDR cloth baking (research notes, no implementation).
-- `DemBonesRnD/rnd_diary.md` - the measured failures behind several of the
+- `DemBonesMacro/rnd_diary.md` - the measured failures behind several of the
   cautions above.
 - Upstream: https://github.com/electronicarts/dem-bones (BSD-3).
