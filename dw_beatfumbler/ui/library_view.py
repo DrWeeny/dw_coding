@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import os
 import subprocess
+import urllib.parse
 import webbrowser
 from pathlib import Path
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
+    QComboBox,
     QDialog,
     QHBoxLayout,
     QLabel,
@@ -25,6 +27,7 @@ from core.library_scan import unique_destination
 from core.slug import slug_filename
 from core.waveform import waveform_path_for
 from ui.add_tag_dialog import AddTagDialog
+from ui.artist_lookup_worker import ArtistLookupWorker
 from ui.convert_worker import ConvertWorker
 from ui.mini_player import MiniPlayer
 from ui.similar_worker import SimilarWorker
@@ -50,6 +53,13 @@ class LibraryPanel(QWidget):
         self.search_box.setPlaceholderText("Filter by title or artist...")
         self.search_box.textChanged.connect(self._refresh_tracks)
         search_row.addWidget(self.search_box)
+
+        self.sort_combo = QComboBox()
+        self.sort_combo.addItem("Newest first", "date_desc")
+        self.sort_combo.addItem("Oldest first", "date_asc")
+        self.sort_combo.currentIndexChanged.connect(self._refresh_tracks)
+        search_row.addWidget(self.sort_combo)
+
         track_col.addLayout(search_row)
 
         self.track_list = TrackListWidget()
@@ -66,8 +76,11 @@ class LibraryPanel(QWidget):
 
         self.detail_panel = TrackDetailPanel()
         self.detail_panel.tags_changed.connect(self._on_tags_changed)
+        self.detail_panel.metadata_changed.connect(self._on_metadata_changed)
         self.detail_panel.find_similar_requested.connect(self._on_find_similar_requested)
+        self.detail_panel.suggest_artist_requested.connect(self._on_suggest_artist_requested)
         self.detail_panel.queue_similar_requested.connect(self.queue_requested)
+        self.detail_panel.open_similar_youtube_requested.connect(self._on_open_similar_youtube)
         layout.addWidget(self.detail_panel, stretch=2)
 
         tag_col = QVBoxLayout()
@@ -83,6 +96,7 @@ class LibraryPanel(QWidget):
 
         self._convert_workers: list[ConvertWorker] = []
         self._similar_workers: list[SimilarWorker] = []
+        self._lookup_workers: list[ArtistLookupWorker] = []
 
         self.refresh()
 
@@ -117,7 +131,11 @@ class LibraryPanel(QWidget):
 
     def _refresh_tracks(self) -> None:
         selected_tags = [item.text() for item in self.tag_list.selectedItems()]
-        records = database.get_tracks(tag_filter=selected_tags or None, search=self.search_box.text())
+        records = database.get_tracks(
+            tag_filter=selected_tags or None,
+            search=self.search_box.text(),
+            order=self.sort_combo.currentData(),
+        )
 
         self.track_list.clear()
         for record in records:
@@ -186,6 +204,10 @@ class LibraryPanel(QWidget):
         database.set_track_tags(track_id, tags)
         self.refresh()
 
+    def _on_metadata_changed(self, track_id: int, title: str, artist: str) -> None:
+        database.update_track_metadata(track_id, title, artist)
+        self.refresh()
+
     def _on_find_similar_requested(self, track_id: int, artist: str, title: str) -> None:
         if not self.config.lastfm_api_key:
             QMessageBox.information(
@@ -198,19 +220,21 @@ class LibraryPanel(QWidget):
 
         self.detail_panel.set_finding_similar(True)
         worker = SimilarWorker(artist, title, self.config.lastfm_api_key)
-        worker.finished_ok.connect(lambda tracks, tid=track_id: self._on_similar_found(tid, tracks))
+        worker.finished_ok.connect(
+            lambda tracks, tid=track_id, a=artist, t=title: self._on_similar_found(tid, tracks, a, t)
+        )
         worker.failed.connect(lambda message, tid=track_id: self._on_similar_failed(tid, message))
         worker.finished.connect(lambda w=worker: self._similar_workers.remove(w))
         worker.finished.connect(worker.deleteLater)
         self._similar_workers.append(worker)
         worker.start()
 
-    def _on_similar_found(self, track_id: int, tracks: list) -> None:
+    def _on_similar_found(self, track_id: int, tracks: list, artist: str, title: str) -> None:
         if self.detail_panel.current_track_id() != track_id:
             return  # selection moved on to another track while this was in flight
         self.detail_panel.set_finding_similar(False)
         if not tracks:
-            QMessageBox.information(self, "Similar Tracks", "Last.fm didn't return any matches for this track.")
+            self.detail_panel.show_no_results(artist, title)
             return
         self.detail_panel.set_similar_results(tracks)
 
@@ -219,6 +243,25 @@ class LibraryPanel(QWidget):
             return
         self.detail_panel.set_finding_similar(False)
         QMessageBox.warning(self, "Similar Tracks", message)
+
+    def _on_suggest_artist_requested(self, track_id: int, source_url: str, title: str) -> None:
+        worker = ArtistLookupWorker(source_url, title)
+        worker.finished_ok.connect(lambda suggestion, tid=track_id: self._on_artist_suggested(tid, suggestion))
+        worker.failed.connect(lambda message, tid=track_id: self._on_artist_suggested(tid, None))
+        worker.finished.connect(lambda w=worker: self._lookup_workers.remove(w))
+        worker.finished.connect(worker.deleteLater)
+        self._lookup_workers.append(worker)
+        worker.start()
+
+    def _on_artist_suggested(self, track_id: int, suggestion) -> None:
+        if self.detail_panel.current_track_id() != track_id:
+            return
+        self.detail_panel.set_artist_suggestion(suggestion)
+
+    def _on_open_similar_youtube(self, tracks: list) -> None:
+        for track in tracks:
+            query = urllib.parse.quote(f"{track.artist} {track.title}")
+            webbrowser.open_new_tab(f"https://www.youtube.com/results?search_query={query}")
 
     def _add_tag_to_selection(self) -> None:
         items = self.track_list.selectedItems()
