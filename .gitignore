@@ -9,7 +9,7 @@
 /dw_davinci/report/
 /dw_insta/config.json
 /dw_insta/window_settings.ini
-/dw_yt/config.json
-/dw_yt/library.db
-/dw_yt/library.db-*
-/dw_yt/.waveform_cache/
+/dw_beatfumbler/config.json
+/dw_beatfumbler/library.db
+/dw_beatfumbler/library.db-*
+/dw_beatfumbler/.waveform_cache/

@@ -100,6 +100,11 @@ def update_track_filepath(track_id: int, new_filepath: str) -> None:
         conn.execute("UPDATE tracks SET filepath = ? WHERE id = ?", (new_filepath, track_id))
 
 
+def update_track_metadata(track_id: int, title: str, artist: str) -> None:
+    with _connect() as conn:
+        conn.execute("UPDATE tracks SET title = ?, artist = ? WHERE id = ?", (title, artist, track_id))
+
+
 def delete_track(track_id: int) -> None:
     """Drop a track from the library. track_tags rows cascade via the FK."""
     with _connect() as conn:
@@ -156,10 +161,17 @@ def known_filepaths() -> set[str]:
         return {row[0] for row in conn.execute("SELECT filepath FROM tracks").fetchall()}
 
 
-def get_tracks(tag_filter: Optional[list[str]] = None, search: str = "") -> list[TrackRecord]:
+TRACK_ORDERS = {
+    "date_desc": "downloaded_at DESC",
+    "date_asc": "downloaded_at ASC",
+}
+
+
+def get_tracks(tag_filter: Optional[list[str]] = None, search: str = "", order: str = "date_desc") -> list[TrackRecord]:
+    order_clause = TRACK_ORDERS.get(order, TRACK_ORDERS["date_desc"])
     with _connect() as conn:
         conn.row_factory = sqlite3.Row
-        rows = conn.execute("SELECT * FROM tracks ORDER BY downloaded_at DESC").fetchall()
+        rows = conn.execute(f"SELECT * FROM tracks ORDER BY {order_clause}").fetchall()
 
         records = []
         search_lower = search.lower().strip()
