@@ -17,13 +17,23 @@ Summary:
       geometry is limited to what GeometryComponent rebuilds: meshes only,
       single UV set, no creases - and nothing for curves/surfaces.
 
+    Both take the same symmetry options: ``mirror`` reflects the copies
+    across a world axis (optionally around a pivot node, baking the flip
+    into mesh points so nothing ends up inside-out), and the copies are
+    renamed by swapping their left/right token - ``L_arm`` -> ``R_arm``,
+    ``armLeft`` -> ``armRight`` - which is how one side of a setup becomes
+    the other.
+
 Functions:
     duplicate_nodes: hybrid cmds.duplicate + preset replay of the graph.
     mn_duplicate_nodes: rebuild copies purely from the captured preset.
+    swap_side_name: swap the left/right token in a node name.
 
 Example:
     >>> from dw_maya.dw_duplication import duplicate_nodes
     >>> dups = duplicate_nodes()  # selected collider -> copy + its constraint
+    >>> # the other side of a symmetrical setup, mirrored across X:
+    >>> dups = duplicate_nodes(["L_shoulder_collider"], mirror="x")
 
 Author:
     DrWeeny
@@ -88,6 +98,246 @@ def _specialize(node):
     if cls and type(node) is not cls:
         return cls(node.tr or node.node)
     return node
+
+
+#: World axis a mirror reflects across, as an index into a 4x4 row-major list.
+_MIRROR_AXES = {"x": 0, "y": 1, "z": 2}
+
+#: Transform channels a mirror has to write. Driven ones make it impossible.
+_MIRROR_CHANNELS = ("translate", "rotate", "scale")
+
+
+#: Side tokens swapped when a copy is renamed for symmetry. Each pair is
+#: swapped both ways and matched case-insensitively; extend this tuple to
+#: teach the swap a studio's own convention.
+SIDE_PAIRS = (("l", "r"),
+              ("lf", "rt"),
+              ("lft", "rgt"),
+              ("left", "right"))
+
+#: One-character tokens are only recognised when a delimiter isolates them
+#: (``L_arm``, ``arm_L``, ``arm_L_end``) - never inside a word, or every
+#: name holding an 'l' would flip.
+_SIDE_MAP = {}
+for _a, _b in SIDE_PAIRS:
+    _SIDE_MAP[_a] = _b
+    _SIDE_MAP[_b] = _a
+
+_LONG_TOKENS = sorted((t for t in _SIDE_MAP if len(t) > 1), key=len,
+                      reverse=True)
+_ALL_TOKENS = sorted(_SIDE_MAP, key=len, reverse=True)
+
+#: Delimited token: start/end of the name or an underscore on both sides.
+_SIDE_DELIMITED = re.compile(r"(?<![A-Za-z0-9])(" + "|".join(_ALL_TOKENS) +
+                             r")(?![A-Za-z0-9])", re.IGNORECASE)
+
+#: Camel-case token: 'armLeft', 'meshRight_geo'. Multi-letter only - a bare
+#: capital in 'armR' is too easily a version letter or an acronym tail.
+_SIDE_CAMEL = re.compile(r"(?<=[a-z0-9])(" + "|".join(_LONG_TOKENS) +
+                         r")(?![a-z])", re.IGNORECASE)
+
+
+def _match_case(source: str = "", target: str = "") -> str:
+    """Return ``target`` wearing ``source``'s capitalisation."""
+    if source.isupper():
+        return target.upper()
+    if source.islower():
+        return target.lower()
+    if source[:1].isupper():
+        return target.capitalize()
+    return target
+
+
+def _swap_token(match) -> str:
+    token = match.group(1)
+    return _match_case(token, _SIDE_MAP[token.lower()])
+
+
+def swap_side_name(name: str = "") -> str:
+    """Swap the left/right token in a node's short name.
+
+    Recognises the :data:`SIDE_PAIRS` tokens delimited by underscores or by
+    the ends of the name (``L_arm``, ``arm_R``, ``arm_left_low``), and the
+    multi-letter ones in camel case (``armLeft``, ``meshRight_geo``). Case
+    is preserved (``L`` -> ``R``, ``Left`` -> ``Right``, ``LEFT`` ->
+    ``RIGHT``), every occurrence is swapped, and a name with no side token
+    comes back unchanged - the caller uniquifies it instead.
+
+    Args:
+        name: Node name; a dag path or namespace is kept as it is, only the
+            short name is rewritten.
+
+    Returns:
+        The swapped short name.
+    """
+    short = name.split("|")[-1]
+    namespace, sep, base = short.rpartition(":")
+    swapped = _SIDE_DELIMITED.sub(_swap_token, base)
+    swapped = _SIDE_CAMEL.sub(_swap_token, swapped)
+    return f"{namespace}{sep}{swapped}"
+
+
+def _renamed(name: str,
+             search_replace: Optional[tuple] = None,
+             swap_sides: bool = False) -> str:
+    """Rename a copy: explicit pair first, else the side-token swap.
+
+    ``search_replace`` is a plain ``("L_", "R_")`` substring pair and wins
+    when given - it is the escape hatch for a convention
+    :func:`swap_side_name` does not know.
+    """
+    short = name.split("|")[-1]
+    if search_replace:
+        namespace, sep, base = short.rpartition(":")
+        search, replace = search_replace
+        if search and search in base:
+            base = base.replace(search, replace)
+        else:
+            logger.debug(f"duplicate_nodes: '{short}' does not contain "
+                         f"'{search}', name left to the uniquifier")
+        return f"{namespace}{sep}{base}"
+    if swap_sides:
+        return swap_side_name(short)
+    return short
+
+
+def _copy_name(original: str,
+               search_replace: Optional[tuple] = None,
+               swap_sides: bool = False) -> str:
+    """Free scene name for a copy of ``original`` (renamed when asked)."""
+    return _unique_scene_name(_renamed(original, search_replace, swap_sides))
+
+
+def _mirror_pivot_point(mirror_pivot: Any = None) -> List[float]:
+    """World position the mirror plane passes through (origin by default)."""
+    if mirror_pivot is None or mirror_pivot == "":
+        return [0.0, 0.0, 0.0]
+    target = mirror_pivot if isinstance(mirror_pivot, str) else mirror_pivot.tr
+    if not target or not cmds.objExists(target):
+        logger.warning(f"duplicate_nodes: mirror_pivot '{target}' not found, "
+                       f"mirroring around the world origin")
+        return [0.0, 0.0, 0.0]
+    return cmds.xform(target, query=True, rotatePivot=True, worldSpace=True)
+
+
+def _mirror_matrix(axis: str = "x", mirror_pivot: Any = None) -> List[float]:
+    """Reflection matrix across the plane normal to ``axis`` at the pivot.
+
+    Row-major, Maya's ``xform -matrix`` layout: reflecting a point across
+    ``x = px`` is ``x' = 2 * px - x``, i.e. a -1 on the axis diagonal and
+    ``2 * px`` in the translation row.
+    """
+    index = _MIRROR_AXES[axis]
+    matrix = [1.0, 0.0, 0.0, 0.0,
+              0.0, 1.0, 0.0, 0.0,
+              0.0, 0.0, 1.0, 0.0,
+              0.0, 0.0, 0.0, 1.0]
+    matrix[index * 4 + index] = -1.0
+    matrix[12 + index] = 2.0 * _mirror_pivot_point(mirror_pivot)[index]
+    return matrix
+
+
+def _driven_channels(transform: str) -> List[str]:
+    """Transform channels fed by the graph - a mirror cannot write those."""
+    driven = []
+    for channel in _MIRROR_CHANNELS:
+        plug = f"{transform}.{channel}"
+        if cmds.listConnections(plug, source=True, destination=False,
+                                plugs=False):
+            driven.append(channel)
+    return driven
+
+
+def _bake_mirror(transform: str) -> bool:
+    """Freeze the negative scale into the points and flip the winding.
+
+    A mirrored transform carries a -1 scale, which leaves every mesh
+    inside-out for collisions and shading. Freezing bakes the flip into the
+    points (transform back to identity) and ``polyNormal`` puts the winding
+    back the right way round. Curves, surfaces and joints are left with the
+    negative scale - harmless there, and freezing a joint means something
+    else entirely.
+
+    Returns:
+        True when the bake ran.
+    """
+    if cmds.objectType(transform, isAType="joint"):
+        return False
+    meshes = cmds.listRelatives(transform, shapes=True, type="mesh",
+                                fullPath=True) or []
+    if not meshes:
+        return False
+    driven = _driven_channels(transform)
+    if driven:
+        logger.warning(f"mirror: '{transform}' keeps its negative scale, "
+                       f"{', '.join(driven)} driven by the graph")
+        return False
+    cmds.makeIdentity(transform, apply=True,
+                      translate=True, rotate=True, scale=True, normal=0)
+    for mesh in meshes:
+        cmds.polyNormal(mesh, normalMode=0, userNormalMode=0,
+                        constructionHistory=False)
+    return True
+
+
+def _mirror_node(node,
+                 axis: str = "x",
+                 mirror_pivot: Any = None,
+                 mirror_geometry: bool = True) -> bool:
+    """Reflect one duplicated node across the world mirror plane.
+
+    Constraints are skipped: their transform is an output of the rebuilt
+    network, not a placement to mirror.
+
+    Returns:
+        True when the node was mirrored.
+    """
+    import maya.api.OpenMaya as om
+
+    transform = node.tr if node is not None else None
+    if not transform or not cmds.objExists(transform):
+        return False
+    if cmds.objectType(transform, isAType="constraint"):
+        return False
+    driven = _driven_channels(transform)
+    if driven:
+        logger.warning(f"mirror: '{transform}' not mirrored, "
+                       f"{', '.join(driven)} driven by the graph")
+        return False
+    world = om.MMatrix(cmds.xform(transform, query=True, matrix=True,
+                                  worldSpace=True))
+    mirrored = world * om.MMatrix(_mirror_matrix(axis, mirror_pivot))
+    cmds.xform(transform, matrix=list(mirrored), worldSpace=True)
+    if mirror_geometry:
+        _bake_mirror(transform)
+    return True
+
+
+def _apply_mirror(created: List[Any],
+                  mirror: str = "",
+                  mirror_pivot: Any = None,
+                  mirror_geometry: bool = True) -> None:
+    """Mirror every copy, before the connection replay.
+
+    Placement first, graph second: a connection that drives the transform is
+    the authority, and ``_mirror_node`` steps aside when it finds one.
+    """
+    if not mirror:
+        return
+    axis = mirror.lower()
+    if axis not in _MIRROR_AXES:
+        logger.warning(f"duplicate_nodes: unknown mirror axis '{mirror}', "
+                       f"expected one of {sorted(_MIRROR_AXES)} - skipped")
+        return
+    done = 0
+    for node in created:
+        try:
+            done += 1 if _mirror_node(node, axis, mirror_pivot,
+                                      mirror_geometry) else 0
+        except Exception as e:
+            name = getattr(node, "node", node)
+            logger.warning(f"mirror: '{name}' failed: {e}")
+    logger.info(f"mirror: {done} node(s) reflected across {axis}")
 
 
 def _needs_preset_build(node) -> bool:
@@ -214,7 +464,12 @@ def duplicate_nodes(nodes: Optional[List[Any]] = None,
                     with_constraints: bool = True,
                     with_outputs: bool = False,
                     skip: Optional[list] = None,
-                    parent_to: Optional[Any] = None) -> List[Any]:
+                    parent_to: Optional[Any] = None,
+                    mirror: str = "",
+                    mirror_pivot: Optional[Any] = None,
+                    mirror_geometry: bool = True,
+                    swap_sides: Optional[bool] = None,
+                    search_replace: Optional[tuple] = None) -> List[Any]:
     """Hybrid duplicate: native copy for the content, preset for the graph.
 
     Each node is copied with ``cmds.duplicate`` (every shape type survives
@@ -235,6 +490,21 @@ def duplicate_nodes(nodes: Optional[List[Any]] = None,
             under (world position kept). Constraints are left where the
             native command puts them. Default None keeps the original's
             parent.
+        mirror: World axis to reflect the copies across ("x", "y", "z"), for
+            building the other side of a symmetrical setup. Empty (default)
+            duplicates in place.
+        mirror_pivot: Node the mirror plane passes through (its world rotate
+            pivot). Default None mirrors around the world origin.
+        mirror_geometry: Bake the mirror into the points of meshes (freeze +
+            reverse winding) instead of leaving a -1 scale, which would show
+            up as inside-out normals in collisions and shading. Curves,
+            surfaces and joints keep the negative scale either way.
+        swap_sides: Rename each copy by swapping its left/right token
+            (:func:`swap_side_name`). Default None follows ``mirror``: on
+            when mirroring, off for a plain duplicate.
+        search_replace: Explicit ``("L_", "R_")`` substring pair, used
+            instead of the side-token swap when the naming convention is one
+            it cannot guess.
 
     Returns:
         The wrapped duplicates (sources first, then their constraints).
@@ -243,6 +513,7 @@ def duplicate_nodes(nodes: Optional[List[Any]] = None,
     if not wrapped:
         return []
     parent_target = _resolve_parent_target(parent_to)
+    swap_sides = bool(mirror) if swap_sides is None else swap_sides
 
     entries = _capture_entries(wrapped, with_constraints, skip,
                                light_geometry=True)
@@ -264,6 +535,11 @@ def duplicate_nodes(nodes: Optional[List[Any]] = None,
                            f"duplication, skipping")
             continue
         dup = cmds.duplicate(original)[0]
+        # Rename BEFORE the path is recorded, for the same reason as the
+        # re-parent below: the rename map stores full paths.
+        if swap_sides or search_replace:
+            dup = cmds.rename(dup, _copy_name(original, search_replace,
+                                              swap_sides))
         dup_path = cmds.ls(dup, long=True)[0]
         # Re-parent BEFORE recording the copy in the rename map: the map
         # stores full paths, and a later cmds.parent would invalidate them.
@@ -273,14 +549,20 @@ def duplicate_nodes(nodes: Optional[List[Any]] = None,
                 dup_node.parentTo(parent_target)
                 dup_path = cmds.ls(dup_node.tr, long=True)[0]
         # The duplicate drags constrained children along as dead constraint
-        # copies (no targets, but still wired to the copy's channels) - they
-        # would fight the proper rebuild in pass 1b.
+        # copies (still wired to the copy's channels, still aimed at the
+        # ORIGINAL targets) - they would fight the proper rebuild in pass 1b
+        # and leave the copy holding two constraints. listRelatives rather
+        # than ls(dup_path, dag=True, type="constraint"): both find the same
+        # descendants (verified in Maya 2022), but this asks the question
+        # directly and can never match the duplicated node itself.
         try:
-            junk = cmds.ls(dup_path, dag=True, type="constraint",
-                           long=True) or []
+            junk = cmds.listRelatives(dup_path, allDescendents=True,
+                                      type="constraint", fullPath=True) or []
         except Exception:
             junk = []
         if junk:
+            logger.debug(f"duplicate_nodes: dropping {len(junk)} constraint "
+                         f"copy/copies the native duplicate brought along")
             cmds.delete(junk)
         ctx.name_map[identity] = dup_path
         _seed_shape_map(original, dup_path, ctx)
@@ -294,10 +576,13 @@ def duplicate_nodes(nodes: Optional[List[Any]] = None,
         if not needs_preset:
             continue
         if identity not in ctx.name_map:
-            ctx.name_map[identity] = _unique_scene_name(
-                original.split("|")[-1])
+            ctx.name_map[identity] = _copy_name(original, search_replace,
+                                                swap_sides)
         created[i] = pcomp.node_from_preset(identity, body, ctx,
                                             skip=pass1_skip)
+
+    # Placement pass - reflect the copies before the graph is replayed.
+    _apply_mirror(created, mirror, mirror_pivot, mirror_geometry)
 
     # Pass 2 - replay connections now that every copy exists.
     _replay_connections(created, entries, ctx, with_outputs, skip)
@@ -308,7 +593,12 @@ def mn_duplicate_nodes(nodes: Optional[List[Any]] = None,
                        with_constraints: bool = True,
                        with_outputs: bool = False,
                        skip: Optional[list] = None,
-                       parent_to: Optional[Any] = None) -> List[Any]:
+                       parent_to: Optional[Any] = None,
+                       mirror: str = "",
+                       mirror_pivot: Optional[Any] = None,
+                       mirror_geometry: bool = True,
+                       swap_sides: Optional[bool] = None,
+                       search_replace: Optional[tuple] = None) -> List[Any]:
     """Pure preset duplicate: every copy is rebuilt from its captured entry.
 
     Same machinery as loading a preset file (``node_from_preset``), so it
@@ -330,6 +620,8 @@ def mn_duplicate_nodes(nodes: Optional[List[Any]] = None,
         parent_to: Node name or MayaNode to parent every duplicated source
             under (world position kept); wins over the stored hierarchy
             slice. Default None keeps the preset placement.
+        mirror / mirror_pivot / mirror_geometry / swap_sides /
+        search_replace: Symmetry options - see :func:`duplicate_nodes`.
 
     Returns:
         The wrapped duplicates (sources first, then their constraints).
@@ -338,16 +630,19 @@ def mn_duplicate_nodes(nodes: Optional[List[Any]] = None,
     if not wrapped:
         return []
     parent_target = _resolve_parent_target(parent_to)
+    swap_sides = bool(mirror) if swap_sides is None else swap_sides
 
     entries = _capture_entries(wrapped, with_constraints, skip)
 
     # Seed every identity with a fresh name (same namespace) so the rebuild
-    # creates copies instead of resolving back onto the originals.
+    # creates copies instead of resolving back onto the originals. With a
+    # side swap this is also where the copy gets its mirrored name, rather
+    # than a numbered one it would have to be renamed out of afterwards.
     ctx = pcomp.PresetContext(create=True)
     for identity, _, original, _ in entries:
         if identity not in ctx.name_map:
-            ctx.name_map[identity] = _unique_scene_name(
-                original.split("|")[-1])
+            ctx.name_map[identity] = _copy_name(original, search_replace,
+                                                swap_sides)
 
     # Pass 1 - create everything, connections deferred.
     pass1_skip = ["connections"] + list(skip or [])
@@ -362,6 +657,9 @@ def mn_duplicate_nodes(nodes: Optional[List[Any]] = None,
                 continue
             node.parentTo(parent_target)
             ctx.name_map[identity] = node.tr or node.node
+
+    # Placement pass - reflect the copies before the graph is replayed.
+    _apply_mirror(created, mirror, mirror_pivot, mirror_geometry)
 
     # Pass 2 - replay connections now that every copy exists.
     _replay_connections(created, entries, ctx, with_outputs, skip)

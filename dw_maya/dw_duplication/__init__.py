@@ -24,6 +24,13 @@ Specialized Functions:
                      rebuilt purely from their preset entry (round-trip
                      check; mesh-only geometry)
 
+Symmetry:
+    Both preset duplicates take mirror options - reflect the copies across a
+    world axis (around a pivot node when given, baking the flip into mesh
+    points) and rename them by swapping their left/right token, which turns
+    one side of a setup into the other:
+    >>> duplicate_nodes(['L_shoulder_collider'], mirror='x')
+
 Common Use Cases:
     - Clean mesh duplication: dupMesh()
     - Animated mesh duplication: dupAnim() 
@@ -48,8 +55,10 @@ from .dw_dup_bake import dupAnim
 from .dw_outmesh import outmesh
 from .dw_with_cache import dupWCache
 from .dw_dup_change_pivot import dupWithPivotAdjustment
-from .dw_dup_preset import duplicate_nodes, mn_duplicate_nodes
+from .dw_dup_preset import (duplicate_nodes, mn_duplicate_nodes,
+                            swap_side_name)
 
 __all__ = ['cleanDuplication', 'dupMesh', 'freshDuplicate', 'dupAnim',
            'outmesh', 'dupWCache', 'dupWithPivotAdjustment',
-           'duplicate_nodes', 'mn_duplicate_nodes']
+           'duplicate_nodes', 'mn_duplicate_nodes',
+           'swap_side_name']
