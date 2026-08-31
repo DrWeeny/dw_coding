@@ -450,6 +450,72 @@ def derive_bind_offset(target_mesh: str) -> Optional[List[float]]:
     return rigid_transform_between(bind, drawn)
 
 
+def bind_space_offset(source_mesh: str,
+                      target_mesh: str,
+                      ) -> Tuple[Optional[List[float]], str]:
+    """The transform carrying the TARGET's bind space into the SOURCE's.
+
+    What every bindPreMatrix copy between two meshes actually needs, in either
+    direction. :func:`derive_bind_offset` only answers half of it - a mesh's
+    own bind space against the space it is drawn in - and that half is enough
+    on the return leg, where the source is a solved generation sitting at its
+    bind pose so its own half is identity. It is NOT enough coming the other
+    way: seeding a rest mesh from a published asset, the *source* is the rigged
+    one, its bind space is modelling space, and the correction needed is the
+    inverse of its own offset. Deriving nothing there leaves the target bound
+    with the asset's modelling-space bind while its points are out in the set,
+    which snaps it onto the joints the moment it evaluates.
+
+    Both halves are measured against the space the two meshes are DRAWN in,
+    which is the frame they genuinely share, and composed::
+
+        target bind -> drawn -> source bind
+
+    Args:
+        source_mesh: Mesh whose skinCluster the bind matrices come from.
+        target_mesh: Mesh about to be bound.
+
+    Returns:
+        ``(matrix, reason)``. ``matrix`` is a flat 16-float row-major matrix,
+        or None when no correction is needed (both meshes bind in the space
+        they are drawn in) or when one could not be solved - and ``reason``
+        says which, so a caller can abort on the second rather than treating it
+        as the first. Both are silent conditions otherwise, and they mean
+        opposite things.
+    """
+    import maya.api.OpenMaya as om
+
+    def _half(mesh: str) -> Tuple[Optional[om.MMatrix], str]:
+        """A mesh's own bind -> drawn transform, distinguishing identity."""
+        if bind_space_shape(mesh) == visible_shape(mesh):
+            return None, ""
+        matrix = derive_bind_offset(mesh)
+        if matrix is None:
+            return None, (f"'{mesh}' does not differ rigidly between its bind "
+                          f"shape and the shape it is drawn in")
+        return om.MMatrix(matrix), ""
+
+    to_drawn, why = _half(target_mesh)
+    if why:
+        return None, why
+    from_drawn, why = _half(source_mesh)
+    if why:
+        return None, why
+
+    if to_drawn is None and from_drawn is None:
+        return None, ""
+
+    # Explicit `is None`, never `or`: an identity MMatrix is a legitimate
+    # value here and truth-testing one is not something the API promises.
+    identity = om.MMatrix()
+    to_drawn = identity if to_drawn is None else to_drawn
+    from_drawn = identity if from_drawn is None else from_drawn
+    combined = to_drawn * from_drawn.inverse()
+    if combined.isEquivalent(identity):
+        return None, ""
+    return list(combined), ""
+
+
 def rigid_transform_between(mesh_from: str,
                             mesh_to: str,
                             tolerance: float = 0.001,
@@ -560,12 +626,12 @@ def copy_skin_cluster(source_mesh: str,
             suits a mesh that lost or gained points, ``closestComponent``
             respects shell boundaries, ``rayCast`` suits offset surfaces.
             Ignored on the exact path.
-        bind_pose_mesh: A copy of ``source_mesh`` moved onto the target's own
-            bind pose. Use it when the target's undeformed geometry is not
-            where the solve happened - the rigid transform between the two is
-            solved and folded into the copied bindPreMatrix values, so the
-            target binds correctly in ITS space while the animation still plays
-            out in the solve's space. Must share topology with ``source_mesh``.
+        bind_pose_mesh: Override for the bind-space correction: a copy of
+            ``source_mesh`` moved onto the target's own bind pose. Not normally
+            needed - :func:`bind_space_offset` derives the same transform from
+            the two meshes themselves. Supply it when that derivation fails,
+            which it does when a rig's placement is not rigid at the current
+            frame. Must share topology with ``source_mesh``.
         new_skin_name: Name for a newly created target skinCluster.
 
     Returns:
@@ -581,6 +647,12 @@ def copy_skin_cluster(source_mesh: str,
         logger.error(f"skinCluster '{src_skin}' has no influences.")
         return None
 
+    # Derived from the two meshes unless overridden, the same way the return
+    # leg does it. Without this the bind matrices arrive in the SOURCE's bind
+    # space while the target's points are somewhere else - the ordinary case
+    # when the source is a published asset, modelled at the origin and carried
+    # into the set by its rig - and the target snaps onto the joints as soon as
+    # it evaluates. It used to only warn about that and copy anyway.
     bind_offset = None
     if bind_pose_mesh:
         bind_offset = rigid_transform_between(bind_pose_mesh, source_mesh)
@@ -589,6 +661,19 @@ def copy_skin_cluster(source_mesh: str,
                 f"Could not solve the bind-pose offset from "
                 f"'{bind_pose_mesh}'. Aborting rather than binding into the "
                 f"wrong space.")
+            return None
+        logger.info(f"Bind-space offset taken from '{bind_pose_mesh}'.")
+    else:
+        bind_offset, why = bind_space_offset(source_mesh, target_mesh)
+        if why:
+            logger.error(
+                f"Cannot correct the bind space: {why}. Aborting rather than "
+                f"binding into the wrong space. Almost always the current "
+                f"frame: the offset is measured where you are standing, and a "
+                f"rig only places its mesh rigidly at REST - go to the rest "
+                f"frame and copy again. If the rest pose itself deforms, "
+                f"supply a bind pose mesh (a copy of the source moved onto "
+                f"the target's bind pose) to override.")
             return None
 
     # A bind-pose mesh is the answer to a space mismatch, so only complain
