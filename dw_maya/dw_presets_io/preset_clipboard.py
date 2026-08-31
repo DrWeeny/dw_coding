@@ -19,8 +19,9 @@ Features:
       into the scene.
 
 Functions:
-    clipboard_dir, save_to_clipboard, list_clipboard, clipboard_info,
-    load_from_clipboard, clear_clipboard
+    clipboard_dir, entry_path, entry_age_hours, save_to_clipboard,
+    list_clipboard, clipboard_info, load_from_clipboard, prune_clipboard,
+    clear_clipboard
 
 Example:
     # Maya session A
@@ -65,8 +66,17 @@ def clipboard_dir() -> str:
     return path
 
 
-def _entry_path(name: str) -> str:
+def entry_path(name: str = "") -> str:
+    """Return the json path an entry name maps to (existing or not)."""
     return os.path.join(clipboard_dir(), f"{name}.json")
+
+
+def entry_age_hours(name: str = "") -> Optional[float]:
+    """Hours since the entry was written, or None when it is missing."""
+    path = entry_path(name)
+    if not os.path.isfile(path):
+        return None
+    return (time.time() - os.path.getmtime(path)) / 3600.0
 
 
 def save_to_clipboard(nodes: List[Any],
@@ -84,7 +94,7 @@ def save_to_clipboard(nodes: List[Any],
     Returns:
         The written path, or None when nothing was captured.
     """
-    return pcomp.save_preset_file(nodes, _entry_path(name),
+    return pcomp.save_preset_file(nodes, entry_path(name),
                                   only=only, skip=skip)
 
 
@@ -101,10 +111,12 @@ def clipboard_info(name: str) -> Dict[str, Any]:
     """Peek at a clipboard entry without touching the scene.
 
     Returns ``{"name", "path", "saved" (readable mtime), "nodes"
-    ({identity: nodeType}), "namespaces"}``, or an empty dict when the entry
-    is missing / not a dw_preset file.
+    ({identity: nodeType}), "components" ({identity: [slice keys]}),
+    "namespaces"}``, or an empty dict when the entry is missing / not a
+    dw_preset file. ``components`` is what a paste UI needs to build its
+    per-node checkbox tree without rebuilding anything.
     """
-    path = _entry_path(name)
+    path = entry_path(name)
     if not os.path.isfile(path):
         logger.warning(f"clipboard_info: no entry named '{name}'")
         return {}
@@ -120,6 +132,8 @@ def clipboard_info(name: str) -> Dict[str, Any]:
                                time.localtime(os.path.getmtime(path))),
         "nodes": {identity: body.get("nodeType")
                   for identity, body in data.get("nodes", {}).items()},
+        "components": {identity: [key for key in body if key != "nodeType"]
+                       for identity, body in data.get("nodes", {}).items()},
         "namespaces": data.get("namespaces", {}),
     }
 
@@ -129,13 +143,17 @@ def load_from_clipboard(name: str,
                         create: bool = True,
                         remap: Optional[Dict[str, str]] = None,
                         apply_external: bool = True,
-                        ext_ns_map: Optional[Dict[str, str]] = None) -> List[Any]:
+                        ext_ns_map: Optional[Dict[str, str]] = None,
+                        only: Optional[list] = None,
+                        skip: Optional[list] = None,
+                        include: Optional[Dict[str, Optional[list]]] = None) -> List[Any]:
     """Rebuild a clipboard entry in the current scene.
 
     Same knobs as :func:`preset_components.load_preset_file` (which this
-    forwards to). Returns the wrapped nodes.
+    forwards to) - including ``include``, the per-node component selection a
+    paste UI builds from its checkboxes. Returns the wrapped nodes.
     """
-    path = _entry_path(name)
+    path = entry_path(name)
     if not os.path.isfile(path):
         logger.warning(f"load_from_clipboard: no entry named '{name}' "
                        f"(have: {list_clipboard()})")
@@ -145,7 +163,33 @@ def load_from_clipboard(name: str,
                                   create=create,
                                   remap=remap,
                                   apply_external=apply_external,
-                                  ext_ns_map=ext_ns_map)
+                                  ext_ns_map=ext_ns_map,
+                                  only=only,
+                                  skip=skip,
+                                  include=include)
+
+
+def prune_clipboard(max_age_hours: float = 0.0) -> List[str]:
+    """Delete entries older than ``max_age_hours``. Returns their names.
+
+    The clipboard lives under the system temp root, so the OS may clear it
+    whenever it feels like it - this makes the expiry explicit and, more to
+    the point, keeps a stale entry from being pasted days later because it
+    still sat at the top of the list. ``max_age_hours <= 0`` disables the
+    sweep and removes nothing.
+    """
+    if not max_age_hours or max_age_hours <= 0:
+        return []
+    removed = []
+    for name in list_clipboard():
+        age = entry_age_hours(name)
+        if age is not None and age > max_age_hours:
+            os.remove(entry_path(name))
+            removed.append(name)
+    if removed:
+        logger.info(f"prune_clipboard: removed {len(removed)} entrie(s) older "
+                    f"than {max_age_hours}h: {', '.join(removed)}")
+    return removed
 
 
 def clear_clipboard(name: Optional[str] = None) -> int:
@@ -157,7 +201,7 @@ def clear_clipboard(name: Optional[str] = None) -> int:
     targets = [name] if name else list_clipboard()
     removed = 0
     for entry in targets:
-        path = _entry_path(entry)
+        path = entry_path(entry)
         if os.path.isfile(path):
             os.remove(path)
             removed += 1

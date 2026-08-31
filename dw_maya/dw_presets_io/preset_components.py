@@ -1142,7 +1142,10 @@ def load_preset_file(path: str,
                      create: bool = True,
                      remap: Optional[Dict[str, str]] = None,
                      apply_external: bool = True,
-                     ext_ns_map: Optional[Dict[str, str]] = None) -> List[Any]:
+                     ext_ns_map: Optional[Dict[str, str]] = None,
+                     only: Optional[list] = None,
+                     skip: Optional[list] = None,
+                     include: Optional[Dict[str, Optional[list]]] = None) -> List[Any]:
     """Rebuild every node in a saved preset file. Returns the wrapped nodes.
 
     Args:
@@ -1157,6 +1160,12 @@ def load_preset_file(path: str,
         ext_ns_map: External-namespace remap, e.g. ``{"alien_999": "alien01",
             ":": "man_01", "god_00": ":"}``. The file's top-level
             ``namespaces["external"]`` lists valid keys.
+        only / skip: Component-key filters applied to every rebuilt node.
+        include: Per-node selection, ``{identity: [component keys]}``. When
+            given, identities absent from it are skipped entirely (saved order
+            is kept for the rest) and a node's list replaces ``only`` for that
+            node - an empty list rebuilds the bare node with no slice applied.
+            A None value falls back to the global ``only`` / ``skip``.
     """
     data = dw_json.load_json(path)
     if not data or data.get("format") != PRESET_FORMAT:
@@ -1167,5 +1176,15 @@ def load_preset_file(path: str,
                         ext_ns_map=dict(ext_ns_map or {}))
     if remap:
         ctx.name_map.update(remap)
-    return [node_from_preset(identity, body, ctx)
-            for identity, body in data.get("nodes", {}).items()]
+    out = []
+    for identity, body in data.get("nodes", {}).items():
+        node_only, node_skip = only, skip
+        if include is not None:
+            if identity not in include:
+                continue
+            picked = include[identity]
+            if picked is not None:
+                node_only, node_skip = list(picked), None
+        out.append(node_from_preset(identity, body, ctx,
+                                    only=node_only, skip=node_skip))
+    return out
