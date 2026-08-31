@@ -16,7 +16,8 @@ Features:
 
 Functions:
     component_label, all_component_keys, sanitize_name, default_entry_name,
-    selected_nodes, scene_namespaces, list_entries, entry_info,
+    selected_nodes, is_shape, expand_selection, scene_namespaces,
+    list_entries, entry_info,
     clipboard_location, copy_selection, paste_entry, delete_entry,
     clear_entries, cleanup_hours, set_cleanup_hours, cleanup_label,
     run_cleanup
@@ -103,8 +104,58 @@ def sanitize_name(name: str = "") -> str:
 
 
 def selected_nodes() -> List[str]:
-    """Return the current selection (long names)."""
+    """Return the current selection as-is (long names)."""
     return cmds.ls(selection=True, long=True) or []
+
+
+def is_shape(node: str = "") -> bool:
+    """True when ``node`` is a shape rather than a transform."""
+    return bool(cmds.objectType(node, isAType="shape"))
+
+
+def expand_selection(nodes: Optional[List[str]] = None,
+                     include_shapes: bool = False) -> List[str]:
+    """Return ``nodes`` (or the selection) plus everything under them.
+
+    Selecting a group is the natural gesture - nobody wants to select every
+    collider inside it - so a copy walks the hierarchy itself.
+
+    Shapes are dropped when their transform is already in the list: a preset
+    identity is transform-based, so a shape would capture under the same
+    identity and simply overwrite its own transform's entry. A shape whose
+    transform is *not* in the list (someone picked the shape alone) is kept,
+    and intermediate shapes are always dropped.
+
+    Parents come before children: the hierarchy slice re-parents against
+    names that must already exist when a child is rebuilt.
+    """
+    roots = nodes if nodes is not None else selected_nodes()
+    roots = cmds.ls(roots, long=True) or []
+    if not roots:
+        return []
+    descendants = cmds.listRelatives(roots, allDescendents=True,
+                                     fullPath=True) or []
+    # dict.fromkeys keeps the first occurrence and drops repeats
+    everything = list(dict.fromkeys(roots + descendants))
+    # A shorter dag path is always higher in the hierarchy.
+    everything.sort(key=lambda node: node.count("|"))
+    if include_shapes:
+        return everything
+
+    present = set(everything)
+    kept = []
+    for node in everything:
+        if not is_shape(node):
+            kept.append(node)
+            continue
+        parent = (cmds.listRelatives(node, parent=True, fullPath=True)
+                  or [None])[0]
+        if parent in present:
+            continue
+        if cmds.attributeQuery("intermediateObject", node=node, exists=True)                 and cmds.getAttr(f"{node}.intermediateObject"):
+            continue
+        kept.append(node)
+    return kept
 
 
 def default_entry_name(nodes: Optional[List[str]] = None) -> str:
@@ -188,19 +239,35 @@ def clipboard_location() -> str:
 
 
 def copy_selection(name: str = "",
-                   nodes: Optional[List[str]] = None) -> Optional[str]:
+                   nodes: Optional[List[str]] = None,
+                   expand: bool = True,
+                   include_shapes: bool = False) -> Optional[str]:
     """Capture ``nodes`` (or the selection) into the clipboard under ``name``.
+
+    Args:
+        name: Entry name; empty names it from the selection.
+        nodes: Nodes to capture. Defaults to the selection.
+        expand: Walk into the selected groups (see :func:`expand_selection`).
+        include_shapes: Keep shapes whose transform is also captured. Off,
+            since both share one preset identity.
 
     Returns:
         The written path, or None when nothing was captured.
     """
-    nodes = nodes if nodes is not None else selected_nodes()
-    if not nodes:
+    roots = nodes if nodes is not None else selected_nodes()
+    if not roots:
         logger.warning("copy_selection: nothing selected.")
         return None
-    entry = sanitize_name(name) if name else default_entry_name(nodes)
-    return preset_clipboard.save_to_clipboard(nodes, entry,
-                                              only=all_component_keys(nodes))
+    captured = expand_selection(roots, include_shapes) if expand else roots
+    if not captured:
+        logger.warning("copy_selection: nothing left to capture.")
+        return None
+    if len(captured) != len(roots):
+        logger.info(f"copy_selection: {len(roots)} selected -> "
+                    f"{len(captured)} node(s) with the hierarchy")
+    entry = sanitize_name(name) if name else default_entry_name(roots)
+    return preset_clipboard.save_to_clipboard(
+        captured, entry, only=all_component_keys(captured))
 
 
 @dw_decorators.singleUndoChunk

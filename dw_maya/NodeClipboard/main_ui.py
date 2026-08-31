@@ -21,6 +21,8 @@ Features:
     - Copy names the entry from the selection unless a name is typed
       (advanced), and the entry list always lands on the newest one - so the
       simple path is copy here, paste there.
+    - Copy walks into the selected groups (advanced: "With hierarchy"), so a
+      whole COLLIDERS group travels without picking every node inside it.
 
 Classes:
     NodeClipboardUI
@@ -137,9 +139,16 @@ class NodeClipboardUI(QtWidgets.QWidget):
         # -- advanced half --------------------------------------------------
         self.name_field = QtWidgets.QLineEdit()
         self.name_field.setPlaceholderText("entry name (empty = from selection)")
+        self.hierarchy_check = QtWidgets.QCheckBox("With hierarchy")
+        self.hierarchy_check.setChecked(True)
+        self.hierarchy_check.setToolTip(
+            "Copy everything under the selected nodes, so a group can be "
+            "picked instead of each node inside it. Shapes are left out - "
+            "their transform already carries them.")
         name_row = QtWidgets.QHBoxLayout()
         name_row.addWidget(QtWidgets.QLabel("Copy as"))
         name_row.addWidget(self.name_field, 1)
+        name_row.addWidget(self.hierarchy_check)
 
         self.entry_list = QtWidgets.QListWidget()
         self.entry_list.setToolTip("Clipboard entries, newest first.")
@@ -336,11 +345,13 @@ class NodeClipboardUI(QtWidgets.QWidget):
                 "Copy", f"'{entry}' already exists on the clipboard.\n"
                         f"Overwrite it?"):
             return
-        path = clipboard_cmds.copy_selection(entry, nodes)
+        expand = self.hierarchy_check.isChecked()
+        path = clipboard_cmds.copy_selection(entry, nodes, expand=expand)
         if not path:
             self._warn("Copy", "Nothing was captured - see the script editor.")
             return
-        logger.info(f"NodeClipboard: copied {len(nodes)} node(s) to '{entry}'")
+        logger.info(f"NodeClipboard: copied {len(nodes)} selected node(s) to "
+                    f"'{entry}'{' with hierarchy' if expand else ''}")
         self.refresh_entries(select=entry)
 
     def paste_entry(self) -> None:
