@@ -90,11 +90,20 @@ class ComponentBar(QtWidgets.QWidget):
 
     # -- internals ----------------------------------------------------------
 
-    def _on_clicked(self, key: str = "", checked: bool = True) -> None:
-        """A user click is always all-or-nothing for that component."""
+    def _on_clicked(self, key: str = "") -> None:
+        """A user click is always all-or-nothing for that component.
+
+        The new state is read back from the box rather than taken from the
+        ``clicked(bool)`` argument: bound through ``functools.partial``, PySide
+        matches the no-argument ``clicked()`` overload and the flag would keep
+        its default, so every click re-checked the box it had just cleared.
+        A partially checked box goes to fully checked, as Qt already did.
+        """
         box = self._boxes.get(key)
-        if box is not None:
-            box.blockSignals(True)
-            box.setCheckState(Qt.Checked if checked else Qt.Unchecked)
-            box.blockSignals(False)
+        if box is None:
+            return
+        checked = box.checkState() != Qt.Unchecked
+        box.blockSignals(True)
+        box.setCheckState(Qt.Checked if checked else Qt.Unchecked)
+        box.blockSignals(False)
         self.component_toggled.emit(key, checked)
