@@ -1818,6 +1818,116 @@ def _relink_animation(source: str,
     return connected, dropped
 
 
+def _world_match_animation(mapping: Dict[str, str],
+                           start: int,
+                           end: int,
+                           ) -> Dict[str, str]:
+    """Drive each control so its JOINT lands exactly on the solved joint.
+
+    The transfer for a solve whose bone transforms are ABSOLUTE - one fit
+    against the asset's own rest mesh, which comes back already in the space
+    the shot is in. Neither of the other two methods can express that:
+
+    - ``relink`` copies the solved joint's LOCAL curve values, which are
+      relative to the generation's root. That root is at the origin and is not
+      part of the solve, so those numbers are only meaningful when the solve
+      was fit in the asset's modelling space.
+    - ``bake`` constrains with ``maintainOffset``, which captures
+      ``joint_world(0) * inverse(B(0))`` and carries it for the whole range.
+      That is identity only when the rig is ALREADY posed to the solve's first
+      frame - true when an artist poses it by hand, never true automatically.
+
+    The rig gives ``joint_world = joint_offset * control_world`` with
+    ``joint_offset`` fixed by the rig's own constraint. Wanting
+    ``joint_world(t) = B(t)`` therefore means driving
+    ``control_world(t) = inverse(joint_offset) * B(t)``, which is built here
+    rather than approximated: a locator follows the solved joint exactly, and a
+    child of it holds ``inverse(joint_offset)`` as a static local matrix, so the
+    child's world IS the value the control needs. The control is constrained to
+    that child with no offset and baked.
+
+    Args:
+        mapping: ``{solved joint: control}``.
+        start: First frame.
+        end: Last frame.
+
+    Returns:
+        The pairing that was baked.
+    """
+    import maya.api.OpenMaya as om
+
+    rig: List[str] = []
+    controls: List[str] = []
+    constraints: List[str] = []
+    channels: List[str] = []
+    skipped: List[str] = []
+    try:
+        for solved, control in mapping.items():
+            joints, _ = _match_scene_joints([solved])
+            if not joints:
+                skipped.append(_leaf_name(solved))
+                continue
+            joint = joints[0]
+            translate_axes = _settable_axes(control, "translate")
+            rotate_axes = _settable_axes(control, "rotate")
+            if not translate_axes and not rotate_axes:
+                logger.warning(f"'{control}' is fully locked - skipped.")
+                continue
+
+            # The rig's own control -> joint relationship. Constant, so one
+            # reading of it is as good as any other.
+            joint_world = om.MMatrix(cmds.xform(joint, query=True,
+                                                worldSpace=True, matrix=True))
+            control_world = om.MMatrix(cmds.xform(control, query=True,
+                                                  worldSpace=True, matrix=True))
+            joint_offset = joint_world * control_world.inverse()
+
+            follower = cmds.spaceLocator(
+                name=f"dwWorldMatch_{_leaf_name(control)}")[0]
+            constraints.append(cmds.parentConstraint(solved, follower,
+                                                     maintainOffset=False)[0])
+            target = cmds.group(empty=True,
+                                parent=follower,
+                                name=f"dwWorldTarget_{_leaf_name(control)}")
+            cmds.xform(target, objectSpace=True,
+                       matrix=list(joint_offset.inverse()))
+            constraints.append(cmds.parentConstraint(
+                target, control,
+                maintainOffset=False,
+                skipTranslate=[a for a in "xyz" if a not in translate_axes]
+                or "none",
+                skipRotate=[a for a in "xyz" if a not in rotate_axes]
+                or "none")[0])
+            rig.append(follower)
+            controls.append(control)
+            channels += [f"translate{a.upper()}" for a in translate_axes]
+            channels += [f"rotate{a.upper()}" for a in rotate_axes]
+
+        if skipped:
+            logger.warning(
+                f"{len(skipped)} solved joint(s) had no scene joint to measure "
+                f"the rig offset from: {skipped[:8]}")
+        if not controls:
+            logger.error("Nothing could be world-matched; nothing to bake.")
+            return {}
+
+        cmds.bakeResults(controls,
+                         simulation=True,
+                         time=(start, end),
+                         sampleBy=1,
+                         disableImplicitControl=True,
+                         preserveOutsideKeys=False,
+                         sparseAnimCurveBake=False,
+                         attribute=sorted(set(channels)))
+        logger.info(f"World-matched {len(controls)} control(s) over "
+                    f"[{start}, {end}] - each joint lands on its solved one.")
+    finally:
+        dead = [n for n in constraints + rig if cmds.objExists(n)]
+        if dead:
+            cmds.delete(dead)
+    return mapping
+
+
 def _rig_is_one_to_one(mapping: Dict[str, str],
                        tolerance: float = 0.01,
                        ) -> Tuple[bool, float]:
@@ -1912,6 +2022,30 @@ def transfer_solve_animation(solved_joints: List[str],
                    if _leaf_name(solved) in pairing
                    and cmds.objExists(pairing[_leaf_name(solved)])}
         unresolved = [s for s in solved_joints if s not in mapping]
+        if to_controls:
+            # A pairing names JOINTS - that is what the solve knows about and
+            # what the caller recorded. Asking for controls still has to take
+            # the second hop, exactly as map_solved_to_targets does; without it
+            # 'drive the controls' silently drove the joints, and on a rig that
+            # constrains its joints from the controls the keys lose to the
+            # constraint and NOTHING MOVES - a no-op with no error in it.
+            find, replace = name_remap if name_remap else ("", "")
+            hopped = {}
+            no_control = []
+            for solved, joint in mapping.items():
+                control = (remap_name(joint, find, replace)
+                           or driving_control(joint))
+                if control:
+                    hopped[solved] = control
+                else:
+                    no_control.append(_leaf_name(joint))
+            if no_control:
+                logger.warning(
+                    f"{len(no_control)} paired joint(s) have no control "
+                    f"driving them, so they are skipped: {no_control[:10]}"
+                    f"{' ...' if len(no_control) > 10 else ''}")
+                unresolved += [s for s in mapping if s not in hopped]
+            mapping = hopped
     else:
         mapping, unresolved = map_solved_to_targets(solved_joints, to_controls,
                                                    name_remap)
@@ -1938,6 +2072,9 @@ def transfer_solve_animation(solved_joints: List[str],
     # re-derives that relationship per frame through the whole chain, and the
     # error compounds down it - measured at 0.06 units of joint drift at the
     # rest frame growing to 86 by the end of the range on a production rig.
+    if method == "world":
+        return _world_match_animation(mapping, start, end)
+
     if method in ("auto", "relink"):
         one_to_one, median = _rig_is_one_to_one(mapping)
         if one_to_one or method == "relink":

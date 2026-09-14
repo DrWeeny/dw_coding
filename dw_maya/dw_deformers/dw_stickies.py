@@ -45,6 +45,21 @@ def createSticky(componentSel=None,
         cmds.error("No components selected. Please select mesh components (faces, vertices, etc.).")
         return
 
+    # Pre-flight the component that will drive the sticky: the whole setup is
+    # placed through the mesh UVs, and a failure there used to surface as a raw
+    # API error only after the group, the controls and a temporary cluster had
+    # been created. Everything below this point creates nodes.
+    driverComponent = _pickDriverComponent(componentSel)[0]
+    if not driverComponent:
+        cmds.error("No mesh vertex or face in the selection. Please select mesh components.")
+        return
+
+    problems = validateStickyComponents([driverComponent])
+    if problems:
+        report = "\n".join(f"  - {p}" for p in problems)
+        cmds.error(f"Cannot create sticky on {driverComponent}, nothing was created:\n{report}")
+        return
+
     # Create a parent group if none is provided
     if not parent:
         if not cmds.objExists('sticky_grp'):
@@ -67,25 +82,22 @@ def createStickyDeformers(deformerType, name=None, parent=None, inputFaces=[], s
     # Filter selection
     meshFaces, meshVerts, meshTransforms, nurbsSurfaceTransforms, nurbsCurvesTransforms = filterSelection(inputFaces)
 
-    # Vertex input takes precedence when present; otherwise fall back to faces.
-    if meshVerts:
-        driverComponents = meshVerts
-        componentType = 'vtx'
-    else:
-        driverComponents = meshFaces
-        componentType = 'f'
+    # Vertex input takes precedence when present; otherwise fall back to faces,
+    # and only the last component of the selection drives the sticky.
+    driverComponent, componentType = _pickDriverComponent(inputFaces)
 
     # Multi-face selection handling (Currently commented out logic for UI multi-mode)
     multiFaceMode = False
-    driverComponent = driverComponents[-1] if driverComponents else None  # Default to last selected
 
     # Check user preferences for selection order tracking
     if not multiFaceMode:
         cmds.selectPref(trackSelectionOrder=True)
 
-    # Find deformer members (geometry to which deformer will be applied)
-    obj = cmds.ls(driverComponent, o=True)
-    meshTransforms = cmds.listRelatives(obj, p=True)
+    # Find deformer members (geometry to which deformer will be applied).
+    # Full paths throughout: a short name breaks every later command as soon as
+    # two meshes share it (duplicated groups, referenced assets).
+    obj = cmds.ls(driverComponent, objectsOnly=True, long=True)
+    meshTransforms = cmds.listRelatives(obj, parent=True, fullPath=True)
     deformerMembers = list(set(meshTransforms + nurbsSurfaceTransforms + nurbsCurvesTransforms))
 
     # Set name prefix if not provided
@@ -214,6 +226,136 @@ def filterSelection(inputFaces=[]):
     return meshFaces, meshVerts, meshTransforms, nurbsSurfaceTransforms, nurbsCurvesTransforms
 
 
+def _sanitizeNodeName(geoName: str) -> str:
+    """Turn an object name into a legal, still unique, node name prefix.
+
+    geoName is a full DAG path whenever the mesh short name is shared with
+    another one, and "|" is not legal in a node name. Keeping the path (with
+    its separators swapped) rather than truncating to the short name is what
+    keeps two stickies built on two identically named meshes apart.
+    """
+    return geoName.replace("|", "_").replace(":", "_").strip("_")
+
+
+def _resolveMeshShape(geoName: str):
+    """Resolve a component's object name to the mesh shape a sticky can use.
+
+    Returns:
+        tuple: (shape, problem) -- the non-intermediate mesh shape, or None
+        plus the reason it cannot drive a sticky.
+    """
+    matches = cmds.ls(geoName)
+    if not matches:
+        return None, f"{geoName} does not exist"
+    if len(matches) > 1:
+        return None, (f"{geoName} is ambiguous, {len(matches)} objects share "
+                      f"that name -- select it through its full DAG path")
+
+    if cmds.nodeType(matches[0]) == 'mesh':
+        return matches[0], ''
+
+    shapes = cmds.listRelatives(matches[0],
+                                noIntermediate=True,
+                                shapes=True,
+                                fullPath=True,
+                                type='mesh')
+    if not shapes:
+        return None, f"{geoName} has no mesh shape, stickies only support polygon meshes"
+    return shapes[0], ''
+
+
+def _pickDriverComponent(componentSel=[]):
+    """Return the (component, componentType) that will actually drive a sticky.
+
+    Vertices win over faces when both are selected, and only the last component
+    of the selection is used.
+
+    Returns:
+        tuple: (component, 'vtx' or 'f'), component is None on an empty or
+        non-mesh selection.
+    """
+    meshFaces, meshVerts = filterSelection(componentSel)[:2]
+    if meshVerts:
+        return meshVerts[-1], 'vtx'
+    if meshFaces:
+        return meshFaces[-1], 'f'
+    return None, 'f'
+
+
+def validateStickyComponents(componentSel=[]) -> list:
+    """Check a component selection can drive a follicle-based sticky.
+
+    A sticky control is placed through the mesh UVs (component world position
+    -> closest_uv_on_mesh -> follicle parameterU/V), so a component sitting on
+    an unmapped face has no attach point at all. Maya only reports that as a
+    raw "(kFailure): Object does not exist" out of getUVAtPoint, by which time
+    the sticky group, the controls and a temporary cluster already exist in the
+    scene. This runs the very same lookup as a pure query, creating nothing.
+
+    Args:
+        componentSel: mesh components ('mesh.f[3]', 'mesh.vtx[12]', ...).
+
+    Returns:
+        list: one message per problem found, empty when the selection is usable.
+    """
+    # delay import to avoid circular call
+    from dw_maya.dw_maya_utils import closest_uv_on_mesh
+
+    components = cmds.ls(componentSel, flatten=True) or []
+    if not components:
+        return ["no mesh component given"]
+
+    problems = []
+    resolved = {}
+    for component in components:
+        if "." not in component:
+            problems.append(f"{component} is not a mesh component")
+            continue
+
+        geoName, compNum = component.split(".", 1)
+        if geoName not in resolved:
+            meshShape, shapeProblem = _resolveMeshShape(geoName)
+            resolved[geoName] = meshShape
+            if shapeProblem:
+                problems.append(shapeProblem)
+        meshShape = resolved[geoName]
+        if not meshShape:
+            continue
+
+        uvSet = cmds.polyUVSet(meshShape, query=True, currentUVSet=True) or []
+        if not uvSet:
+            problems.append(f"{geoName} has no current UV set")
+            continue
+        if not cmds.polyEvaluate(meshShape, uv=True):
+            problems.append(f"{geoName} UV set '{uvSet[0]}' is empty")
+            continue
+
+        mapped = cmds.polyListComponentConversion(component, toUV=True) or []
+        if not cmds.ls(mapped, flatten=True):
+            problems.append(f"{component} carries no UV in set '{uvSet[0]}'")
+            continue
+
+        if compNum.startswith("vtx["):
+            positions = getVertexPositions([component], returnMPoints=True)
+        elif compNum.startswith("f["):
+            positions = getFaceCenterPositions([component], returnMPoints=True)
+        else:
+            problems.append(f"{component} is neither a vertex nor a face")
+            continue
+        if not positions:
+            problems.append(f"{component} could not be read as a mesh component")
+            continue
+
+        # the lookup createStickyControls will do -- a query, it creates nothing
+        try:
+            closest_uv_on_mesh(meshShape, position=list(positions.values())[0])
+        except RuntimeError as e:
+            problems.append(f"{component} has no usable UV at its position, "
+                            f"the face around it is most likely unmapped ({e})")
+
+    return problems
+
+
 def getFalloffRadius(ssr):
     if ssr:
         if cmds.softSelect(q=True, softSelectEnabled=True):
@@ -230,7 +372,7 @@ def generate_control_name(geo_name, component, name_prefix=''):
     if name_prefix:
         base_name = name_prefix
     else:
-        base_name = geo_name.replace(":", "_") + "_" + component
+        base_name = _sanitizeNodeName(geo_name) + "_" + component
     return getUniqueBaseName(base_name, dstSuffixes=['_zro', '_ctrl', '_follicle', '_follicleShape'])
 
 
@@ -494,17 +636,13 @@ def createStickyControls(driverComponents=[], componentType='f', createControlPa
 
     mask = 31 if componentType == 'vtx' else 34
     mesh_components = cmds.filterExpand(driverComponents, expand=True, selectionMask=mask)
-    if componentType == 'vtx':
-        d_component_position = getVertexPositions(mesh_components, returnMPoints=True)
-    else:
-        d_component_position = getFaceCenterPositions(mesh_components, returnMPoints=True)
 
     for driver in mesh_components:
         geo_name, comp_num = driver.split(".")
         component = re.sub(r'[^a-zA-Z0-9]', '_', comp_num)
 
         if bGenerateName:
-            base_name = geo_name.replace(":", "_") + "_" + component
+            base_name = _sanitizeNodeName(geo_name) + "_" + component
         else:
             base_name = namePrefix
 
@@ -530,9 +668,16 @@ def createStickyControls(driverComponents=[], componentType='f', createControlPa
 
         in_mesh_con, temp_cluster = _resolve_history_source(mesh_shape, before)
 
-        # Get UVs and setup follicle or pointOnPoly constraint
-        sh_only = mesh_shape.split("|")[-1]  # key is only the shape's short name (matches partialPathName())
-        component_m_point = d_component_position[f'{sh_only}.{comp_num}']
+        # Get UVs and setup follicle or pointOnPoly constraint. The position is
+        # read one component at a time: the returned dict is keyed by
+        # partialPathName(), which is NOT the shape's short name whenever that
+        # short name is shared with another shape (duplicated groups) -- a
+        # single-entry dict sidesteps the key entirely.
+        if componentType == 'vtx':
+            d_component_position = getVertexPositions([driver], returnMPoints=True)
+        else:
+            d_component_position = getFaceCenterPositions([driver], returnMPoints=True)
+        component_m_point = list(d_component_position.values())[0]
         # delay import to avoid circular call
         from dw_maya.dw_maya_utils import closest_uv_on_mesh
         uv = closest_uv_on_mesh(mesh_shape, position=component_m_point)

@@ -24,6 +24,15 @@ from dw_maya.dw_paint.operations.directional import (
     set_directional_weights
 )
 
+# UV -> vertex colour
+from dw_maya.dw_paint.operations.uv_to_color import (
+    UVBakeResult,
+    uv_sets,
+    current_uv_set,
+    get_uvs,
+    uv_to_color
+)
+
 __all__ = [
     # Flood
     'FloodOperation',
@@ -39,5 +48,12 @@ __all__ = [
 
     # Directional
     'DirectionalOperation',
-    'set_directional_weights'
+    'set_directional_weights',
+
+    # UV -> vertex colour
+    'UVBakeResult',
+    'uv_sets',
+    'current_uv_set',
+    'get_uvs',
+    'uv_to_color'
 ]

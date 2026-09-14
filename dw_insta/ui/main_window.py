@@ -33,6 +33,7 @@ from core.archive import archive_group
 from core.comment import accept_all_caption_suggestions, accept_all_hashtags_suggestions
 from core.contact_sheet import build_contact_sheet
 from core.paths import resolve_group_cover
+from core.process_4x5 import process_series
 from core.scanner import sync_series
 from core.scheduler import overdue_groups
 from core.series import SeriesState
@@ -289,6 +290,17 @@ class MainWindow(QMainWindow):
         if not name:
             return
         series_dir = Path(self.config.root_dir) / name
+        # out_4x5/ is what the scanner (and every thumbnail) reads, so fill
+        # it first: portrait photos not yet processed get their 4x5 canvas
+        # here, landscape ones are ignored exactly like the old Krita batch.
+        report = process_series(series_dir)
+        processed = len(report["padded"]) + len(report["copied"])
+        if processed:
+            self.statusBar().showMessage(
+                f"Processed {processed} portrait photo(s) into out_4x5 "
+                f"({len(report['skipped'])} landscape skipped)",
+                8000,
+            )
         state = sync_series(series_dir)
 
         if state.start_date is None:
