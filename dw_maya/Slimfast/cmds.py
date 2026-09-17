@@ -601,9 +601,13 @@ class SlimfastController:
         Maya's Hammer Skin Weights generalized to every weight source. The
         selected vertices are treated as unknown and filled from the ring
         around them, in passes, until every one that can reach an
-        unselected vertex is set. Requires a vertex selection - there is
-        deliberately no whole-mesh fallback, an all-unknown mesh has nothing
-        to derive from.
+        unselected vertex is set.
+
+        With a vertex selection, that is the mask. With only the object
+        selected, the detector runs first (:meth:`find_hammer_candidates`)
+        and its selection is used - and left selected, so the artist sees
+        what was filled. There is deliberately no whole-mesh fallback: an
+        all-unknown mesh has nothing to derive from.
 
         skinCluster sources delegate to Maya's own ``weightHammerVerts``,
         which is lock-aware and re-normalises across influences.
@@ -615,11 +619,15 @@ class SlimfastController:
             return None
         mask = self._get_vtx_mask()
         if not mask:
-            logger.warning(
-                "Hammer needs a vertex selection - select the vertices to repair, "
-                "or run 'Select candidates' first."
-            )
-            return None
+            report = self.find_hammer_candidates()
+            mask = list(report.indices) if report is not None else []
+            if not mask:
+                logger.warning(
+                    "Hammer: no vertex selection and no appended vertices detected"
+                    + (f" ({report.note})" if report is not None and report.note else "")
+                    + " - select the vertices to repair."
+                )
+                return None
 
         if type(self._active).__name__ == 'SkinCluster':
             try:

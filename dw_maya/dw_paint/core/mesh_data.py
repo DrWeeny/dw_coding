@@ -210,11 +210,25 @@ class MeshData:
             logger.debug(f"No vertex colors found: {e}")
         return None
 
+    def is_stale(self) -> bool:
+        """True when the mesh no longer matches what this instance cached.
+
+        A topology edit after the instance was built (edge loops, smooth)
+        changes the vertex count; a deleted or recreated node breaks the
+        cached function set. Either way the positions and neighbour map are
+        wrong and must be rebuilt.
+        """
+        try:
+            return self._fn_mesh.numVertices != self._vertex_count
+        except Exception:
+            return True
+
     def refresh(self) -> None:
         """Refresh mesh data from cache"""
         # Invalidate API cache so next access rebuilds from scratch
         self._dag_path_obj = None
         self._fn_mesh_obj = None
+        self._vertex_uvs = None
         mesh_cache.clear_cache()
         self._initialize()
 
@@ -268,10 +282,21 @@ class MeshDataFactory:
 
     @classmethod
     def get(cls, mesh_name: str) -> MeshData:
-        """Get MeshData instance for mesh"""
-        if mesh_name not in cls._instances:
-            cls._instances[mesh_name] = MeshData(mesh_name)
-        return cls._instances[mesh_name]
+        """Get MeshData instance for mesh.
+
+        An instance survives across tool sessions, so it is re-validated
+        against the live mesh on every fetch: a vertex count that moved
+        (topology added since the last paint - the hammer use case) or a
+        dead node handle rebuilds it in place.
+        """
+        instance = cls._instances.get(mesh_name)
+        if instance is None:
+            instance = MeshData(mesh_name)
+            cls._instances[mesh_name] = instance
+        elif instance.is_stale():
+            logger.debug(f"MeshDataFactory: '{mesh_name}' changed, rebuilding mesh data")
+            instance.refresh()
+        return instance
 
     @classmethod
     def clear(cls) -> None:
