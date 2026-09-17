@@ -289,15 +289,23 @@ class SlimfastWidget(QtWidgets.QWidget):
         act_new_alpha.triggered.connect(self._on_create_alpha_map)
         create_menu.addAction(act_new_alpha)
 
-        # --- Data menu ---
-        data_menu = menu_bar.addMenu('Data')
+        # --- Utils menu ---
+        utils_menu = menu_bar.addMenu('Utils')
         act_map_transfer = QtWidgets.QAction('Maya map transfer', self)
         act_map_transfer.setToolTip(
             'Store an object\'s weight maps and re-apply them on another '
             'object, in this or another Maya session.'
         )
         act_map_transfer.triggered.connect(self._on_open_map_transfer)
-        data_menu.addAction(act_map_transfer)
+        utils_menu.addAction(act_map_transfer)
+
+        act_hammer = QtWidgets.QAction('Hammer weights...', self)
+        act_hammer.setToolTip(
+            'Repair the active map after topology was added to the mesh: '
+            'select the appended vertices, then fill them from their neighbours.'
+        )
+        act_hammer.triggered.connect(self._on_open_hammer)
+        utils_menu.addAction(act_hammer)
 
         return menu_bar
 
@@ -306,6 +314,17 @@ class SlimfastWidget(QtWidgets.QWidget):
         """Open the Maya Map Transfer companion window."""
         from dw_maya.Slimfast import wgt_maya_transfer
         self._map_transfer_win = wgt_maya_transfer.launch()
+
+    @Slot()
+    def _on_open_hammer(self) -> None:
+        """Open the non-modal Hammer popup (select candidates / hammer selection)."""
+        if self._ctrl.active_source is None:
+            logger.warning("Select a weight source before hammering.")
+            return
+        from dw_maya.Slimfast.wgt_hammer import HammerDialog
+        # Keep a reference so the non-modal dialog is not garbage-collected.
+        self._hammer_dlg = HammerDialog(self._ctrl, parent=self)
+        self._hammer_dlg.show()
 
     @Slot()
     def _on_edit_type_colors(self) -> None:

@@ -132,6 +132,17 @@ class SkinCluster(Deformer):
     # Bulk weight queries (API 2.0)
     # ------------------------------------------------------------------
 
+    def stored_count(self) -> Optional[int]:
+        """Stored vertex entries of the skinCluster ``weightList`` multi.
+
+        Same for every influence map: a vertex either has a ``weightList``
+        entry or it does not.
+        """
+        try:
+            return cmds.getAttr(f'{self.node_name}.weightList', size=True)
+        except Exception:
+            return None
+
     def get_weights(self) -> List[float]:
         """Per-vertex weight array for the active map.
 

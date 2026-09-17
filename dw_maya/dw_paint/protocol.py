@@ -66,6 +66,7 @@ Author: DrWeeny
 
 from __future__ import annotations
 
+import re
 from abc import ABC, abstractmethod
 from typing import List, Optional
 
@@ -293,6 +294,43 @@ class WeightSource(ABC):
             )
         attr = self._resolve_attr(self._require_map())
         cmds.setAttr(attr, weights, type='doubleArray')
+
+    def stored_count(self) -> Optional[int]:
+        """Number of per-vertex values Maya actually stores for the active map.
+
+        Maya never resizes a per-vertex attribute when the mesh topology
+        changes, and every modelling op appends new vertices at the end. So
+        a stored count below :attr:`vtx_count` is the exact set of vertices
+        added since the map was last written: ``range(stored, vtx_count)``.
+        A tool that rewrites the whole map (``set_weights``, or a studio
+        plugin that pads on load) erases that signal, after which the count
+        simply equals ``vtx_count``.
+
+        Returns:
+            Stored element count, or ``None`` when the map has no sparse
+            storage to inspect (vertex colors, unresolvable attribute).
+        """
+        from maya import cmds  # deferred - module is Maya-free at import time
+
+        try:
+            attr = self._resolve_attr(self._require_map())
+        except Exception:
+            return None
+        if not attr:
+            return None
+        # Sources resolve to a `[0:n-1]` range for get/set - the size query
+        # wants the bare multi.
+        attr = re.sub(r'\[\d+:\d+\]$', '', attr)
+        try:
+            if cmds.attributeQuery(attr.split('.')[-1].split('[')[0],
+                                   node=attr.split('.')[0], multi=True):
+                return cmds.getAttr(attr, size=True)
+            raw = cmds.getAttr(attr)
+            if isinstance(raw, (list, tuple)):
+                return len(raw)
+        except Exception:
+            return None
+        return None
 
     def has_weight(self, default_empty_value=None) -> bool:
         weight_list = list(set(self.get_weights()))

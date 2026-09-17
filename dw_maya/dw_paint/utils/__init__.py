@@ -1,5 +1,11 @@
 from dw_maya.dw_paint.utils.maya_tool import open_tools_window
 
+# Topology utilities
+from dw_maya.dw_paint.utils.topology import (
+    HoleReport,
+    find_appended_vertices,
+)
+
 # Validation utilities
 from dw_maya.dw_paint.utils.validation import (
     validate_operation_type,
@@ -40,6 +46,10 @@ from dw_maya.dw_paint.utils.maya_tool import (get_current_artisan_map,
 from dw_maya.dw_paint.utils.transfer import transfer_weights
 
 __all__ = [
+    # Topology
+    'HoleReport',
+    'find_appended_vertices',
+
     # Validation
     'validate_operation_type',
     'validate_weight_value',

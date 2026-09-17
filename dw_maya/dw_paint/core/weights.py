@@ -138,6 +138,51 @@ class WeightData:
 
         return self
 
+    def hammer(self, indices: List[int]) -> 'WeightData':
+        """Overwrite *indices* with the mean of their neighbours OUTSIDE the set.
+
+        Maya's Hammer Skin Weights, generalized: the vertices in *indices*
+        are treated as unknown and re-derived from the vertices around them.
+        Unlike :meth:`smooth` the unknowns never contribute to each other, so
+        a vertex appended by an edge-loop insertion lands exactly on the
+        midpoint of its two old neighbours instead of being pulled toward
+        the default value the other new vertices still carry.
+
+        Runs in Jacobi passes: pass 1 fills every unknown that touches a
+        known vertex, pass 2 fills the ones that only touched pass-1 results,
+        and so on until nothing changes (a polySmooth needs two: edge
+        midpoints, then face centres). Unknowns that never reach a known
+        vertex - an island selected whole - are left untouched.
+
+        The last run is summarised in :attr:`hammer_report`
+        (``filled`` / ``passes`` / ``unfilled``).
+        """
+        neighbors = self._mesh_data.neighbors
+        n = len(self._weights)
+        unresolved = set(i for i in indices if 0 <= i < n)
+        passes = 0
+        filled = 0
+        while unresolved:
+            passes += 1
+            newly = {}
+            for i in unresolved:
+                known = [self._weights[j] for j in neighbors.get(i, ()) if j not in unresolved]
+                if known:
+                    newly[i] = sum(known) / len(known)
+            if not newly:
+                break
+            for i, value in newly.items():
+                self._weights[i] = value
+            unresolved -= set(newly)
+            filled += len(newly)
+
+        self.hammer_report = {
+            'filled': filled,
+            'passes': passes,
+            'unfilled': len(unresolved),
+        }
+        return self
+
     def erode(self, iterations: int = 1, factor: float = 0.5) -> 'WeightData':
         """Shrink painted (high-weight) regions inward, instead of smooth's blur.
 
@@ -398,6 +443,42 @@ def erode_weights(mesh_name: str,
     except Exception as e:
         logger.error(f"erode_weights failed on '{mesh_name}': {e}")
         return list(weights)
+
+
+def hammer_weights(mesh_name: str,
+                   weights: WeightList,
+                   indices: List[int]) -> Tuple[WeightList, dict]:
+    """Re-derive *indices* from their neighbours outside the set.
+
+    Wraps :meth:`WeightData.hammer`. The typical use is repairing a map
+    after topology was added to the mesh: the appended vertices sit at the
+    attribute's default value and this replaces them with the interpolation
+    of the vertices they were inserted between.
+
+    Args:
+        mesh_name: Mesh transform name.
+        weights:   Per-vertex weight list aligned to vertex order.
+        indices:   Vertex ids to overwrite (the artist's selection, or the
+                   result of :func:`dw_maya.dw_paint.utils.topology.find_appended_vertices`).
+
+    Returns:
+        ``(weights, report)`` - the repaired list (same length as *weights*)
+        and ``{'filled', 'passes', 'unfilled'}``. Returns the original list
+        and an empty report on error.
+    """
+    try:
+        wd = WeightData(weights, mesh_name)
+        wd.hammer(indices)
+        report = wd.hammer_report
+        logger.info(
+            f"hammer_weights: filled {report['filled']} of {len(indices)} vertices "
+            f"in {report['passes']} pass(es) on '{mesh_name}'"
+            + (f", {report['unfilled']} unreachable" if report['unfilled'] else "")
+        )
+        return wd.as_list, report
+    except Exception as e:
+        logger.error(f"hammer_weights failed on '{mesh_name}': {e}")
+        return list(weights), {}
 
 
 def select_vtx_info_on_mesh(weights: WeightList,

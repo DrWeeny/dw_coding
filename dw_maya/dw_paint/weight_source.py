@@ -153,7 +153,7 @@ def paint_weight_source(source: WeightSource) -> None:
 
 def apply_operation(source: WeightSource,
                     operation: Literal['flood', 'mirror', 'smooth',
-                                       'vector', 'radial'],
+                                       'vector', 'radial', 'hammer'],
                     **kwargs) -> None:
     """Apply a weight operation to any WeightMap.
 
@@ -174,6 +174,8 @@ def apply_operation(source: WeightSource,
                    ``'vector'`` — distribute by direction vector
 
                    ``'radial'`` — distribute by radial distance
+
+        ``'hammer'`` - re-derive masked vertices from their neighbours
 
         **kwargs:  Forwarded to the underlying operation function.
 
@@ -214,6 +216,13 @@ def apply_operation(source: WeightSource,
             radius (float):     Max influence radius.
             falloff (str):      Falloff curve type.
             invert (bool):      Invert result. Default False.
+
+        hammer:
+            mask (list[int]):   Vertex ids to overwrite with the mean of their
+                                neighbours outside the mask. Required - with
+                                no mask there is nothing to derive from.
+                                Repairs a map after topology was added (see
+                                ``dw_paint.utils.topology``).
 
     Example::
 
@@ -300,10 +309,16 @@ def apply_operation(source: WeightSource,
             invert=kwargs.get('invert', False),
         )
 
+    elif operation == 'hammer':
+        mask = kwargs.get('mask')
+        if not mask:
+            raise ValueError("apply_operation 'hammer' requires a non-empty 'mask'")
+        new_weights, _report = dw_maya.dw_paint.core.hammer_weights(mesh, weights, list(mask))
+
     else:
         raise ValueError(
             f"Unknown operation '{operation}'. "
-            f"Must be one of: flood, mirror, smooth, vector, radial."
+            f"Must be one of: flood, mirror, smooth, vector, radial, hammer."
         )
 
     if new_weights is not None:

@@ -23,7 +23,9 @@ from dw_maya.dw_paint.artisan_maya import (
     flood_smooth_vtx_map,
 )
 from dw_maya.dw_nucleus_utils import NClothMap
-from dw_maya.dw_maya_utils.dw_maya_components import extract_id, select_border, select_border_recursive
+from dw_maya.dw_maya_utils.dw_maya_components import extract_id, select_border, select_border_recursive, create_maya_ranges
+from dw_maya.dw_paint.core import hammer_weights
+from dw_maya.dw_paint.utils.topology import find_appended_vertices, HoleReport
 from dw_maya.dw_paint.protocol import WeightSource
 from dw_logger import get_logger
 
@@ -563,6 +565,81 @@ class SlimfastController:
             self._clamp_weights_post(mask)
         except Exception as e:
             logger.error(f"Smooth failed: {e}")
+
+    # ------------------------------------------------------------------
+    # Hammer - repair a map after topology was added to the mesh
+    # ------------------------------------------------------------------
+
+    def find_hammer_candidates(self) -> Optional[HoleReport]:
+        """Detect the vertices appended since the active map was written, and select them.
+
+        The selection is the hand-off: the artist reviews and edits it in
+        the viewport, then :meth:`hammer` reads it back. Nothing is written
+        here. See ``dw_paint.utils.topology`` for the two detectors and how
+        far each one can be trusted.
+
+        Returns:
+            The :class:`HoleReport`, or None without an active source.
+        """
+        if not self._require_active():
+            return None
+        report = find_appended_vertices(self._active)
+        mesh = self._active.mesh_name
+        if report.indices:
+            ranges = create_maya_ranges(report.indices)
+            cmds.select([f'{mesh}.vtx[{r}]' for r in ranges], replace=True)
+            logger.info(f"Hammer candidates on '{self._active.node_name}': {report.describe()}")
+        else:
+            logger.info(f"Hammer candidates on '{self._active.node_name}': {report.describe()}")
+        return report
+
+    @timeIt(track_stats=True)
+    @singleUndoChunk
+    def hammer(self) -> Optional[dict]:
+        """Re-derive the selected vertices from their unselected neighbours.
+
+        Maya's Hammer Skin Weights generalized to every weight source. The
+        selected vertices are treated as unknown and filled from the ring
+        around them, in passes, until every one that can reach an
+        unselected vertex is set. Requires a vertex selection - there is
+        deliberately no whole-mesh fallback, an all-unknown mesh has nothing
+        to derive from.
+
+        skinCluster sources delegate to Maya's own ``weightHammerVerts``,
+        which is lock-aware and re-normalises across influences.
+
+        Returns:
+            ``{'filled', 'passes', 'unfilled'}``, or None when nothing ran.
+        """
+        if not self._require_active():
+            return None
+        mask = self._get_vtx_mask()
+        if not mask:
+            logger.warning(
+                "Hammer needs a vertex selection - select the vertices to repair, "
+                "or run 'Select candidates' first."
+            )
+            return None
+
+        if type(self._active).__name__ == 'SkinCluster':
+            try:
+                mel.eval('weightHammerVerts')
+            except Exception as e:
+                logger.error(f"weightHammerVerts failed: {e}")
+                return None
+            logger.info(f"Hammer: weightHammerVerts on {len(mask)} vertices of '{self._active.node_name}'")
+            return {'filled': len(mask), 'passes': 1, 'unfilled': 0}
+
+        try:
+            weights = self._active.get_weights()
+            new_weights, report = hammer_weights(self._active.mesh_name, weights, mask)
+            if not report:
+                return None
+            self._active.set_weights(new_weights)
+        except Exception as e:
+            logger.error(f"Hammer failed: {e}")
+            return None
+        return report
 
     @timeIt(track_stats=True)
     @singleUndoChunk

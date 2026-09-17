@@ -653,8 +653,16 @@ def copy_skin_cluster(source_mesh: str,
     # when the source is a published asset, modelled at the origin and carried
     # into the set by its rig - and the target snaps onto the joints as soon as
     # it evaluates. It used to only warn about that and copy anyway.
+    #
+    # Only when a bind pose is being copied at all. A fresh bind
+    # (copy_bind_pose=False) freezes the target's current pose and needs no
+    # offset - and deriving one anyway made a fresh bind refuse whenever the
+    # SOURCE was posed at the current frame, which is exactly the state a
+    # shot-space bind is prepared in.
     bind_offset = None
-    if bind_pose_mesh:
+    if not copy_bind_pose:
+        pass
+    elif bind_pose_mesh:
         bind_offset = rigid_transform_between(bind_pose_mesh, source_mesh)
         if bind_offset is None:
             logger.error(
