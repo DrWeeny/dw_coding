@@ -292,13 +292,14 @@ class MainWindow(QMainWindow):
         series_dir = Path(self.config.root_dir) / name
         # out_4x5/ is what the scanner (and every thumbnail) reads, so fill
         # it first: portrait photos not yet processed get their 4x5 canvas
-        # here, landscape ones are ignored exactly like the old Krita batch.
+        # here, landscape ones are copied through untouched.
         report = process_series(series_dir)
-        processed = len(report["padded"]) + len(report["copied"])
-        if processed:
+        portraits = len(report["padded"]) + len(report["copied"])
+        landscapes = len(report["landscape"])
+        if portraits or landscapes:
             self.statusBar().showMessage(
-                f"Processed {processed} portrait photo(s) into out_4x5 "
-                f"({len(report['skipped'])} landscape skipped)",
+                f"Processed {portraits} portrait and {landscapes} landscape "
+                f"photo(s) into out_4x5",
                 8000,
             )
         state = sync_series(series_dir)

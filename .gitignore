@@ -14,3 +14,6 @@
 /dw_beatfumbler/library.db
 /dw_beatfumbler/library.db-*
 /dw_beatfumbler/.waveform_cache/
+/dw_video_reformat/dist/
+/dw_video_reformat/build/
+/dw_video_reformat/bin/

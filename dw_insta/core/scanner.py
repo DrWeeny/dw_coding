@@ -71,7 +71,7 @@ def sync_series(source_dir: Path, caption_template: str = "") -> SeriesState:
             continue
         processed = out_dir / entry.name
         if not processed.is_file():
-            continue  # landscape / not yet processed -> skip for now
+            continue  # not yet processed -> skip for now
         candidates.append((entry.name, read_capture_datetime(entry)))
 
     candidates.sort(key=lambda item: item[1])
