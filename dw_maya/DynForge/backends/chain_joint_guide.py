@@ -2,265 +2,534 @@
 chain_joint_guide.py - DynForge backend: a chain of joints along a curve.
 
 Wraps dw_rigging.dw_chain_guide.ChainGuide as a DynForge GuideBackend so joint
-chains plug into the guide registry alongside future nHair / constraint guides.
+chains plug into the guide registry alongside future guide types (wings, hair,
+tentacles...).
 
-The reproducibility snapshot stores world-space curve waypoints (preferred over
-component ids, which break on retopo) plus the build parameters, so a guide can
-be rebuilt after the source selection is gone.
+A guide is an ordered list of guide points plus build parameters. Two ways to
+fill it, mixable:
+- one by one: each point lands on the centroid of whatever the artist selected
+  (edges, faces, verts, an object) and remembers that selection as its source;
+- from a strip: an edge column / loop or a face strip gives one point per edge
+  midpoint / face centroid, ordered along the strip (e.g. a dress column in one
+  click). The strip itself is kept as the guide's strip_source.
+Either way the sources let points be re-placed after the model changes. Points
+are locators or joints - an artist preference.
+
+Everything lives in one guide group under the host's setup group:
+
+    dwForge_GRP                     setup (see forge_host)
+      <name>_guide_GRP              .dwForgeGuide = type_name, .dwForgeRecipe = JSON
+        <name>_locGuide_GRP         guide points
+        <name>_src_crv              source curve
+        <name>_jnt_0_PIN ...        built chain (until installed under a bone)
+
+The recipe is to_dict() as JSON, rewritten after every scene-changing action, so
+reopening the tool rebuilds the list from the scene (discover()). Save JSON
+exports the same dicts for versioning.
 """
 
 from __future__ import annotations
 
+import json
 from typing import Optional
 
 import maya.cmds as cmds
 import maya.api.OpenMaya as om2
 
 from dw_logger import get_logger
+from dw_maya.dw_decorators import dw_undo
 from dw_maya.dw_rigging import dw_chain_guide
+from dw_maya.DynForge import forge_host
 from dw_maya.DynForge import guide_registry
 from dw_maya.DynForge.forge_cmds import skin_ops
 
 logger = get_logger()
 
+GUIDE_TAG   = "dwForgeGuide"    # string attr on a guide group: its type_name
+RECIPE_ATTR = "dwForgeRecipe"   # string attr on a guide group: to_dict() JSON
+SOURCE_ATTR = "dwForgeSource"   # string attr on a guide point: its selection source
+
+
+def _bare(node: str) -> str:
+    """Short name without path nor namespace."""
+    return node.split("|")[-1].split(":")[-1]
+
 
 class ChainJointGuide(guide_registry.GuideBackend):
-    """A chain of joints distributed along a source NURBS curve."""
+    """A chain of joints distributed along a curve through the guide points."""
 
-    type_name      = "chain_joint"
-    label          = "Joint Chain"
-    creation_modes = ("edge", "face", "locator")
+    type_name = "chain_joint"
+    label     = "Joint Chain"
 
     def __init__(self,
-                 name:       str = "chain",
-                 mode:       str = "edge",
-                 n_joints:   int = 10,
-                 up_axis:    str = "y",
-                 degree:     int = 3,
-                 flip:       bool = False,
-                 n_locators: int = 4,
-                 point_type:  str = "locator",
-                 cv_count:    int = 6,
+                 name:         str = "chain",
+                 n_joints:     int = 10,
+                 up_axis:      str = "y",
+                 degree:       int = 3,
+                 flip:         bool = False,
+                 point_type:   str = "locator",
+                 cv_count:     int = 6,
                  exact_points: bool = False,) -> None:
         super().__init__(name=name)
-        self.mode       = mode
-        self.n_joints   = n_joints
-        self.up_axis    = up_axis
-        self.degree     = degree
-        self.flip       = flip
-        self.n_locators = n_locators
-        # Guide-point node type for the locator flow: "locator" or "joint".
-        self.point_type = point_type
-        # CV count the locator-flow curve is resampled to (editable resolution).
-        self.cv_count   = cv_count
-        # Exact mode (locator flow): one joint per guide point, placed exactly on
-        # it; the curve is kept only as data. Joint count follows the points.
+        self.n_joints     = n_joints
+        self.up_axis      = up_axis
+        self.degree       = degree
+        self.flip         = flip
+        # Guide-point node type: "locator" or "joint" (artist preference).
+        self.point_type   = point_type
+        # CV count the curve through the points is resampled to (editable resolution).
+        self.cv_count     = cv_count
+        # Exact mode: one joint per guide point, placed exactly on it; the curve
+        # is kept only as data. Joint count follows the points.
         self.exact_points = exact_points
         # -- Skinning params (filled in the Skinning tab, used on Install) -----
         self.skin_cluster:      Optional[str] = None   # target skinCluster
         self.skin_meshes:       list          = []     # meshes it deforms
-        self.gizmo:             Optional[str] = None   # region gizmo transform
+        self.gizmo:             Optional[str] = None   # optional clip gizmo transform
         self.gizmo_shape:       str           = "box"  # box / sphere / capsule
         self.source_influences: list          = []     # picked donor bones
         self.parent_bone:       Optional[str] = None   # _PIN parent (donor bone)
         self.power:             float         = 1.0    # spatial-cascade falloff
-        # Locator-flow only: guide locator transforms set while PENDING.
-        self.locators:     list                          = []
-        # Reproducibility snapshot: world-space curve waypoints [(x, y, z), ...].
-        self.positions:    list                          = []
-        self.source_curve: Optional[str]                 = None
-        self._chain:       Optional[dw_chain_guide.ChainGuide] = None
+        # Tube / attachment radius = (_PIN -> nearest skin joint) * radius_scale.
+        self.radius_scale:      float         = 1.0
+        # Live guide point nodes, root -> tip.
+        self.points:        list = []
+        # Snapshot of the points: [{"name", "position", "source"}], so the guide
+        # survives its point nodes (joint markers are consumed on build, a loaded
+        # file has no nodes yet).
+        self.point_records: list = []
+        # Edge column / face strip the points were generated from (None when
+        # placed one by one): {"kind", "mesh", "ids", "closed"}.
+        self.strip_source:  Optional[dict] = None
+        # How many of a strip's points get a locator (handle): first / middle /
+        # last for 3, spread by index; 0 = every point.
+        self.strip_handles: int = 3
+        # Snapshot of the source curve CVs [(x, y, z)], keeps hand-edited curves.
+        self.positions:     list = []
+        self.source_curve:  Optional[str] = None
+        # Setup group this guide belongs to (None = the host's default setup).
+        self.setup:         Optional[str] = None
+        # Studio home the host moved the setup to on the last install (None = none found).
+        self.setup_home:    Optional[str] = None
+        # Install state: the chain sits in the rig / its weights are on the skin.
+        self.installed:      bool = False
+        self.skin_installed: bool = False
+        self._group:        Optional[str] = None
+        self._chain:        Optional[dw_chain_guide.ChainGuide] = None
         # Flip direction currently baked into the source curve, so rebuild() can
         # tell when the artist toggled Flip and reverse the curve to match.
-        self._curve_flip:  bool                          = flip
-        # Override group for the built nodes (set when loading a version from a
-        # file, so it lands in its own group instead of the shared working one).
-        self.group_name:   Optional[str]                 = None
-
-    # -- Creation factories -----------------------------------------------
-
-    @classmethod
-    def from_edge_selection(cls,
-                            name:     str = "chain",
-                            n_joints: int = 10,
-                            up_axis:  str = "y",
-                            degree:   int = 3,
-                            flip:     bool = False,) -> "ChainJointGuide":
-        """
-        Create a PENDING guide from the current Maya edge selection.
-        The source curve is built immediately; joints are built on build().
-        """
-        guide = cls(name     = name,
-                    mode     = "edge",
-                    n_joints = n_joints,
-                    up_axis  = up_axis,
-                    degree   = degree,
-                    flip     = flip,)
-        chain = dw_chain_guide.ChainGuide.from_edge_selection(
-            n_joints = n_joints,
-            name     = name,
-            degree   = degree,
-            up_axis  = up_axis,
-            reverse  = flip,
-        )
-        guide._chain       = chain
-        guide.source_curve = chain.curve_name
-        guide.positions    = cls._read_curve_points(chain.curve_name)
-        return guide
-
-    @classmethod
-    def from_face_selection(cls,
-                            name:     str = "chain",
-                            n_joints: int = 10,
-                            up_axis:  str = "y",
-                            degree:   int = 3,
-                            flip:     bool = False,) -> "ChainJointGuide":
-        """
-        Create a PENDING guide from the current Maya face selection.
-        The source curve is built immediately; joints are built on build().
-        """
-        guide = cls(name     = name,
-                    mode     = "face",
-                    n_joints = n_joints,
-                    up_axis  = up_axis,
-                    degree   = degree,
-                    flip     = flip,)
-        chain = dw_chain_guide.ChainGuide.from_face_selection(
-            n_joints = n_joints,
-            name     = name,
-            degree   = degree,
-            up_axis  = up_axis,
-            reverse  = flip,
-        )
-        guide._chain       = chain
-        guide.source_curve = chain.curve_name
-        guide.positions    = cls._read_curve_points(chain.curve_name)
-        return guide
-
-    @classmethod
-    def create_with_locators(cls,
-                             name:       str = "chain",
-                             n_locators: int = 3,
-                             n_joints:   int = 10,
-                             up_axis:    str = "y",
-                             degree:     int = 3,
-                             flip:       bool = False,) -> "ChainJointGuide":
-        """
-        Start a locator-flow guide: spawn n_locators guide locators (min 3) and
-        return a PENDING instance. The artist positions the locators, then
-        build() reads them, builds the source curve and distributes the joints.
-        No curve exists yet at this point.
-        """
-        guide = cls(name     = name,
-                    mode     = "locator",
-                    n_joints = n_joints,
-                    up_axis  = up_axis,
-                    degree   = degree,
-                    flip     = flip,)
-        guide.locators = dw_chain_guide.create_guide_locators(
-            n_locators = n_locators,
-            name       = name,
-        )
-        return guide
+        self._curve_flip:   bool = flip
 
     @classmethod
     def create(cls,
                **params,) -> "ChainJointGuide":
         """
         Create a blank PENDING guide carrying the build parameters but no scene
-        nodes. The artist picks / confirms the creation mode in the UI, then the
-        per-row Build button materializes it (see build()). Nothing is read from
-        the current selection here, so [+] never depends on what is selected.
+        nodes. Points are added from the editor, the per-row Build materializes it.
         """
-        return cls(name       = params.get("name", "chain"),
-                   mode       = params.get("mode", "edge"),
-                   n_joints   = params.get("n_joints", 10),
-                   up_axis    = params.get("up_axis", "y"),
-                   degree     = params.get("degree", 3),
-                   flip       = params.get("flip", False),
-                   n_locators = params.get("n_locators", 4),
-                   point_type = params.get("point_type", "locator"),
-                   cv_count   = params.get("cv_count", 6),
-                   exact_points = params.get("exact_points", False),)
+        guide = cls(name         = params.get("name", "chain"),
+                    n_joints     = params.get("n_joints", 10),
+                    up_axis      = params.get("up_axis", "y"),
+                    degree       = params.get("degree", 3),
+                    flip         = params.get("flip", False),
+                    point_type   = params.get("point_type", "locator"),
+                    cv_count     = params.get("cv_count", 6),
+                    exact_points = params.get("exact_points", False),)
+        guide.strip_handles = int(params.get("strip_handles", 3))
+        return guide
 
-    # -- Editing (while PENDING) ------------------------------------------
+    # -- Groups -----------------------------------------------------------
 
-    def set_mode(self,
-                 mode: str,) -> None:
-        """Change the creation mode of a not-yet-built guide (ignored if BUILT)."""
-        if self._status is guide_registry.GuideStatus.BUILT:
+    def guide_group(self) -> str:
+        """Return this guide's group (long path), creating it under its setup."""
+        if self._group and cmds.objExists(self._group):
+            return self._group
+        setup = forge_host.get_host().ensure_setup(self.setup)
+        self.setup = setup
+        short = f"{self.name}_guide_GRP"
+        found = [node for node in cmds.listRelatives(setup, children=True, fullPath=True) or []
+                 if node.split("|")[-1] == short]
+        group = found[0] if found else cmds.parent(cmds.group(empty=True, name=short), setup)[0]
+        if not cmds.attributeQuery(GUIDE_TAG, node=group, exists=True):
+            cmds.addAttr(group, longName=GUIDE_TAG, dataType="string")
+        cmds.setAttr(f"{group}.{GUIDE_TAG}", self.type_name, type="string")
+        self._group = cmds.ls(group, long=True)[0]
+        return self._group
+
+    def _points_group(self) -> str:
+        return dw_chain_guide.ensure_locator_group(self.name, parent=self.guide_group())
+
+    def store_recipe(self) -> None:
+        """Write to_dict() onto the guide group (no-op until the group exists)."""
+        if not (self._group and cmds.objExists(self._group)):
             return
-        self.mode = mode
+        if not cmds.attributeQuery(RECIPE_ATTR, node=self._group, exists=True):
+            cmds.addAttr(self._group, longName=RECIPE_ATTR, dataType="string")
+        cmds.setAttr(f"{self._group}.{RECIPE_ATTR}", json.dumps(self.to_dict()), type="string")
+
+    # -- Guide points -----------------------------------------------------
 
     def set_point_type(self,
                        point_type: str,) -> None:
         """Change the guide-point node type ('locator' / 'joint') for new points."""
         self.point_type = point_type
 
-    def add_locator(self) -> str:
+    @dw_undo.singleUndoChunk
+    def add_point(self) -> str:
         """
-        Add one guide point at the current selection center (or at the world
-        origin / extrapolated past the last point when nothing is selected) and
-        return its node name. The node type follows self.point_type.
+        Add one guide point at the centroid of the current selection (world
+        origin when nothing is selected) and return its node name. The selection
+        is stored on the point as its source. The node type follows point_type.
 
         With the 'joint' point type the placed joints ARE the chain joints, so
-        each one bumps n_joints; at build they seed the curve and are then
-        removed and replaced by the constructed chain.
+        each one bumps n_joints.
         """
-        # Read the selection center BEFORE creating the group: cmds.group /
-        # cmds.parent change the active selection, which would otherwise clobber
-        # the artist's vertex selection on the very first add (-> world origin).
+        # Read the selection BEFORE creating any group: cmds.group / cmds.parent
+        # change the active selection and would clobber the artist's components.
         center = dw_chain_guide.get_selection_center()
-        group  = dw_chain_guide.ensure_locator_group(self.name)
+        source = dw_chain_guide.get_selection_source()
         node = dw_chain_guide.create_guide_point(
             node_type = self.point_type,
             name      = self.name,
-            index     = len(self.locators),
+            index     = len(self.points),
             position  = center,
-            group     = group,
+            group     = self._points_group(),
         )
-        self.locators.append(node)
+        self._set_source(node, source)
+        self._auto_register(source)
+        self._sync_point_records()   # settle the existing records before appending
+        self.points.append(node)
+        self.point_records.append(self._node_record(node))
         if self.point_type == "joint":
-            self.n_joints = max(len(self.locators), 2)
+            self.n_joints = max(len(self.points), 2)
+        self.store_recipe()
         return node
 
-    def snap_locator(self,
-                     node: str,) -> None:
-        """Snap one of this guide's points to the current selection center."""
-        if node not in self.locators:
+    @dw_undo.singleUndoChunk
+    def snap_point(self,
+                   node: str,) -> None:
+        """
+        Snap one of this guide's points to the current selection centroid and
+        record the selection as its new source. Once an exact joint chain is
+        built the points are parented to each other, so the children's world
+        positions are held - snapping one point must not drag the chain along.
+        """
+        if node not in self.points:
             return
+        source = dw_chain_guide.get_selection_source()
+        children = cmds.listRelatives(node, children=True, type="joint", fullPath=True) or []
+        held = [(child, cmds.xform(child, query=True, worldSpace=True, translation=True))
+                for child in children]
         dw_chain_guide.snap_node_to_selection_center(node)
+        for child, pos in held:
+            cmds.xform(child, worldSpace=True, translation=pos)
+        self._set_source(node, source)
+        self._auto_register(source)
+        self._sync_point_records()
+        self.store_recipe()
 
-    def delete_locator(self,
-                       node: str,) -> None:
-        """Delete one guide point (node + list entry); keep joint-count in sync."""
-        if node not in self.locators:
+    @dw_undo.singleUndoChunk
+    def delete_point(self,
+                     node: str,) -> None:
+        """
+        Delete one guide point (node + list entry); keep joint-count in sync.
+        A built exact joint chain has its points parented to each other, so the
+        children are handed to the deleted point's parent first - cmds.delete
+        would otherwise take the whole tail of the chain with it.
+        """
+        if node not in self.points:
             return
         if cmds.objExists(node):
+            parents = cmds.listRelatives(node, parent=True, fullPath=True) or []
+            for child in cmds.listRelatives(node, children=True, type="joint", fullPath=True) or []:
+                if parents:
+                    cmds.parent(child, parents[0])
+                else:
+                    cmds.parent(child, world=True)
             cmds.delete(node)
-        self.locators.remove(node)
+        handles = self._handle_records()
+        k = self.points.index(node)
+        if len(handles) == len(self.points):
+            del self.point_records[handles[k]]
+        self.points.remove(node)
         if self.point_type == "joint":
-            self.n_joints = max(len(self.locators), 2)
+            self.n_joints = max(len(self.points), 2)
+        self._sync_point_records()
+        self.store_recipe()
 
-    def spawn_locators(self) -> list:
+    @dw_undo.singleUndoChunk
+    def points_from_strip(self) -> list:
         """
-        (Re)spawn the guide locators for a locator-flow guide so the artist can
-        position them before building. Replaces any existing locators.
+        Replace the guide points with one point per edge midpoint / face
+        centroid of the selected edge column / loop or face strip, ordered along
+        it. Every point is recorded, but only `strip_handles` of them get a
+        locator (first / middle / last for 3): moving a handle drags the hidden
+        points between it and its neighbour handles (see _sync_point_records).
+        Starts the guide over: the previous points, curve and chain are removed
+        (-> PENDING), since the curve would otherwise stay the source of truth
+        on rebuild. Joint count is left alone - the joints are spread over the
+        curve through all the points (Exact: one joint per point).
         """
-        if self.locators:
-            dw_chain_guide.delete_guide_locators(self.locators)
-            self.locators = []
-        self.locators = dw_chain_guide.create_guide_locators(
-            n_locators = self.n_locators,
-            name       = self.name,
-        )
-        return self.locators
+        strip = dw_chain_guide.ordered_strip_from_selection()
+        if strip["closed"]:
+            logger.warning(f"'{self.name}': closed {strip['kind']} loop - the chain is built open, "
+                           "from the first element around.")
+        self._reset_build()
+        for node in self.points:
+            if cmds.objExists(node):
+                cmds.delete(node)
+        self.points = []
+        self.point_records = []
+        suffix = "e" if strip["kind"] == "edges" else "f"
+        group = self._points_group()
+        handles = set(self._handle_indices(len(strip["ids"]), self.strip_handles))
+        for index, (cid, pos) in enumerate(zip(strip["ids"], strip["positions"])):
+            position = [pos.x, pos.y, pos.z]
+            source = {"kind": "components", "items": [f"{strip['mesh']}.{suffix}[{cid}]"]}
+            record = {"name": None, "position": position, "source": source,
+                      "handle": index in handles, "origin": list(position)}
+            if index in handles:
+                node = dw_chain_guide.create_guide_point(
+                    node_type = self.point_type,
+                    name      = self.name,
+                    index     = index,   # a handle keeps its strip index in its name
+                    position  = tuple(position),
+                    group     = group,
+                )
+                self._set_source(node, source)
+                record["name"] = node.split("|")[-1]
+                self.points.append(node)
+            self.point_records.append(record)
+        self.strip_source = {key: strip[key] for key in ("kind", "mesh", "ids", "closed")}
+        self._auto_register({"kind": "objects", "items": [strip["mesh"]]})
+        cmds.select(clear=True)
+        self._sync_point_records()
+        self.store_recipe()
+        return self.points
+
+    @dw_undo.singleUndoChunk
+    def rename(self,
+               new_name: str,) -> None:
+        """
+        Rename the guide and every node it owns whose name starts with the old
+        guide name (guide / points groups, points, curve, joints - installed ones
+        included - and gizmo), then refresh the tags and the recipe. Nodes are
+        tracked by UUID since renaming a parent invalidates its children's paths.
+        """
+        old = self.name
+        if new_name == old:
+            return
+        # Match the prefix the nodes really carry: a name Maya refused (leading
+        # digit, e.g. "0_chain") made them "_chain_*", read it off the group.
+        node_prefix = old
+        if self._group and cmds.objExists(self._group):
+            short = self._group.split("|")[-1]
+            if short.endswith("_guide_GRP"):
+                node_prefix = short[:-len("_guide_GRP")]
+        owned = []
+        if self._group and cmds.objExists(self._group):
+            owned.append(self._group)
+            owned += cmds.listRelatives(self._group, allDescendents=True, fullPath=True) or []
+        owned += [n for n in (self._chain.joints if self._chain else []) if cmds.objExists(n)]
+        if self.gizmo and cmds.objExists(self.gizmo):
+            owned.append(self.gizmo)
+        uuids = {cmds.ls(node, uuid=True)[0] for node in owned}
+
+        def uuid_of(node: Optional[str]) -> Optional[str]:
+            return cmds.ls(node, uuid=True)[0] if node and cmds.objExists(node) else None
+
+        point_ids = [uuid_of(n) for n in self.points]
+        joint_ids = [uuid_of(n) for n in (self._chain.joints if self._chain else [])]
+        curve_id, gizmo_id, group_id = uuid_of(self.source_curve), uuid_of(self.gizmo), uuid_of(self._group)
+
+        # An installed chain may carry the host's joint names instead of the
+        # <guide>_ prefix: map those old -> new by position.
+        host = forge_host.get_host()
+        host_old = host.joint_names(old, len(joint_ids)) or []
+        host_new = host.joint_names(new_name, len(joint_ids)) or []
+        host_map = {u: (o, n) for u, o, n in zip(joint_ids, host_old, host_new) if u}
+
+        prefix = f"{node_prefix}_"
+        for uuid in uuids:
+            short = cmds.ls(uuid)[0].split("|")[-1]
+            namespace = short.rsplit(":", 1)[0] + ":" if ":" in short else ""   # keep it
+            bare = short.split(":")[-1]
+            if uuid in host_map and bare == host_map[uuid][0]:
+                target = host_map[uuid][1]
+            elif bare.startswith(prefix):
+                target = f"{new_name}_{bare[len(prefix):]}"
+            else:
+                continue
+            cmds.rename(cmds.ls(uuid, long=True)[0], f"{namespace}{target}")
+
+        def resolve(uuid: Optional[str]) -> Optional[str]:
+            return cmds.ls(uuid)[0] if uuid and cmds.ls(uuid) else None
+
+        self.name = new_name
+        self.points = [n for n in (resolve(u) for u in point_ids) if n]
+        self.source_curve = resolve(curve_id)
+        self.gizmo = resolve(gizmo_id)
+        if group_id:
+            self._group = cmds.ls(group_id, long=True)[0]
+        if self._chain is not None:
+            self._chain.name = new_name
+            self._chain.joints = [n for n in (resolve(u) for u in joint_ids) if n]
+            if self._group:
+                self._chain.group_name = self._group   # still pointed at the old group path
+            if self.source_curve:
+                self._chain.curve_name = self.source_curve
+                dw_chain_guide.ChainGuide._tag_curve(self.source_curve, new_name,
+                                                     self._chain.n_joints, self._chain.up_axis)
+            self._tag_chain()
+        self._sync_point_records()
+        self.store_recipe()
+
+    def _reset_build(self) -> None:
+        """Drop the built chain + source curve so the next build starts from the points."""
+        if self._chain is not None:
+            self._chain._cleanup_joints()
+        if self.source_curve and cmds.objExists(self.source_curve):
+            cmds.delete(self.source_curve)
+        self._chain       = None
+        self.source_curve = None
+        self.positions    = []
+        self._status      = guide_registry.GuideStatus.PENDING
+
+    def reorder_points(self,
+                       ordered: list,) -> None:
+        """
+        Set a new chain order; `ordered` must be a permutation of the points.
+        Refused on a strip with hidden points - reordering handles would scramble
+        the strip; redo it from the selection instead.
+        """
+        if not (set(ordered) == set(self.points) and len(ordered) == len(self.points)):
+            return
+        self._sync_point_records()
+        if len(self.point_records) != len(self.points):
+            raise ValueError(f"'{self.name}': the points come from a strip with hidden points - "
+                             "reorder is off, redo the strip instead.")
+        self.point_records = [self.point_records[self.points.index(n)] for n in ordered]
+        self.points = list(ordered)
+        self.store_recipe()
+
+    def _auto_register(self,
+                       source: Optional[dict],) -> None:
+        """
+        Pre-register the skinCluster of the mesh a point was placed on, when the
+        guide has none yet (a mesh without skinCluster is silently ignored).
+        """
+        if self.skin_cluster or not source:
+            return
+        items = source.get("items") or []
+        if not items:
+            return
+        node = items[0].split(".")[0]
+        if not cmds.objExists(node):
+            return
+        try:
+            if skin_ops.find_skin_cluster(node):
+                self.register_skin(node)
+        except Exception as e:
+            logger.warning(f"DynForge: could not pre-register the skin of {node!r}: {e}")
+
+    def _points_alive(self) -> bool:
+        """True if this guide has point nodes and all of them still exist."""
+        return bool(self.points) and all(cmds.objExists(node) for node in self.points)
+
+    @staticmethod
+    def _set_source(node:   str,
+                    source: Optional[dict],) -> None:
+        if not cmds.attributeQuery(SOURCE_ATTR, node=node, exists=True):
+            cmds.addAttr(node, longName=SOURCE_ATTR, dataType="string")
+        cmds.setAttr(f"{node}.{SOURCE_ATTR}", json.dumps(source), type="string")
+
+    @staticmethod
+    def _handle_indices(count:   int,
+                        handles: int,) -> list:
+        """Which of `count` strip points get a locator: `handles` spread by index (<= 0 = all)."""
+        if handles <= 0 or handles >= count:
+            return list(range(count))
+        handles = max(handles, 2)
+        return sorted({int(i * (count - 1) / (handles - 1) + 0.5) for i in range(handles)})
+
+    def _handle_records(self) -> list:
+        """Indices of the records that have a node (handles), in order - they pair with self.points."""
+        return [i for i, rec in enumerate(self.point_records) if rec.get("handle", True)]
+
+    @staticmethod
+    def _node_record(node:     str,
+                     previous: Optional[dict] = None,) -> dict:
+        """Record of a live point node; keeps the previous record's origin (rest position)."""
+        source = None
+        if cmds.attributeQuery(SOURCE_ATTR, node=node, exists=True):
+            source = json.loads(cmds.getAttr(f"{node}.{SOURCE_ATTR}") or "null")
+        position = list(cmds.xform(node, query=True, worldSpace=True, translation=True))
+        origin = (previous or {}).get("origin") or (previous or {}).get("position") or position
+        return {"name": node.split("|")[-1], "position": position, "source": source,
+                "handle": True, "origin": list(origin)}
+
+    def _sync_point_records(self) -> None:
+        """
+        Refresh point_records from the live handle nodes (kept as-is when the
+        nodes are gone). Hidden strip points follow their neighbour handles:
+        each gets the handles' displacement from their origin, blended by index
+        between the handle before and the handle after it.
+        """
+        if not self._points_alive():
+            return
+        handles = self._handle_records()
+        if len(handles) != len(self.points):
+            # Records out of step with the nodes: every node is a handle.
+            self.point_records = [self._node_record(node) for node in self.points]
+            return
+        moved = {}
+        for k, node in zip(handles, self.points):
+            record = self._node_record(node, self.point_records[k])
+            self.point_records[k] = record
+            moved[k] = [p - o for p, o in zip(record["position"], record["origin"])]
+        if len(moved) == len(self.point_records):
+            return
+        keys = sorted(moved)
+        for i, record in enumerate(self.point_records):
+            if record.get("handle", True):
+                continue
+            before = [k for k in keys if k < i]
+            after = [k for k in keys if k > i]
+            if before and after:
+                a, b = before[-1], after[0]
+                t = (i - a) / float(b - a)
+                shift = [da + (db - da) * t for da, db in zip(moved[a], moved[b])]
+            else:
+                shift = moved[before[-1]] if before else moved[after[0]]
+            origin = record.get("origin") or record["position"]
+            record["position"] = [o + d for o, d in zip(origin, shift)]
+
+    def _point_positions(self) -> list:
+        """World MPoints of the guide points, root -> tip (live nodes, else records)."""
+        self._sync_point_records()
+        return [om2.MPoint(*rec["position"]) for rec in self.point_records]
+
+    def _respawn_points(self) -> None:
+        """Recreate locator points from the records (loaded file / consumed nodes)."""
+        if self._points_alive() or not self.point_records or self.point_type != "locator":
+            return
+        group = self._points_group()
+        self.points = []
+        for index, rec in enumerate(self.point_records):
+            if not rec.get("handle", True):
+                continue
+            node = dw_chain_guide.create_guide_point(
+                node_type = "locator",
+                name      = self.name,
+                index     = index,
+                position  = tuple(rec["position"]),
+                group     = group,
+            )
+            self._set_source(node, rec.get("source"))
+            rec["name"] = node.split("|")[-1]
+            self.points.append(node)
 
     # -- Lifecycle --------------------------------------------------------
-
-    def _locators_alive(self) -> bool:
-        """True if this guide has locators and all of them still exist in scene."""
-        return bool(self.locators) and all(cmds.objExists(loc) for loc in self.locators)
 
     def _tag_chain(self) -> None:
         """
@@ -278,74 +547,60 @@ class ChainJointGuide(guide_registry.GuideBackend):
             cmds.setAttr(f"{jnt}.dwForge", self.name, type="string")
 
     @property
+    def chain_joints(self) -> list:
+        """The built chain joints, root first (empty when not built)."""
+        return list(self._chain.joints) if self._chain is not None else []
+
+    @property
     def pin_joint(self) -> Optional[str]:
         """The root (_PIN) joint of the built chain, or None if not built."""
         if self._chain is not None and self._chain.joints:
             return self._chain.joints[0]
         return None
 
-    def build(self) -> None:
-        """
-        Materialize the guide (-> BUILT). Source resolution order:
-
-        - already has a curve: just (re)distribute the joints.
-        - locator flow with live locators: build the curve from them.
-        - has a snapshot (loaded from JSON / a previous build): rebuild the curve
-          from the stored waypoints (so loaded guides do not need a live selection).
-        - edge / face: read the current Maya selection and build the curve.
-        """
-        if self.exact_points and self.mode == "locator" and (self._locators_alive() or self.positions):
-            self._build_exact()
-            return
-        if self._chain is not None:
-            self._chain.build()
-        elif self.mode == "locator" and self._locators_alive():
-            self._chain = dw_chain_guide.ChainGuide.from_locators(
-                self.locators,
-                n_joints = self.n_joints,
-                name     = self.name,
-                degree   = self.degree,
-                up_axis  = self.up_axis,
-                reverse  = self.flip,
-                cv_count = self.cv_count,
-            )
-            if self.point_type == "joint":
-                # The placed joints were temporary markers seeding the curve;
-                # remove them, the constructed chain replaces them.
-                dw_chain_guide.delete_guide_locators(self.locators)
-                self.locators = []
-            self._chain.build()
-        elif self.positions:
-            self._chain = self._chain_from_snapshot()
-            self._chain.build()
-        elif self.mode == "edge":
-            self._chain = dw_chain_guide.ChainGuide.from_edge_selection(
-                n_joints = self.n_joints,
-                name     = self.name,
-                degree   = self.degree,
-                up_axis  = self.up_axis,
-                reverse  = self.flip,
-            )
-            self._chain.build()
-        elif self.mode == "face":
-            self._chain = dw_chain_guide.ChainGuide.from_face_selection(
-                n_joints = self.n_joints,
-                name     = self.name,
-                degree   = self.degree,
-                up_axis  = self.up_axis,
-                reverse  = self.flip,
-            )
-            self._chain.build()
-        else:
-            raise ValueError(
-                f"ChainJointGuide '{self.name}': nothing to build - select "
-                "edges/faces (edge/face mode) or create locators first."
-            )
+    def _finish_build(self) -> None:
         self.source_curve = self._chain.curve_name
         self.positions    = self._read_curve_points(self._chain.curve_name)
         self._curve_flip  = self.flip
         self._tag_chain()
         self._status = guide_registry.GuideStatus.BUILT
+        self.store_recipe()
+
+    @dw_undo.singleUndoChunk
+    def build(self) -> None:
+        """
+        Materialize the guide (-> BUILT). Source resolution order:
+
+        - exact mode: one joint per guide point (see _build_exact).
+        - already has a curve: just (re)distribute the joints.
+        - has a curve snapshot (loaded file): rebuild the curve from its CVs, so
+          hand edits to the curve survive.
+        - otherwise: build the curve through the guide points.
+        """
+        self._respawn_points()
+        if self.exact_points:
+            self._build_exact()
+            return
+        if self._chain is not None:
+            self._chain.build()
+        elif self.positions:
+            self._chain = self._chain_from_curve_points(
+                [om2.MPoint(*p) for p in self.positions], resample=False)
+            self._chain.build()
+        else:
+            points = self._point_positions()
+            if len(points) < 2:
+                raise ValueError(f"'{self.name}': add at least 2 guide points before building.")
+            if self.flip:
+                points = points[::-1]
+            self._chain = self._chain_from_curve_points(points, resample=True)
+            if self.point_type == "joint" and self._points_alive():
+                # The placed joints were markers seeding the curve; the records
+                # keep them, the constructed chain replaces the nodes.
+                cmds.delete(self.points)
+                self.points = []
+            self._chain.build()
+        self._finish_build()
 
     def save_curve_positions(self) -> None:
         """
@@ -355,53 +610,25 @@ class ChainJointGuide(guide_registry.GuideBackend):
         if self.source_curve and cmds.objExists(self.source_curve):
             self.positions = self._read_curve_points(self.source_curve)
 
+    @dw_undo.singleUndoChunk
     def rebuild(self) -> None:
         """
         Rebuild the joint chain, following any artist adjustments. Once a curve
-        exists (any mode, locators included), it is the source of truth: the
-        artist edits its CVs and rebuild keeps the curve and only redistributes
-        the joints. The locator-built curve is created with enough CVs to edit
-        (see cv_count / build()), so there is no need to rebuild it from the
-        locators here - that would discard the hand edits.
+        exists it is the source of truth: the artist edits its CVs and rebuild
+        keeps the curve and only redistributes the joints.
 
-        Exact mode (one joint per guide point) is the exception: the points are
-        the source of truth, so rebuild re-reads them and re-places the joints.
+        Exact mode is the exception: the points are the source of truth, so
+        rebuild re-reads them and re-places the joints.
         """
-        if self.exact_points and self.mode == "locator" and (self._locators_alive() or self.positions):
-            self._build_exact()
-            return
-        if self._chain is not None:
-            # Toggling Flip after the curve exists must reverse the curve in
-            # place (rebuild alone only redistributes joints along it).
-            if self.flip != self._curve_flip:
-                dw_chain_guide.reverse_curve_direction(self.source_curve)
-                self._curve_flip = self.flip
-            self._chain.rebuild(n_joints=self.n_joints, up_axis=self.up_axis)
-        else:
-            # Never built: fall back to a fresh build.
+        if self.exact_points or self._chain is None:
             self.build()
             return
-        self.source_curve = self._chain.curve_name
-        self.positions    = self._read_curve_points(self._chain.curve_name)
-        self._curve_flip  = self.flip
-        self._tag_chain()
-        self._status      = guide_registry.GuideStatus.BUILT
-
-    # -- Exact mode (one joint per guide point) ---------------------------
-
-    def _exact_positions(self) -> list:
-        """World-space MPoints for the guide points (flip applied), live or snapshot."""
-        if self._locators_alive():
-            points = dw_chain_guide.get_locator_positions(self.locators)
-        elif self.positions:
-            points = [om2.MPoint(x, y, z) for (x, y, z) in self.positions]
-        else:
-            raise ValueError(
-                f"ChainJointGuide '{self.name}': no guide points for an exact build."
-            )
-        if self.flip:
-            points = points[::-1]
-        return points
+        # Toggling Flip after the curve exists must reverse the curve in place
+        # (rebuild alone only redistributes joints along it).
+        if self.flip != self._curve_flip:
+            dw_chain_guide.reverse_curve_direction(self.source_curve)
+        self._chain.rebuild(n_joints=self.n_joints, up_axis=self.up_axis)
+        self._finish_build()
 
     def _build_exact(self) -> None:
         """
@@ -410,21 +637,26 @@ class ChainJointGuide(guide_registry.GuideBackend):
         the 'joint' point type the placed joints are REUSED as the chain; for the
         'locator' type fresh joints are created and the locators stay as scaffold.
         """
-        group = self.group_name or dw_chain_guide.ChainGuide.GRP_NAME
-
-        reuse_joints = (self.point_type == "joint" and self._locators_alive())
+        group = self.guide_group()
+        reuse_joints = (self.point_type == "joint" and self._points_alive()
+                        and len(self.points) == len(self.point_records))
         if reuse_joints:
-            order  = self.locators[::-1] if self.flip else self.locators
+            self._sync_point_records()
+            order  = self.points[::-1] if self.flip else self.points
             points = dw_chain_guide.get_locator_positions(order)
             joints = dw_chain_guide.chain_from_joints(order, self.name, self.up_axis)
-            # Keep self.locators in the original placement order so flip stays a
+            # Keep self.points in the original placement order so flip stays a
             # pure derived transform (no double-reverse on the next rebuild).
-            self.locators = joints[::-1] if self.flip else joints
+            self.points = joints[::-1] if self.flip else joints
         else:
-            points = self._exact_positions()
+            points = self._point_positions()
+            if self.flip:
+                points = points[::-1]
             if self._chain is not None:
                 self._chain._cleanup_joints()   # drop the previous exact chain
             joints = dw_chain_guide.place_joint_chain(points, self.name, self.up_axis)
+        if len(points) < 2:
+            raise ValueError(f"'{self.name}': add at least 2 guide points before building.")
 
         # Data-only curve, passing exactly through the points.
         if self.source_curve and cmds.objExists(self.source_curve):
@@ -432,31 +664,38 @@ class ChainJointGuide(guide_registry.GuideBackend):
         curve = dw_chain_guide.build_curve_through_positions(
             points, name=f"{self.name}_src_crv", degree=self.degree,
         )
+        curve = cmds.parent(curve, group)[0]
         chain = dw_chain_guide.ChainGuide.from_existing_curve(
             curve, n_joints=len(points), name=self.name, up_axis=self.up_axis, group=group,
         )
-        grp = chain.ensure_group()
-        if (cmds.listRelatives(curve, parent=True) or []) != [grp]:
-            cmds.parent(curve, grp)
         chain.joints = joints
         root = joints[0]
-        if (cmds.listRelatives(root, parent=True) or []) != [grp]:
-            cmds.parent(root, grp)
+        if (cmds.listRelatives(root, parent=True, fullPath=True) or []) != [group]:
+            cmds.parent(root, group)
 
-        self._chain       = chain
-        self.source_curve = chain.curve_name
-        self.positions    = [(p.x, p.y, p.z) for p in points]
-        self.n_joints     = len(points)
-        self._curve_flip  = self.flip
-        self._tag_chain()
-        self._status      = guide_registry.GuideStatus.BUILT
+        self._chain   = chain
+        self.n_joints = len(points)
+        self._finish_build()
 
+    @dw_undo.singleUndoChunk
     def destroy(self) -> None:
-        """Delete the built joint chain, keeping the source curve (-> PENDING)."""
+        """Delete the built joint chain, keeping points + curve (-> PENDING)."""
         if self._chain is not None:
             # TODO: expose a public delete on ChainGuide; using the internal
             # cleanup for now so destroy() does not rely on tracking joints here.
             self._chain._cleanup_joints()
+        self._status = guide_registry.GuideStatus.PENDING
+        self.store_recipe()
+
+    @dw_undo.singleUndoChunk
+    def delete(self) -> None:
+        """Remove the guide from the scene entirely: chain, gizmo and guide group."""
+        if self._chain is not None:
+            self._chain._cleanup_joints()
+        for node in (self.gizmo, self._group):
+            if node and cmds.objExists(node):
+                cmds.delete(node)
+        self._group = None
         self._status = guide_registry.GuideStatus.PENDING
 
     # -- Editing ----------------------------------------------------------
@@ -467,7 +706,8 @@ class ChainJointGuide(guide_registry.GuideBackend):
                          degree:       Optional[int]  = None,
                          flip:         Optional[bool] = None,
                          cv_count:     Optional[int]  = None,
-                         exact_points: Optional[bool] = None,) -> None:
+                         exact_points: Optional[bool] = None,
+                         strip_handles: Optional[int] = None,) -> None:
         """Update the build parameters of a (PENDING or BUILT) guide."""
         if n_joints is not None:
             self.n_joints = n_joints
@@ -481,28 +721,8 @@ class ChainJointGuide(guide_registry.GuideBackend):
             self.cv_count = cv_count
         if exact_points is not None:
             self.exact_points = exact_points
-
-    def reorder_locators(self,
-                         ordered: list,) -> None:
-        """
-        Set a new chain order for the guide locators. `ordered` must be a
-        permutation of the current locators; anything else is ignored.
-        """
-        if set(ordered) == set(self.locators) and len(ordered) == len(self.locators):
-            self.locators = list(ordered)
-
-    def snap_locators_to_mesh(self,
-                              mesh: Optional[str] = None,) -> None:
-        """
-        Snap every guide locator to the nearest vertex of `mesh` (or the first
-        selected mesh when `mesh` is None). Locator flow only.
-        """
-        if not self.locators:
-            raise ValueError("This guide has no locators to snap.")
-        target = mesh or dw_chain_guide.get_selected_mesh()
-        if not target:
-            raise ValueError("Select a mesh (or its vertices) to snap the locators to.")
-        dw_chain_guide.snap_locators_to_mesh(self.locators, target)
+        if strip_handles is not None:
+            self.strip_handles = strip_handles
 
     # -- Skinning (phase 1: register / region / analyze - no weights) -----
 
@@ -517,29 +737,92 @@ class ChainJointGuide(guide_registry.GuideBackend):
             raise ValueError(f"No skinCluster found on {target.split('|')[-1]!r}.")
         self.skin_cluster = skin
         self.skin_meshes  = skin_ops.skin_cluster_meshes(skin)
+        self.store_recipe()
         return skin
 
     def make_gizmo(self,
                    shape: Optional[str] = None,) -> str:
-        """(Re)create the region gizmo, centered on the _PIN joint."""
+        """
+        (Re)create the optional clip gizmo, fitted around the whole chain with
+        the reach radius (see skin_ops.fit_gizmo) - it starts clipping nothing,
+        the artist shrinks / moves it to cut something out. Falls back to a unit
+        gizmo on the _PIN when the chain has no curve yet.
+        """
         if shape:
             self.gizmo_shape = shape
         if self.gizmo and cmds.objExists(self.gizmo):
             cmds.delete(self.gizmo)
-        self.gizmo = skin_ops.create_gizmo(
-            self.gizmo_shape, center=self.pin_joint, name=f"{self.name}_skinGizmo",
-        )
+        name = f"{self.name}_skinGizmo"
+        if self.source_curve and cmds.objExists(self.source_curve):
+            _, _, radius = self.reach()
+            self.gizmo = skin_ops.fit_gizmo(self.gizmo_shape, self.source_curve, radius, name=name)
+        else:
+            self.gizmo = skin_ops.create_gizmo(self.gizmo_shape, center=self.pin_joint, name=name)
+        self.store_recipe()
         return self.gizmo
 
+    def gizmo_coverage(self) -> Optional[float]:
+        """Fraction of the chain's curve inside the clip gizmo (None without gizmo / curve)."""
+        if not (self.gizmo and cmds.objExists(self.gizmo)
+                and self.source_curve and cmds.objExists(self.source_curve)):
+            return None
+        return skin_ops.clip_coverage(self.gizmo, self.gizmo_shape, self.source_curve)
+
+    def delete_gizmo(self) -> None:
+        """Drop the clip gizmo: the region is the plain tube around the chain again."""
+        if self.gizmo and cmds.objExists(self.gizmo):
+            cmds.delete(self.gizmo)
+        self.gizmo = None
+        self.store_recipe()
+
+    def reach(self) -> tuple:
+        """
+        Return (nearest bone, base radius, radius): the base is the distance from
+        the _PIN to the nearest skinCluster joint (DynForge chains excluded), the
+        radius is base * radius_scale. It sizes both the attachment search around
+        the _PIN and the tube around the chain. (None, 0.0, 0.0) if not ready.
+        """
+        pin = self.pin_joint
+        if not (self.skin_cluster and pin and cmds.objExists(pin)):
+            return None, 0.0, 0.0
+        bone, base = skin_ops.nearest_influence(self.skin_cluster, pin,
+                                                exclude=tuple(self._chain.joints))
+        return bone, base, base * self.radius_scale
+
     def analyze(self) -> list:
-        """Rank the skinCluster influences by participation inside the gizmo."""
+        """
+        Rank the skinCluster influences around the _PIN (within the reach radius)
+        - the bone(s) the chain most likely hangs from. When nothing is picked
+        yet, the top one is taken as donor and as parent bone.
+        """
         if not self.skin_cluster:
             raise ValueError("Register a skinned mesh first.")
-        if not (self.gizmo and cmds.objExists(self.gizmo)):
-            raise ValueError("Create a gizmo first.")
-        return skin_ops.analyze_participation(
-            self.skin_cluster, self.skin_meshes, self.gizmo, self.gizmo_shape,
-        )
+        if not self.pin_joint:
+            raise ValueError("Build the chain first: the analysis starts from its _PIN.")
+        _, _, radius = self.reach()
+        if radius <= 0.0:
+            raise ValueError("No skin joint found around the _PIN to size the radius.")
+        ranked = skin_ops.attachment_candidates(self.skin_cluster, self.pin_joint, radius)
+        if ranked and not self.source_influences:
+            self.source_influences = [ranked[0][0]]
+        if ranked and not self.parent_bone:
+            self.parent_bone = cmds.ls(ranked[0][0], long=True)[0]
+        self.store_recipe()
+        return ranked
+
+    def skin_spec(self) -> dict:
+        """The plain-dict description skin_ops.compute_split / install_chains use."""
+        _, _, radius = self.reach()
+        return {
+            "name":        self.name,
+            "joints":      list(self._chain.joints),
+            "curve":       self.source_curve,
+            "donors":      list(self.source_influences),
+            "radius":      radius,
+            "power":       self.power,
+            "gizmo":       self.gizmo if self.gizmo and cmds.objExists(self.gizmo) else None,
+            "gizmo_shape": self.gizmo_shape,
+        }
 
     def inspect_influence(self,
                           influence: str,) -> None:
@@ -554,6 +837,7 @@ class ChainJointGuide(guide_registry.GuideBackend):
         if not sel:
             raise ValueError("Select a joint to use as the parent bone.")
         self.parent_bone = sel[0]
+        self.store_recipe()
         return self.parent_bone
 
     def has_skin_backup(self) -> bool:
@@ -573,12 +857,18 @@ class ChainJointGuide(guide_registry.GuideBackend):
             raise ValueError("Register a skinned mesh first.")
         skin_ops.restore_skin(self.skin_cluster)
 
-    def is_installable(self) -> bool:
-        """True if this guide is built and fully configured for a skin install."""
-        return bool(self.skin_cluster
-                    and self.source_influences
-                    and self.gizmo and cmds.objExists(self.gizmo)
-                    and self._chain is not None and self._chain.joints)
+    def is_installable(self,
+                       with_skin: bool = True,) -> bool:
+        """
+        True if this guide can be installed: built with a parent bone, plus a
+        skinCluster and donor bone(s) when the weights are installed too.
+        """
+        built = bool(self._chain is not None and self._chain.joints
+                     and self.source_curve and cmds.objExists(self.source_curve))
+        if not with_skin:
+            return built and bool(self.parent_bone and cmds.objExists(self.parent_bone))
+        return built and bool(self.skin_cluster and cmds.objExists(self.skin_cluster)
+                              and self.source_influences)
 
     def is_installed(self) -> bool:
         """True if this guide's chain joints are already influences on the skin."""
@@ -588,114 +878,211 @@ class ChainJointGuide(guide_registry.GuideBackend):
         short = {i.split("|")[-1] for i in infls}
         return all(j in infls or j.split("|")[-1] in short for j in self._chain.joints)
 
-    def install(self) -> int:
+    @dw_undo.singleUndoChunk
+    def install_pin(self) -> Optional[str]:
         """
-        Transfer the donor weight onto this chain (spatial cascade) and parent the
-        _PIN under the donor/parent bone. Returns the number of verts edited.
+        Hand the chain to the host to place it in the rig (default: _PIN under
+        the parent bone; a studio host may also rename it), then move the guide
+        group into the host's setup home when it has one. The weights are
+        installed per skinCluster, for all its chains at once - see
+        skin_ops.install_chains. Returns the setup home, or None when the guide
+        stayed where it was.
         """
-        if not self.is_installable():
-            raise ValueError(
-                "Not ready to install: build the chain, register a skin, create a "
-                "gizmo and pick donor bone(s) first.")
-        edited = skin_ops.install_chain(
-            self.skin_cluster,
-            self.skin_meshes,
-            self.gizmo,
-            self.gizmo_shape,
-            self.source_curve,
-            list(self._chain.joints),
-            self.source_influences,
-            self.power,
-        )
-        # Hierarchy move: parent the _PIN under the donor / parent bone.
-        if self.parent_bone and cmds.objExists(self.parent_bone):
-            pin = self.pin_joint
-            if pin and (cmds.listRelatives(pin, parent=True, fullPath=True) or []) != [self.parent_bone]:
-                try:
-                    cmds.parent(pin, self.parent_bone)
-                except Exception as e:
-                    logger.warning(f"DynForge install: parent _PIN failed: {e}")
-        return edited
+        host = forge_host.get_host()
+        if self._chain is not None and self._chain.joints:
+            joints = host.install_chain(self)
+            if joints:
+                self._chain.joints = list(joints)
+            self._tag_chain()
+        home = host.setup_for(self)
+        if home:
+            self.move_to_setup(home)
+        self.setup_home = home   # read by the UI to offer a JSON copy when None
+        self.installed = True
+        self.store_recipe()
+        return home
+
+    @dw_undo.singleUndoChunk
+    def uninstall(self,
+                  skin_peers: tuple = (),) -> None:
+        """
+        Revert the install, one undo step:
+        - weights: when this guide's weights were installed, its skinCluster is
+          rebuilt without it - the other skin-installed guides in `skin_peers`
+          are re-applied from the vanilla backup, or the backup is restored
+          as-is when none remains;
+        - hierarchy: the host puts the chain back under the guide group with
+          its build names (and drops what it created for it, e.g. a ghost).
+        The guide group stays in its setup home.
+        """
+        if self.skin_installed and self.skin_cluster and cmds.objExists(self.skin_cluster):
+            remaining = [g for g in skin_peers
+                         if g is not self and getattr(g, "skin_installed", False)
+                         and getattr(g, "skin_cluster", None) == self.skin_cluster]
+            if remaining:
+                skin_ops.install_skin(self.skin_cluster, remaining)
+            elif skin_ops.has_backup(self.skin_cluster):
+                skin_ops.restore_skin(self.skin_cluster)
+        if self._chain is not None and self._chain.joints:
+            joints = forge_host.get_host().uninstall_chain(self)
+            if joints:
+                self._chain.joints = list(joints)
+            self._tag_chain()
+        self.installed = False
+        self.skin_installed = False
+        self.store_recipe()
+
+    def move_to_setup(self,
+                      setup: str,) -> None:
+        """Re-parent the guide group under another setup group (e.g. a studio home)."""
+        group = self.guide_group()
+        current = cmds.listRelatives(group, parent=True, fullPath=True) or []
+        if current != cmds.ls(setup, long=True):
+            group = cmds.parent(group, setup)[0]
+        self._group = cmds.ls(group, long=True)[0]
+        self.setup = cmds.ls(setup, long=True)[0]
+        if self._chain is not None:
+            self._chain.group_name = self._group
 
     # -- Serialization ----------------------------------------------------
 
     def to_dict(self) -> dict:
-        """Return the JSON-serializable reproducibility snapshot."""
+        """Return the JSON-serializable recipe (params + sources + node names)."""
+        self._sync_point_records()
         return {
-            "type_name":    self.type_name,
-            "name":         self.name,
-            "mode":         self.mode,
-            "n_joints":     self.n_joints,
-            "up_axis":      self.up_axis,
-            "degree":       self.degree,
-            "flip":         self.flip,
-            "n_locators":   self.n_locators,
-            "point_type":   self.point_type,
-            "cv_count":     self.cv_count,
-            "exact_points": self.exact_points,
+            "type_name":         self.type_name,
+            "name":              self.name,
+            "n_joints":          self.n_joints,
+            "up_axis":           self.up_axis,
+            "degree":            self.degree,
+            "flip":              self.flip,
+            "point_type":        self.point_type,
+            "cv_count":          self.cv_count,
+            "exact_points":      self.exact_points,
+            "points":            self.point_records,
+            "strip_source":      self.strip_source,
+            "strip_handles":     self.strip_handles,
+            "curve_points":      self.positions,
             "skin_cluster":      self.skin_cluster,
             "skin_meshes":       self.skin_meshes,
+            "gizmo":             self.gizmo,
             "gizmo_shape":       self.gizmo_shape,
             "source_influences": self.source_influences,
             "parent_bone":       self.parent_bone,
             "power":             self.power,
-            "positions":    self.positions,
-            "source_curve": self.source_curve,
-            "locators":     self.locators,
+            "radius_scale":      self.radius_scale,
+            "installed":         self.installed,
+            "skin_installed":    self.skin_installed,
+            # Scene node names without namespace (a studio tool may add one to
+            # anything moved into a container), only used to reattach a guide.
+            "nodes": {
+                "points": [_bare(node) for node in self.points],
+                "curve":  _bare(self.source_curve) if self.source_curve else None,
+                "joints": [_bare(j) for j in (self._chain.joints if self._chain else [])],
+            },
         }
 
     @classmethod
     def from_dict(cls,
                   data: dict,) -> "ChainJointGuide":
-        """Rebuild a (PENDING) guide instance from a to_dict() payload."""
-        guide = cls(name       = data.get("name", "chain"),
-                    mode       = data.get("mode", "edge"),
-                    n_joints   = data.get("n_joints", 10),
-                    up_axis    = data.get("up_axis", "y"),
-                    degree     = data.get("degree", 3),
-                    flip       = data.get("flip", False),
-                    n_locators = data.get("n_locators", 4),
-                    point_type = data.get("point_type", "locator"),
-                    cv_count   = data.get("cv_count", 6),
+        """Rebuild a (PENDING) guide from a to_dict() payload - no scene nodes."""
+        guide = cls(name         = data.get("name", "chain"),
+                    n_joints     = data.get("n_joints", 10),
+                    up_axis      = data.get("up_axis", "y"),
+                    degree       = data.get("degree", 3),
+                    flip         = data.get("flip", False),
+                    point_type   = data.get("point_type", "locator"),
+                    cv_count     = data.get("cv_count", 6),
                     exact_points = data.get("exact_points", False),)
-        guide.positions    = [tuple(p) for p in data.get("positions", [])]
-        guide.source_curve = data.get("source_curve")
-        guide.locators     = list(data.get("locators", []))
+        guide.point_records     = [dict(rec) for rec in data.get("points", [])]
+        guide.positions         = [tuple(p) for p in data.get("curve_points", [])]
+        guide.strip_source      = data.get("strip_source")
+        guide.strip_handles     = int(data.get("strip_handles", 3))
         guide.skin_cluster      = data.get("skin_cluster")
         guide.skin_meshes       = list(data.get("skin_meshes", []))
         guide.gizmo_shape       = data.get("gizmo_shape", "box")
         guide.source_influences = list(data.get("source_influences", []))
         guide.parent_bone       = data.get("parent_bone")
         guide.power             = data.get("power", 1.0)
+        guide.radius_scale      = data.get("radius_scale", 1.0)
+        guide.installed         = bool(data.get("installed", False))
+        guide.skin_installed    = bool(data.get("skin_installed", False))
         return guide
 
     # -- Discovery --------------------------------------------------------
 
     @classmethod
     def discover(cls) -> list:
-        """Find tagged ChainGuide curves in the scene and wrap them as instances."""
+        """Rebuild the guides whose recipe group is in the scene, reattached to their nodes."""
         found: list = []
-        for shape in cmds.ls(type="nurbsCurve", long=True) or []:
-            parents = cmds.listRelatives(shape, parent=True, fullPath=True) or []
-            if not parents:
+        for group in cmds.ls(type="transform", long=True) or []:
+            if not cmds.attributeQuery(RECIPE_ATTR, node=group, exists=True):
                 continue
-            transform = parents[0]
-            if not cmds.objExists(f"{transform}.cgName"):
+            if cmds.getAttr(f"{group}.{GUIDE_TAG}") != cls.type_name:
                 continue
             try:
-                chain = dw_chain_guide.ChainGuide.from_scene_curve(transform)
+                found.append(cls._from_scene_group(group))
             except Exception as e:
-                logger.warning(f"discover: could not wrap {transform!r}: {e}")
-                continue
-            guide = cls(name     = chain.name,
-                        n_joints = chain.n_joints,
-                        up_axis  = chain.up_axis,)
-            guide._chain       = chain
-            guide.source_curve = chain.curve_name
-            guide.positions    = cls._read_curve_points(chain.curve_name)
-            guide._status      = guide_registry.GuideStatus.BUILT
-            found.append(guide)
+                logger.warning(f"discover: could not restore {group!r}: {e}")
         return found
+
+    @classmethod
+    def _from_scene_group(cls,
+                          group: str,) -> "ChainJointGuide":
+        data  = json.loads(cmds.getAttr(f"{group}.{RECIPE_ATTR}"))
+        guide = cls.from_dict(data)
+        guide._group = group
+        guide.setup  = (cmds.listRelatives(group, parent=True, fullPath=True) or [None])[0]
+        nodes = data.get("nodes", {})
+
+        # Shortest unique names, like every node the guide creates itself: a long
+        # path goes stale as soon as a point is re-parented (exact chains).
+        descendants = cmds.listRelatives(group, allDescendents=True, fullPath=True) or []
+        by_short = {_bare(node): cmds.ls(node)[0] for node in descendants}
+        guide.points = [by_short[n] for n in nodes.get("points", []) if n in by_short]
+        curve = by_short.get(nodes.get("curve"))
+        gizmo = data.get("gizmo")
+        guide.gizmo = gizmo if gizmo and cmds.objExists(gizmo) else None
+        if not curve:
+            return guide
+
+        # An installed chain has left the group for its parent bone: fall back
+        # to the joints tagged with this guide's name.
+        joints = []
+        for short in nodes.get("joints", []):
+            short = _bare(short)
+            node = by_short.get(short)
+            if node is None:
+                tagged = [j for j in cmds.ls(short, long=True, type="joint", recursive=True) or []
+                          if cmds.attributeQuery("dwForge", node=j, exists=True)
+                          and cmds.getAttr(f"{j}.dwForge") == guide.name]
+                node = cmds.ls(tagged[0])[0] if len(tagged) == 1 else None
+            if node is None:
+                joints = []
+                break
+            joints.append(node)
+
+        guide.source_curve = curve
+        guide._chain = dw_chain_guide.ChainGuide(
+            curve_name=curve, n_joints=guide.n_joints, name=guide.name,
+            up_axis=guide.up_axis, group=group,
+        )
+        guide._chain.joints = joints
+        guide._curve_flip = guide.flip
+        if joints:
+            guide._status = guide_registry.GuideStatus.BUILT
+            # A recipe written before the install flags existed: read the state
+            # off the scene (the _PIN left the guide group / joints are influences).
+            if "installed" not in data:
+                pin_parent = cmds.listRelatives(joints[0], parent=True, fullPath=True) or []
+                guide.installed = pin_parent != [group]
+            if "skin_installed" not in data:
+                try:
+                    guide.skin_installed = bool(guide.skin_cluster and cmds.objExists(guide.skin_cluster)
+                                                and guide.is_installed())
+                except Exception:
+                    guide.skin_installed = False
+        return guide
 
     # -- Internal helpers -------------------------------------------------
 
@@ -705,33 +1092,28 @@ class ChainJointGuide(guide_registry.GuideBackend):
         cvs = cmds.ls(f"{curve}.cv[*]", flatten=True) or []
         return [tuple(cmds.pointPosition(cv, world=True)) for cv in cvs]
 
-    def _chain_from_snapshot(self) -> dw_chain_guide.ChainGuide:
-        """Recreate the source curve from stored waypoints and wrap it."""
-        if len(self.positions) < 2:
-            raise ValueError(
-                f"ChainJointGuide '{self.name}': snapshot has "
-                f"{len(self.positions)} point(s), at least 2 are required."
-            )
-        points = [om2.MPoint(x, y, z) for (x, y, z) in self.positions]
+    def _chain_from_curve_points(self,
+                                 points:   list,
+                                 resample: bool,) -> dw_chain_guide.ChainGuide:
+        """Build the source curve from `points` inside the guide group and wrap it."""
+        if len(points) < 2:
+            raise ValueError(f"'{self.name}': {len(points)} curve point(s), at least 2 are required.")
+        group = self.guide_group()
         curve = dw_chain_guide.build_curve_from_positions(
-            points,
-            name   = f"{self.name}_src_crv",
-            degree = self.degree,
-            closed = False,
+            points, name=f"{self.name}_src_crv", degree=self.degree, closed=False,
         )
-        chain = dw_chain_guide.ChainGuide.from_existing_curve(
+        # Resample only UP to cv_count: a few hand-placed points need extra CVs
+        # to be editable, but a dense edge column must keep its shape.
+        if resample and len(points) < self.cv_count:
+            dw_chain_guide.resample_curve(curve, self.cv_count, degree=self.degree)
+        curve = cmds.parent(curve, group)[0]
+        return dw_chain_guide.ChainGuide.from_existing_curve(
             curve_name = curve,
             n_joints   = self.n_joints,
             name       = self.name,
             up_axis    = self.up_axis,
-            group      = self.group_name,
+            group      = group,
         )
-        # Keep the regenerated curve inside the guide's group (build_curve_from_
-        # positions leaves it at the scene root) so a loaded version stays tidy.
-        group = chain.ensure_group()
-        if (cmds.listRelatives(curve, parent=True) or []) != [group]:
-            cmds.parent(curve, group)
-        return chain
 
 
 guide_registry.register(ChainJointGuide)

@@ -49,19 +49,17 @@ class GuideBackend(ABC):
     """
     Abstract base for ONE guide instance (one row in the guide list).
 
-    Subclasses describe a guide TYPE via the three class attributes below and
+    Subclasses describe a guide TYPE via the class attributes below and
     implement the build / destroy / serialize behaviour.
 
     Class attributes (override in every subclass)
     ---------------------------------------------
     type_name       stable key used in the registry and JSON ('chain_joint')
     label           human-readable name shown in the UI ('Joint Chain')
-    creation_modes  creation flows this type supports ('edge', 'face', 'locator')
     """
 
-    type_name:      str = ""
-    label:          str = ""
-    creation_modes: tuple = ()
+    type_name: str = ""
+    label:     str = ""
 
     def __init__(self, name: str = "guide") -> None:
         self.name    = name
@@ -99,9 +97,9 @@ class GuideBackend(ABC):
     def create(cls,
                **params,) -> "GuideBackend":
         """
-        Create a new (PENDING) guide of this type from a flat params dict
-        (expects at least a 'mode' key). Override per backend to dispatch to the
-        right creation factory. Lets the UI create any guide type generically.
+        Create a new blank (PENDING) guide of this type from a flat params dict
+        (the UI's last-used defaults + 'name'). Lets the UI create any guide type
+        generically.
         """
         raise NotImplementedError(
             f"{cls.__name__} does not implement create()."

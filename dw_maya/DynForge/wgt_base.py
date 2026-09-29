@@ -20,10 +20,40 @@ from __future__ import annotations
 
 from typing import Any, Callable
 
-from dw_maya.DynForge.forge_cmds.compat import QtWidgets
+from dw_maya.DynForge.forge_cmds.compat import QtCore, QtWidgets, Signal
 from dw_logger import get_logger
 
 logger = get_logger()
+
+
+# ============================================================================
+# CONTEXT (what tabs see of the main window)
+# ============================================================================
+
+class ForgeContext(QtCore.QObject):
+    """
+    The window seen from a tab (Install, or a studio tab added by the ForgeHost):
+    the listed guides, the selected one, and signals to follow them. main_ui
+    owns it and emits guides_changed after anything that changes a guide's
+    scene state (build, install, rename, add / remove...).
+    """
+
+    guides_changed    = Signal()
+    selection_changed = Signal(object)
+
+    def __init__(self,
+                 all_guides,
+                 selected_guide,
+                 parent=None,) -> None:
+        super().__init__(parent)
+        self._all_guides = all_guides
+        self._selected_guide = selected_guide
+
+    def all_guides(self) -> list:
+        return list(self._all_guides())
+
+    def selected_guide(self):
+        return self._selected_guide()
 
 
 # ============================================================================

@@ -442,6 +442,12 @@ def _orient_chain(joints:  list[str],
         cmds.setAttr(f"{joints[-1]}.{attr}", 0.0)
 
 
+def chain_joint_names(chain_name: str,
+                      count:      int,) -> list[str]:
+    """Build names of a chain: <name>_jnt_0_PIN, <name>_jnt_1, ... (padding 1)."""
+    return [f"{chain_name}_jnt_{i}{'_PIN' if i == 0 else ''}" for i in range(count)]
+
+
 def place_joint_chain(positions:  list[om2.MPoint],
                       chain_name: str = "chain",
                       up_axis:    str = "y",) -> list[str]:
@@ -450,13 +456,13 @@ def place_joint_chain(positions:  list[om2.MPoint],
     carries the _PIN suffix; index padding is 1. Returns [root, ..., tip].
     """
     joints: list[str] = []
+    names = chain_joint_names(chain_name, len(positions))
     cmds.select(clear=True)
     for i, pos in enumerate(positions):
         if joints:
             cmds.select(joints[-1])   # new joint becomes the previous one's child
-        suffix = "_PIN" if i == 0 else ""
         jnt = cmds.joint(
-            name=f"{chain_name}_jnt_{i}{suffix}",
+            name=names[i],
             position=(pos.x, pos.y, pos.z),
         )
         joints.append(jnt)
@@ -475,19 +481,29 @@ def chain_from_joints(joint_nodes: list[str],
 
     `joint_nodes` must already be in the desired root->tip order. Returns the
     renamed nodes in that same order.
+
+    Runs again on every rebuild, when the nodes already carry chain names: after
+    a flip / reorder / delete, jnt_3 must become jnt_0_PIN while the old
+    jnt_0_PIN still exists. So nodes are tracked by UUID (names and paths change
+    under us) and parked on temp names before taking their final ones.
     """
-    ordered = list(joint_nodes)
-    if not ordered:
+    if not joint_nodes:
         return []
-    for jnt in ordered:
-        if cmds.listRelatives(jnt, parent=True):
-            cmds.parent(jnt, world=True)
-    for i in range(1, len(ordered)):
-        ordered[i] = cmds.parent(ordered[i], ordered[i - 1])[0]
-    renamed: list[str] = []
-    for i, jnt in enumerate(ordered):
-        suffix = "_PIN" if i == 0 else ""
-        renamed.append(cmds.rename(jnt, f"{chain_name}_jnt_{i}{suffix}"))
+    uuids = [cmds.ls(jnt, uuid=True)[0] for jnt in joint_nodes]
+
+    def path_of(uuid: str) -> str:
+        return cmds.ls(uuid, long=True)[0]
+
+    for uuid in uuids:
+        if cmds.listRelatives(path_of(uuid), parent=True):
+            cmds.parent(path_of(uuid), world=True)
+    for i, uuid in enumerate(uuids):
+        cmds.rename(path_of(uuid), f"{chain_name}_jntTmp_{i}")
+    for uuid, name in zip(uuids, chain_joint_names(chain_name, len(uuids))):
+        cmds.rename(path_of(uuid), name)
+    for i in range(1, len(uuids)):
+        cmds.parent(path_of(uuids[i]), path_of(uuids[i - 1]))
+    renamed = [cmds.ls(uuid)[0] for uuid in uuids]
     _orient_chain(renamed, up_axis)
     cmds.select(clear=True)
     return renamed
@@ -527,18 +543,25 @@ _LOCATOR_GROUP_TAG = "cgLocGuide"   # marker attr added on the locator group
 _GUIDE_LOCATOR_SCALE = 10.0         # default locator localScale (visibility)
 
 
-def ensure_locator_group(name: str) -> str:
+def ensure_locator_group(name:   str,
+                         parent: Optional[str] = None,) -> str:
     """
     Return the (existing or freshly created) tagged guide-point group, parented
-    under the main guide group - the points belong to the setup (they are cleaned
-    later, keeping only the curve + its metadata).
+    under `parent` (default: the main guide group) - the points belong to the
+    setup, next to the curves.
     """
     grp = f"{name}_locGuide_GRP"
-    if not cmds.objExists(grp):
+    if parent:
+        found = [node for node in cmds.listRelatives(parent, children=True, fullPath=True) or []
+                 if node.split("|")[-1] == grp]
+        grp = found[0] if found else cmds.parent(cmds.group(empty=True, name=grp), parent)[0]
+    elif not cmds.objExists(grp):
         grp = cmds.group(empty=True, name=grp)
     if not cmds.attributeQuery(_LOCATOR_GROUP_TAG, node=grp, exists=True):
         cmds.addAttr(grp, longName=_LOCATOR_GROUP_TAG, attributeType="bool")
     cmds.setAttr(f"{grp}.{_LOCATOR_GROUP_TAG}", True)
+    if parent:
+        return cmds.ls(grp, long=True)[0]
 
     # Keep guide points inside the main guide group, next to the curves.
     ChainGuide._ensure_guide_group()
@@ -610,6 +633,59 @@ def get_selection_center() -> Optional[tuple]:
     return (sum(p[0] for p in points) / count,
             sum(p[1] for p in points) / count,
             sum(p[2] for p in points) / count)
+
+
+def get_selection_source() -> Optional[dict]:
+    """
+    Describe what the current selection is, so a point placed at its center can
+    be re-placed later (e.g. after a retopo). Returns
+    {"kind": "components", "items": ["|mesh.e[3]", ...]} for mesh components,
+    {"kind": "objects", "items": [long names]} for objects (a bone, a locator),
+    or None when nothing is selected.
+    """
+    sel = cmds.ls(selection=True, long=True) or []
+    if not sel:
+        return None
+    components = [item for item in sel if "." in item]
+    if components:
+        return {"kind": "components", "items": components}
+    return {"kind": "objects", "items": sel}
+
+
+def ordered_strip_from_selection() -> dict:
+    """
+    Read an edge column / loop or a face strip from the active selection and
+    return it ordered along the strip:
+        {"kind": "edges" | "faces", "mesh": transform long name,
+         "ids": [ordered component ids], "closed": bool,
+         "positions": [MPoint per id - edge midpoint / face centroid]}
+    Raises ValueError if the selection is neither, or cannot be fully ordered
+    (branching / disconnected components) - a partial strip would silently
+    drop part of the guide.
+    """
+    sel = om2.MGlobal.getActiveSelectionList()
+    if sel.isEmpty():
+        raise ValueError("Select an edge column / loop or a face strip.")
+    _, component = sel.getComponent(0)
+    api_type = component.apiType()
+    if api_type == om2.MFn.kMeshEdgeComponent:
+        kind = "edges"
+        mesh_dag, ids = get_selected_edges()
+        ordered, closed = order_edge_loop(mesh_dag, ids)
+        positions = extract_edge_midpoints(mesh_dag, ordered)
+    elif api_type == om2.MFn.kMeshPolygonComponent:
+        kind = "faces"
+        mesh_dag, ids = get_selected_faces()
+        ordered, closed = order_face_strip(mesh_dag, ids)
+        positions = extract_face_centroids(mesh_dag, ordered)
+    else:
+        raise ValueError("The selection must be edges (a column / loop) or faces (a strip).")
+    if len(ordered) != len(ids):
+        raise ValueError(
+            f"Could only order {len(ordered)} of {len(ids)} {kind}: the selection must be "
+            "one connected strip without branches.")
+    transform = om2.MFnDagNode(mesh_dag.transform()).fullPathName()
+    return {"kind": kind, "mesh": transform, "ids": ordered, "closed": closed, "positions": positions}
 
 
 def create_guide_point(node_type: str   = "locator",
@@ -1083,14 +1159,17 @@ class ChainGuide:
     # -- Internal helpers --------------------------------------------------
 
     def _cleanup_joints(self) -> None:
-        """Delete the existing chain (from the root, automatic cascade)."""
+        """
+        Delete the chain's own joints (the root takes its children with it).
+        Never climbs to a parent joint: an installed chain hangs under a rig
+        bone / ghost joint that must survive a rebuild.
+        """
         alive = [j for j in self.joints if cmds.objExists(j)]
         if alive:
-            root = alive[0]
-            # Walk back up to the real root in case it was reparented
-            parents = cmds.listRelatives(root, allParents=True, type="joint") or []
-            root = parents[-1] if parents else root
-            cmds.delete(root)
+            cmds.delete(alive[0])
+            leftovers = [j for j in alive[1:] if cmds.objExists(j)]   # re-parented elsewhere
+            if leftovers:
+                cmds.delete(leftovers)
         self.joints = []
 
     def _organize_joints(self) -> None:

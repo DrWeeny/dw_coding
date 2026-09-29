@@ -1,9 +1,9 @@
 """
 forge_cmds/icons.py - small drawn badges for DynForge guide rows.
 
-No external icon files: each creation mode (edge / face / locator) is rendered
-as a coloured rounded badge with a letter, ringed by the guide status colour.
-The list panel calls make_mode_icon() to refresh a row's icon after build.
+No external icon files: each guide kind (locator points / joint points / exact
+chain) is rendered as a coloured rounded badge with a letter, ringed by the guide
+status colour. The list panel calls make_guide_icon() to refresh a row's icon.
 """
 
 from __future__ import annotations
@@ -11,11 +11,11 @@ from __future__ import annotations
 from dw_maya.DynForge.forge_cmds.compat import QtCore, QtGui, Qt
 
 
-# Letter + fill colour per creation mode.
-_MODE_STYLE = {
-    "edge":    ("E", QtGui.QColor("#4a90d9")),
-    "face":    ("F", QtGui.QColor("#6ab04c")),
+# Letter + fill colour per guide kind.
+_KIND_STYLE = {
     "locator": ("L", QtGui.QColor("#e58e26")),
+    "joint":   ("J", QtGui.QColor("#4a90d9")),
+    "exact":   ("X", QtGui.QColor("#6ab04c")),
 }
 
 # Ring colour per guide status.
@@ -26,11 +26,11 @@ _STATUS_RING = {
 }
 
 
-def make_mode_icon(mode:   str,
-                   status: str = "pending",
-                   size:   int = 18,) -> QtGui.QIcon:
-    """Return a QIcon badge for a guide of `mode` in state `status`."""
-    letter, fill = _MODE_STYLE.get(mode, ("?", QtGui.QColor("#888888")))
+def make_guide_icon(kind:   str,
+                    status: str = "pending",
+                    size:   int = 18,) -> QtGui.QIcon:
+    """Return a QIcon badge for a guide of `kind` in state `status`."""
+    letter, fill = _KIND_STYLE.get(kind, ("?", QtGui.QColor("#888888")))
     if status == "pending":
         fill = fill.darker(170)   # dim until built
 

@@ -6,8 +6,10 @@ The index auto-increments so every guide gets a unique name: when a new guide
 is added, compose_unique() walks the index up from the current value until the
 composed name is free, and writes the chosen index back into the spin box.
 
-Empty prefix / side parts are skipped, so "chain" with no prefix/side and
-index 0 becomes "00_chain".
+Empty prefix / side parts are skipped. A Maya node name cannot start with a
+digit (Maya silently strips it: "0_chain_src_crv" becomes "_chain_src_crv", so
+0_chain / 1_chain would collide), hence with no prefix and no side the index
+goes after the name: "chain_0".
 """
 
 from __future__ import annotations
@@ -24,8 +26,11 @@ class NamingPanel(DynForgeWidgetBase):
 
     def __init__(self,
                  hub,
+                 defaults: dict = None,
                  parent=None,) -> None:
         super().__init__(hub, parent)
+        # {"prefix": str, "sides": (str, ...)} - from the active ForgeHost.
+        self._defaults = defaults or {}
         self._build_ui()
 
     # -- UI ---------------------------------------------------------------
@@ -34,13 +39,13 @@ class NamingPanel(DynForgeWidgetBase):
         layout = QtWidgets.QHBoxLayout(self)
         layout.setContentsMargins(4, 4, 4, 4)
 
-        self._prefix = QtWidgets.QLineEdit()
+        self._prefix = QtWidgets.QLineEdit(self._defaults.get("prefix", ""))
         self._prefix.setPlaceholderText("prefix")
         self._prefix.setMaximumWidth(90)
 
         self._side = QtWidgets.QComboBox()
         self._side.setEditable(True)
-        self._side.addItems(_SIDES)
+        self._side.addItems(list(self._defaults.get("sides", _SIDES)))
         self._side.setMaximumWidth(60)
 
         self._index = QtWidgets.QSpinBox()
@@ -72,6 +77,8 @@ class NamingPanel(DynForgeWidgetBase):
             parts.append(prefix)
         if side:
             parts.append(side)
+        if not parts:
+            return f"{name}_{index}"   # never lead with a digit (see module doc)
         parts.append(f"{index}")   # padding 1 (no leading zeros)
         parts.append(name)
         return "_".join(parts)

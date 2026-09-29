@@ -2,12 +2,14 @@
 wgt_guide_list.py - DynForge guide list panel (bottom-left).
 
 A 3-column QTreeView (Name | Build/Rebuild | Status), one row per guide:
-    column 0  name + a mode/status badge icon
+    column 0  name + a point-type/status badge icon
     column 1  a per-row Build (pending) / Rebuild (built) button
     column 2  the status text, colour-coded
 
-[+] / [-] add and remove guides. The panel only manages rows and emits intent
-signals; main_ui owns the naming, the creation params and the build calls.
+[+] / [-] add and remove guides. A name is renamed in place (double-click / F2,
+or the right-click menu, which also applies the naming panel pattern). The panel
+only manages rows and emits intent signals; main_ui owns the naming, the
+creation params, the renames and the build calls.
 """
 
 from __future__ import annotations
@@ -15,9 +17,9 @@ from __future__ import annotations
 from functools import partial
 
 from dw_maya.DynForge.forge_cmds.compat import (
-    QtCore, QtGui, QtWidgets, Qt, Signal,
+    QtCore, QtGui, QtWidgets, Qt, Signal, qt_exec,
 )
-from dw_maya.DynForge.forge_cmds.icons import make_mode_icon
+from dw_maya.DynForge.forge_cmds.icons import make_guide_icon
 from dw_maya.DynForge.wgt_base import DynForgeWidgetBase
 
 
@@ -32,11 +34,14 @@ class GuideListPanel(DynForgeWidgetBase):
     build_all_requested = Signal()
     load_requested      = Signal()
     selection_changed   = Signal(object)
+    rename_requested    = Signal(object, str)   # guide, new name
+    pattern_requested   = Signal(object)        # guide: rename from the naming panel
 
     _STATUS_COLOR = {
         "pending": QtGui.QColor("#d9a441"),
         "built":   QtGui.QColor("#6ab04c"),
-        "broken":  QtGui.QColor("#c0392b"),
+        "broken":    QtGui.QColor("#c0392b"),
+        "installed": QtGui.QColor("#4aa3df"),
     }
 
     def __init__(self,
@@ -58,7 +63,10 @@ class GuideListPanel(DynForgeWidgetBase):
         self._view.setModel(self._proxy)
         self._view.setRootIsDecorated(False)
         self._view.setAllColumnsShowFocus(True)
-        self._view.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
+        # Only the Name column is editable (its item is the only editable one).
+        self._view.setEditTriggers(QtWidgets.QAbstractItemView.DoubleClicked
+                                   | QtWidgets.QAbstractItemView.EditKeyPressed)
+        self._view.setContextMenuPolicy(Qt.CustomContextMenu)
         self._view.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
         header = self._view.header()
         header.setStretchLastSection(False)
@@ -86,6 +94,8 @@ class GuideListPanel(DynForgeWidgetBase):
         self._load_btn.clicked.connect(self.load_requested.emit)
         self._build_all_btn.clicked.connect(self.build_all_requested.emit)
         self._view.selectionModel().selectionChanged.connect(self._on_selection_changed)
+        self._view.customContextMenuRequested.connect(self._on_context_menu)
+        self._model.itemChanged.connect(self._on_item_changed)
 
     # -- Public -----------------------------------------------------------
 
@@ -116,7 +126,7 @@ class GuideListPanel(DynForgeWidgetBase):
                   guide,) -> None:
         """Append a guide as a new row and select it."""
         name_item = QtGui.QStandardItem()
-        name_item.setEditable(False)
+        name_item.setEditable(True)   # rename in place
         name_item.setData(guide, self.GUIDE_ROLE)
         build_item  = QtGui.QStandardItem()
         build_item.setEditable(False)
@@ -128,6 +138,14 @@ class GuideListPanel(DynForgeWidgetBase):
 
         proxy_idx = self._proxy.mapFromSource(name_item.index())
         self._view.setCurrentIndex(proxy_idx)
+
+    def remove_guide(self,
+                     guide,) -> None:
+        """Remove the row showing `guide` (UI only - main_ui handles the scene)."""
+        row = self._row_of(guide)
+        if row is not None:
+            self._model.removeRow(row)
+            self._refresh_row_widgets()
 
     def refresh_guide(self,
                       guide,) -> None:
@@ -146,6 +164,10 @@ class GuideListPanel(DynForgeWidgetBase):
                 return row
         return None
 
+    def selected_guide(self):
+        """The guide of the selected row, or None."""
+        return self._selected_guide()
+
     def _selected_guide(self):
         indexes = self._view.selectionModel().selectedIndexes()
         if not indexes:
@@ -156,13 +178,33 @@ class GuideListPanel(DynForgeWidgetBase):
 
     def _on_remove(self) -> None:
         guide = self._selected_guide()
-        if guide is None:
+        if guide is not None:
+            self.remove_requested.emit(guide)
+
+    def _on_item_changed(self,
+                         item,) -> None:
+        """An edited Name cell asks main_ui for a rename (refreshes are no-ops)."""
+        if item.column() != 0:
             return
-        row = self._row_of(guide)
-        self.remove_requested.emit(guide)
-        if row is not None:
-            self._model.removeRow(row)
-            self._refresh_row_widgets()
+        guide = item.data(self.GUIDE_ROLE)
+        if guide is not None and item.text() != guide.name:
+            self.rename_requested.emit(guide, item.text().strip())
+
+    def _on_context_menu(self,
+                         pos,) -> None:
+        index = self._view.indexAt(pos)
+        guide = self._selected_guide()
+        if not index.isValid() or guide is None:
+            return
+        menu = QtWidgets.QMenu(self)
+        act_rename  = menu.addAction("Rename")
+        act_pattern = menu.addAction("Apply naming pattern")
+        act_pattern.setToolTip("Rename from the prefix / side / index / name fields above.")
+        chosen = qt_exec(menu, self._view.viewport().mapToGlobal(pos))
+        if chosen is act_rename:
+            self._view.edit(index.sibling(index.row(), 0))
+        elif chosen is act_pattern:
+            self.pattern_requested.emit(guide)
 
     def _on_selection_changed(self,
                               *args,) -> None:
@@ -177,10 +219,15 @@ class GuideListPanel(DynForgeWidgetBase):
             return
         status = guide.status.value
         name_item.setText(guide.name)
-        name_item.setIcon(make_mode_icon(getattr(guide, "mode", "edge"), status))
-        name_item.setToolTip(f"{guide.label}  -  {status}")
-        status_item.setText(status)
-        color = self._STATUS_COLOR.get(status)
+        kind = "exact" if getattr(guide, "exact_points", False) else getattr(guide, "point_type", "locator")
+        name_item.setIcon(make_guide_icon(kind, status))
+        text, color_key = status, status
+        if getattr(guide, "installed", False):
+            text = "installed" if getattr(guide, "skin_installed", False) else "installed (no skin)"
+            color_key = "installed"
+        name_item.setToolTip(f"{guide.label}  -  {text}")
+        status_item.setText(text)
+        color = self._STATUS_COLOR.get(color_key)
         if color is not None:
             status_item.setForeground(color)
 
