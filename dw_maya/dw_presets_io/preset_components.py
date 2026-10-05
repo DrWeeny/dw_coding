@@ -827,6 +827,7 @@ def apply_anim_curve(plug: str, cdata: Dict, clear: bool = True) -> None:
         clear: Remove any existing animation on ``plug`` first (default True).
     """
     keys = cdata.get("keys", [])
+    weighted = cdata.get("weighted", False)
     if clear:
         try:
             cmds.cutKey(plug, clear=True)
@@ -835,22 +836,37 @@ def apply_anim_curve(plug: str, cdata: Dict, clear: bool = True) -> None:
     for k in keys:
         cmds.setKeyframe(plug, time=k["t"], value=k["v"])
     try:
-        cmds.keyTangent(plug, edit=True, weightedTangents=cdata.get("weighted", False))
+        cmds.keyTangent(plug, edit=True, weightedTangents=weighted)
     except Exception:
         pass
+    # Angles and weights BEFORE tangent types. Editing an angle turns the
+    # tangent 'fixed', so the reverse order converted every auto / spline /
+    # linear key to fixed and the rebuilt curve drifted from the captured one.
+    # Set this way round, the type set last recomputes what it owns and a
+    # 'fixed' type keeps the angle written here. Only keys that need it get
+    # the call: an unweighted, non-fixed key computes its own tangents.
     for k in keys:
+        if not weighted and "fixed" not in (k.get("itt"), k.get("ott")):
+            continue
         t = k["t"]
+        flags = {"inAngle": k.get("ia", 0.0), "outAngle": k.get("oa", 0.0)}
+        if weighted:
+            flags["inWeight"] = k.get("iw", 1.0)
+            flags["outWeight"] = k.get("ow", 1.0)
         try:
-            cmds.keyTangent(plug, edit=True, time=(t, t),
-                            inTangentType=k.get("itt", "auto"),
-                            outTangentType=k.get("ott", "auto"))
+            cmds.keyTangent(plug, edit=True, time=(t, t), **flags)
         except Exception:
             pass
-        # Angles / weights matter for fixed tangents; harmless otherwise.
+    # One keyTangent per (in, out) type pair rather than per key: a baked
+    # curve is usually a single pair, so this is one command for the lot.
+    by_types: Dict[tuple, List[tuple]] = {}
+    for k in keys:
+        pair = (k.get("itt", "auto"), k.get("ott", "auto"))
+        by_types.setdefault(pair, []).append((k["t"], k["t"]))
+    for (itt, ott), times in by_types.items():
         try:
-            cmds.keyTangent(plug, edit=True, time=(t, t),
-                            inAngle=k.get("ia", 0.0), outAngle=k.get("oa", 0.0),
-                            inWeight=k.get("iw", 1.0), outWeight=k.get("ow", 1.0))
+            cmds.keyTangent(plug, edit=True, time=times,
+                            inTangentType=itt, outTangentType=ott)
         except Exception:
             pass
     try:

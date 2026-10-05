@@ -114,7 +114,7 @@ def get_uv_from_vtx(vertex: str,
 
 
 @load_plugin('nearestPointOnMesh')
-@acceptString('targetMesh', 'points')
+@acceptString('target_mesh', 'points')
 def nearest_uv_on_mesh(target_mesh: Union[str, List[str]],
                        points: List[Union[str, List[float]]],
                        **kwargs) -> List[MeshUVResult]:

@@ -12,6 +12,8 @@ push_undo() call becomes a normal Ctrl+Z-able undo-queue entry.
 Functions:
     push_undo — run a redo callable now, register its undo callable on
                 Maya's undo queue.
+    reload_plugin — dev helper: unload + reload the bridge after editing
+                    this file's command class.
 
 Example::
 
@@ -40,10 +42,11 @@ logger = get_logger()
 _CMD_NAME = 'dwPyUndo'
 # Key under which the shared (redo, undo) stack lives on __main__.
 _PENDING_KEY = '_DW_PYUNDO_PENDING'
-# False on every fresh import/reload — forces _ensure_loaded() to rebind the
-# plugin's command class to *this* module instance (dev iteration reloads
-# dw_maya frequently; an already-loaded plugin would otherwise keep pointing
-# at a stale module).
+# False on every fresh import/reload, so _ensure_loaded() checks the plugin
+# again. An already-loaded plugin is REUSED, never force-unloaded: unloading
+# drops the dwPyUndo entries still on the undo queue, and a toolkit reload
+# does not make it stale - the plugin is always its own top-level module
+# instance, and both copies share the stack anchored on __main__.
 _plugin_loaded = False
 
 
@@ -112,24 +115,45 @@ def uninitializePlugin(mobject) -> None:
     plugin_fn.deregisterCommand(_CMD_NAME)
 
 
+def _plugin_name() -> Tuple[str, str]:
+    """Return ``(plugin_file, plugin_name)`` for this module's file."""
+    plugin_file = os.path.abspath(__file__)
+    return plugin_file, os.path.splitext(os.path.basename(plugin_file))[0]
+
+
 def _ensure_loaded() -> bool:
-    """Load (or reload, if bound to a stale module instance) the bridge plugin."""
+    """Load the bridge plugin, or reuse it when it is already loaded."""
     global _plugin_loaded
     if _plugin_loaded:
         return True
 
-    plugin_file = os.path.abspath(__file__)
-    plugin_name = os.path.splitext(os.path.basename(plugin_file))[0]
+    plugin_file, plugin_name = _plugin_name()
     try:
-        if cmds.pluginInfo(plugin_name, query=True, loaded=True):
-            # Loaded from a previous module instance (dev reload) — rebind.
-            cmds.unloadPlugin(plugin_name, force=True)
-        cmds.loadPlugin(plugin_file, quiet=True)
+        if not cmds.pluginInfo(plugin_name, query=True, loaded=True):
+            cmds.loadPlugin(plugin_file, quiet=True)
         _plugin_loaded = True
     except Exception as e:
         logger.error(f"Failed to load dwPyUndo bridge plugin: {e}")
         _plugin_loaded = False
     return _plugin_loaded
+
+
+def reload_plugin() -> bool:
+    """Unload and reload the bridge so edits to its command class apply.
+
+    Dev helper only, for after editing ``_DwPyUndoCommand`` itself. It
+    force-unloads the plugin, which drops any dwPyUndo entries still on the
+    undo queue - the reason :func:`_ensure_loaded` never does this on its own.
+    """
+    global _plugin_loaded
+    plugin_file, plugin_name = _plugin_name()
+    try:
+        if cmds.pluginInfo(plugin_name, query=True, loaded=True):
+            cmds.unloadPlugin(plugin_name, force=True)
+    except Exception as e:
+        logger.error(f"Failed to unload dwPyUndo bridge plugin: {e}")
+    _plugin_loaded = False
+    return _ensure_loaded()
 
 
 def push_undo(redo_func: Callable[[], None], undo_func: Callable[[], None]) -> bool:

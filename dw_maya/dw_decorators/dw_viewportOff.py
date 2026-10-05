@@ -21,9 +21,13 @@ def viewportOff(func: Callable) -> Callable:
 
     @wraps(func)
     def wrapper(*args: Any, **kwargs: Any) -> Any:
+        # Only the call that actually turned the viewport off turns it back
+        # on. A nested call finds it already unmanaged and leaves it alone,
+        # so the outer call's remaining work stays viewport-free.
+        was_managed = bool(mel.eval("paneLayout -q -manage $gMainPane"))
         try:
-            # Turn the viewport (gMainPane) off
-            mel.eval("paneLayout -e -manage false $gMainPane")
+            if was_managed:
+                mel.eval("paneLayout -e -manage false $gMainPane")
 
             # Execute the wrapped function
             return func(*args, **kwargs)
@@ -34,7 +38,7 @@ def viewportOff(func: Callable) -> Callable:
             raise  # Re-raise the original error
 
         finally:
-            # Turn the viewport back on
-            mel.eval("paneLayout -e -manage true $gMainPane")
+            if was_managed:
+                mel.eval("paneLayout -e -manage true $gMainPane")
 
     return wrapper

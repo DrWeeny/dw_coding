@@ -138,8 +138,9 @@ class MayaNode(ObjPointer):
         Note:
             You cant have the value without .getAttr()
         """
-        if attr in self.listAttr(attr=attr):
-            return MAttr(self.node, attr)
+        owner = self._resolve_attr(attr)
+        if owner:
+            return MAttr(owner, attr)
         elif attr in self.__dict__:
             return self.__dict__[attr]
         try:
@@ -164,7 +165,8 @@ class MayaNode(ObjPointer):
             return
 
         # Handle Maya attributes
-        if attr_name in self.listAttr(attr=attr_name):
+        owner = self._resolve_attr(attr_name)
+        if owner:
             try:
                 # Unwrap MAttr — happens with augmented assignment (node.tx += v):
                 #   Python desugars  a.b += x  as  a.b = a.b.__iadd__(x)
@@ -172,7 +174,7 @@ class MayaNode(ObjPointer):
                 #   Passing an MAttr object raw to cmds.setAttr raises TypeError.
                 if isinstance(value, MAttr):
                     # Same node+attr → in-place op already wrote the value; skip.
-                    if value._node == self.node and value.attr == attr_name:
+                    if value._node == owner and value.attr == attr_name:
                         return
                     # Different source → copy the value across.
                     value = value.getAttr()
@@ -182,14 +184,14 @@ class MayaNode(ObjPointer):
                         value = value[0]
 
                 if isinstance(value, str):
-                    cmds.setAttr(f'{self.node}.{attr_name}', value, type='string')
+                    cmds.setAttr(f'{owner}.{attr_name}', value, type='string')
                 else:
-                    MAttr(self.node, attr_name).setAttr(value)
+                    MAttr(owner, attr_name).setAttr(value)
             except AttributeError:
                 if isinstance(value, str):
-                    cmds.setAttr(f'{self.node}.{attr_name}', value, type='string')
+                    cmds.setAttr(f'{owner}.{attr_name}', value, type='string')
                 else:
-                    cmds.setAttr(f'{self.node}.{attr_name}', value)
+                    cmds.setAttr(f'{owner}.{attr_name}', value)
 
 
     @classmethod
@@ -477,15 +479,24 @@ class MayaNode(ObjPointer):
             **kwargs: Additional Maya flags for cmds.listAttr (e.g., shortNames=True).
 
         Returns:
-            list: All attributes, or [attr] if the attribute was found (with auto index-switching).
+            list: All attributes, or [attr] if the attribute exists on the
+            transform or the shape. A pure query: it never moves the
+            wrapper's item index (attribute access does that, see
+            :meth:`_resolve_attr`).
         """
         # If a positional arg was given and attr wasn't set explicitly, treat it as attr
         if args and attr is None:
             attr = args[0]
 
-        current = self.node
         tr = self.tr
         sh = self.sh
+
+        # Existence of one attribute: a plug check per node, not a full
+        # listing (see _has_plug for why it is two queries).
+        if attr is not None:
+            if self._has_plug(tr, attr) or (sh != tr and self._has_plug(sh, attr)):
+                return [attr]
+            return []
 
         # Base retrieval honoring kwargs cleanly, ensuring we grab both short/long
         def _get_attrs(n):
@@ -501,34 +512,6 @@ class MayaNode(ObjPointer):
         attr_list_tr = set(_get_attrs(tr))
         attr_list_sh = set(_get_attrs(sh))
 
-        # If checking for a specific attribute
-        if attr is not None:
-            # Check existence in transform and shape nodes
-            exists_in_tr = attr in attr_list_tr
-            exists_in_sh = attr in attr_list_sh
-
-            # Return list containing attribute if it exists, otherwise empty list
-            if current == tr:
-                if exists_in_tr:
-                    if exists_in_sh and sh != tr:
-                        logger.warning(
-                            f"Attribute `{attr}` exists in both shape and transform, using: {current}.{attr}")
-                    return [attr]
-                elif exists_in_sh:
-                    self.__dict__['item'] = 1  # Switch to shape
-                    return [attr]
-                return []
-            else:  # current == sh
-                if exists_in_sh:
-                    if exists_in_tr and sh != tr:
-                        logger.warning(
-                            f"Attribute `{attr}` exists in both shape and transform, using: {current}.{attr}")
-                    return [attr]
-                elif exists_in_tr:
-                    self.__dict__['item'] = 0  # Switch to transform
-                    return [attr]
-                return []
-
         # No specific attribute requested, return all for current node
         if node_index is not None:
             if node_index == 0:
@@ -539,6 +522,54 @@ class MayaNode(ObjPointer):
             all_attr = list(attr_list_tr | attr_list_sh)
             return all_attr
 
+    @staticmethod
+    def _has_plug(node: str, attr: str) -> bool:
+        """Whether ``node`` itself carries ``attr``, long or short name.
+
+        Same answer as membership in ``listAttr`` (long + short), without
+        listing thousands of names. Neither check is enough alone:
+        ``objExists`` forwards a transform's plug to its shape (it says
+        ``pCube1.outMesh`` exists), and ``attributeQuery`` also accepts the
+        children of a multi (``cluster1.weights``), which listAttr does not
+        list bare. Together they matched listAttr on all 10848 node/name
+        pairs checked (Maya 2022).
+        """
+        if not node:
+            return False
+        try:
+            if not cmds.attributeQuery(attr, node=node, exists=True):
+                return False
+        except (RuntimeError, ValueError, TypeError):
+            return False
+        return cmds.objExists(f'{node}.{attr}')
+
+    def _resolve_attr(self, attr: str) -> Optional[str]:
+        """Find which node carries ``attr`` and point the wrapper at it.
+
+        The transform/shape auto-switch behind attribute access: the current
+        node wins when it has the attribute (warning when the other one has
+        it too); otherwise the item index moves to whichever node has it, so
+        ``self.node`` keeps answering for the attribute just reached.
+
+        Returns:
+            The node name carrying ``attr``, or None when neither has it.
+        """
+        tr = self.tr
+        sh = self.sh
+        # Same answer as self.node, without resolving tr/sh a second time.
+        on_tr = self.__dict__['item'] == 0
+        current, other = (tr or sh, sh) if on_tr else (sh or tr, tr)
+
+        if self._has_plug(current, attr):
+            if other != current and self._has_plug(other, attr):
+                logger.warning(
+                    f"Attribute `{attr}` exists in both shape and transform, using: {current}.{attr}")
+            return current
+        if other != current and self._has_plug(other, attr):
+            self.__dict__['item'] = 1 if on_tr else 0
+            return other
+        return None
+
     def getAttr(self, attr) -> "MAttr":
         """Get attribute wrapper for given name.
 
@@ -548,8 +579,9 @@ class MayaNode(ObjPointer):
         Returns:
             MAttr wrapper if attribute exists
         """
-        if attr in self.listAttr(attr=attr):
-            return MAttr(self.node, attr)
+        owner = self._resolve_attr(attr)
+        if owner:
+            return MAttr(owner, attr)
 
     def getNamespace(self) -> str:
         """Get node's namespace.

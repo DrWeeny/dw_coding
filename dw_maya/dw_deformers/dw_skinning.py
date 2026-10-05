@@ -34,10 +34,14 @@ def get_influence_weights(skin_node: str,
     influence count. Columns follow ``influenceObjects()`` order.
 
     ``indices`` are the skinCluster's *logical* influence indices (its
-    ``matrix[]`` plug numbers), which are what ``setWeights`` expects. They are
-    **not** always ``0..n-1``: removing an influence leaves a hole, so a
-    3-influence cluster can sit at ``[0, 1, 5]``. Writing back with
-    ``range(n)`` instead would land on the wrong plugs.
+    ``matrix[]`` plug numbers). They are **not** always ``0..n-1``: removing an
+    influence leaves a hole, so a 2-influence cluster can sit at ``[0, 2]``.
+    Use them for plug paths (``weightList[v].weights[i]``, ``matrix[i]``).
+
+    ``setWeights`` does **not** take them: it takes *physical* indices, the
+    position in ``influenceObjects()`` - which is ``range(n)``, the same order
+    as the weight columns. Passing the logical indices raises
+    ``kInvalidParameter`` as soon as there is a hole (checked in Maya 2022).
 
     Args:
         skin_node:      skinCluster node name.
@@ -53,9 +57,9 @@ def get_influence_weights(skin_node: str,
         n = len(infs)
         vtx0 = {infs[i]: w[i] for i in range(n)}      # vertex 0's weights
 
-        # safe round trip
+        # round trip: setWeights wants PHYSICAL indices, not idx
         skin_fn.setWeights(dag, om.MObject(),
-                           om.MIntArray(idx), om.MDoubleArray(w))
+                           om.MIntArray(list(range(n))), om.MDoubleArray(w))
     """
     skin_fn, influences = _get_skin_fn(skin_node)
 

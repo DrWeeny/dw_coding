@@ -60,7 +60,7 @@ import re
 import dw_maya.dw_decorators as dwdeco
 
 
-@dwdeco.acceptString("input")
+@dwdeco.acceptString("input_list")
 def convertListToMelStr(input_list=[]):
     """
     Converts a Python list into a MEL-compatible string representation.

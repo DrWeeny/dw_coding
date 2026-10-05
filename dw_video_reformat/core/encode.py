@@ -18,6 +18,7 @@ Classes:
 
 Functions:
     is_video(path), collect_videos(paths), output_path(source, settings),
+    normalize_frame_rate(value), frame_rate_label(rate),
     probe_duration(source), build_command(source, output, settings),
     run_encode(source, settings, on_progress, should_cancel)
 
@@ -56,6 +57,20 @@ PRESETS = [
     "medium", "slow", "slower", "veryslow",
 ]
 PIXEL_FORMATS = ["yuv420p", "yuv422p", "yuv444p"]
+# label -> ffmpeg -r value; "" keeps the source rate (and its variable timing).
+# NTSC rates are exact fractions, a typed 29.97 would drift against 30000/1001.
+FRAME_RATES = {
+    "source": "",
+    "23.976": "24000/1001",
+    "24": "24",
+    "25": "25",
+    "29.97": "30000/1001",
+    "30": "30",
+    "50": "50",
+    "60": "60",
+    "100": "100",
+    "120": "120",
+}
 AUDIO_CODECS = {
     "AAC": "aac",
     "MP3 (libmp3lame)": "libmp3lame",
@@ -76,7 +91,7 @@ class EncodeSettings:
     preset: str = "medium"
     pixel_format: str = "yuv420p"
     max_width: int = 0        # 0 = keep source size
-    fps: float = 0.0          # 0 = keep source frame rate
+    fps: str = ""             # ffmpeg -r value ("30", "30000/1001"); "" = keep source rate
     audio_enabled: bool = True
     audio_codec: str = "aac"
     audio_bitrate: int = 192  # kbps
@@ -179,6 +194,41 @@ def output_path(source: Source, settings: EncodeSettings) -> pathlib.Path:
     return source.root / OUT_SUBFOLDER / source.relative.parent / name
 
 
+_RATE_RE = re.compile(r"^\d+(\.\d+)?(/\d+(\.\d+)?)?$")
+
+
+def normalize_frame_rate(value) -> typing.Optional[str]:
+    """Turn a label, number or ffmpeg rate into the ``-r`` value, or None if invalid.
+
+    Accepts a FRAME_RATES label ("29.97"), a plain number ("48", 30.0, the
+    float the old spinbox persisted) or a fraction ("30000/1001"). Empty,
+    "source" and zero all mean keep the source rate and return "".
+    """
+    text = str(value).strip().lower()
+    if text in ("", "source"):
+        return ""
+    if text in FRAME_RATES:
+        return FRAME_RATES[text]
+    if not _RATE_RE.match(text):
+        return None
+    numerator, _, denominator = text.partition("/")
+    if denominator and float(denominator) == 0:
+        return None
+    if float(numerator) == 0:
+        return ""
+    if denominator:
+        return text
+    return f"{float(numerator):g}"
+
+
+def frame_rate_label(rate: str) -> str:
+    """Inverse of FRAME_RATES for display: "30000/1001" -> "29.97"."""
+    for label, value in FRAME_RATES.items():
+        if value == rate:
+            return label
+    return rate
+
+
 def _popen_kwargs() -> dict:
     kwargs = {}
     if sys.platform == "win32":
@@ -240,8 +290,10 @@ def build_command(
         scale = "scale=trunc(iw/2)*2:trunc(ih/2)*2"
     cmd += ["-vf", scale]
 
-    if settings.fps > 0:
-        cmd += ["-r", f"{settings.fps:g}"]
+    # an explicit output rate also forces constant frame rate, which is what
+    # editors like Resolve want from YouTube's variable-rate sources
+    if settings.fps:
+        cmd += ["-r", settings.fps]
 
     if settings.audio_enabled:
         cmd += ["-c:a", settings.audio_codec, "-b:a", f"{settings.audio_bitrate}k"]

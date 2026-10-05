@@ -1,8 +1,10 @@
 import sys, os
+import re
 
 from maya import cmds, mel
 
 from dw_maya.dw_decorators import acceptString, timeIt
+from dw_maya.dw_maya_utils import chunks
 
 
 @timeIt
@@ -17,7 +19,10 @@ def cvWeights2Geo(crv):
         RuntimeError: If no cvWrap node is found for the curve.
 
     """
-    curve_sh = lsTr(crv, ni=True, type='nurbsCurve', p=False)
+    # The SHAPES: the cvWrap connects to the shape, so listConnections on a
+    # transform finds nothing. lsTr cannot give them - it always returns
+    # transforms and ignores p=False.
+    curve_sh = cmds.ls(crv, dag=True, type='nurbsCurve', noIntermediate=True, long=True)
     cvs_len = [len(cmds.ls(c + '.cv[:]', fl=True)) for c in curve_sh]
     for c, length in zip(curve_sh, cvs_len):
         # Calculate weights based on normalized position along the curve
@@ -34,8 +39,11 @@ def cvWeights2Geo(crv):
             nb = re.findall(r"\d+", attr)[-1]
             weight_attr = f'weightList[{nb}].weights'
 
-            # Set weights on the input node and reverse weights on the output node
-            cmds.setAttr(f'{cwOut}.{weight_attr}[0:{length - 1}]', *weights, size=length)
+            # One write. There used to be two to this same plug - the ramp,
+            # then the ramp reversed - so only the reversed one ever landed.
+            # Kept as the effective behaviour. The pair reads like the outer
+            # and inner halves of the dual-mesh setup cvWrap2Geo takes an
+            # (outer, inner) pair for, but only the outer wrap is ever built.
             cmds.setAttr(f'{cwOut}.{weight_attr}[0:{length - 1}]', *weights[::-1], size=length)
 
 @acceptString('mesh')

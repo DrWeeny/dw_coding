@@ -220,9 +220,9 @@ def filterSelection(inputFaces=[]):
         sel = cmds.ls(inputFaces, fl=True)
     meshFaces = cmds.filterExpand(sel, expand=True, selectionMask=34) or []
     meshVerts = cmds.filterExpand(sel, expand=True, selectionMask=31) or []
-    meshTransforms = cmds.filterExpand(expand=True, selectionMask=12) or []
-    nurbsSurfaceTransforms = cmds.filterExpand(expand=True, selectionMask=10) or []
-    nurbsCurvesTransforms = cmds.filterExpand(expand=True, selectionMask=9) or []
+    meshTransforms = cmds.filterExpand(sel, expand=True, selectionMask=12) or []
+    nurbsSurfaceTransforms = cmds.filterExpand(sel, expand=True, selectionMask=10) or []
+    nurbsCurvesTransforms = cmds.filterExpand(sel, expand=True, selectionMask=9) or []
     return meshFaces, meshVerts, meshTransforms, nurbsSurfaceTransforms, nurbsCurvesTransforms
 
 

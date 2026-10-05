@@ -39,7 +39,6 @@ from typing import Dict, List, Optional, Tuple, Union
 from dw_maya.dw_compat import Literal
 
 from maya import cmds, mel
-import functools
 import dw_maya.dw_maya_nodes as dwnn
 import dw_maya.dw_paint
 import dw_maya.dw_paint.core
@@ -55,15 +54,15 @@ from dw_maya.dw_node_registry import register_type
 logger = get_logger()
 
 # ---------------------------------------------------------------------------
-# Vertex-count cache
+# Vertex count
 # ---------------------------------------------------------------------------
 
-@functools.lru_cache(maxsize=256)
-def _cached_poly_vtx_count(shape: str) -> int:
-    """Return the polygon vertex count for *shape*, memoised by name.
+def _poly_vtx_count(shape: str) -> int:
+    """Return the polygon vertex count for *shape*, queried live.
 
-    Call ``_cached_poly_vtx_count.cache_clear()`` after any topology change
-    (subdivide, delete components, etc.) to force a fresh query.
+    Deliberately not memoised: a cache keyed by node name goes stale after a
+    topology change or when a new mesh reuses a deleted mesh's name, and
+    ``polyEvaluate`` is cheap enough that the cache bought nothing.
     Returns 0 for non-polygon shapes so callers can fall back to NURBS logic.
     """
     result = cmds.polyEvaluate(shape, vertex=True)
@@ -173,12 +172,7 @@ class Deformer(dwnn.MayaNode, WeightSource):
     def vtx_count(self) -> int:
         """Vertex / CV count for the active geometry.
 
-        Polygon meshes are memoised via ``_cached_poly_vtx_count`` so repeated
-        calls (e.g. from ``_resolve_attr`` + the length guard in ``set_weights``)
-        cost a single dict lookup after the first query.
-        NURBS curves bypass the cache and are always queried live.
-
-        Call ``_cached_poly_vtx_count.cache_clear()`` if mesh topology changes.
+        Always queried live, so a topology change is picked up immediately.
         """
         try:
             shapes = cmds.deformer(self.node_name, query=True, geometry=True) or []
@@ -186,12 +180,12 @@ class Deformer(dwnn.MayaNode, WeightSource):
                 return 0
             shape = shapes[self.geo_index]
 
-            # Fast path: cached polyEvaluate (returns 0 for non-poly shapes)
-            count = _cached_poly_vtx_count(shape)
+            # Polygon path (returns 0 for non-poly shapes)
+            count = _poly_vtx_count(shape)
             if count > 0:
                 return count
 
-            # NURBS curve fallback — not worth caching, rarely called
+            # NURBS curve fallback
             spans = cmds.getAttr(f'{shape}.spans')
             degree = cmds.getAttr(f'{shape}.degree')
             form = cmds.getAttr(f'{shape}.form')

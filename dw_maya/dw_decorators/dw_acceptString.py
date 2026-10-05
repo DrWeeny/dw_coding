@@ -27,10 +27,11 @@ def acceptString(*list_args):
     """
 
     def convert_params_to_list(func):
+        # Built once per decorated function, not on every call.
+        sig = inspect.signature(func)
+
         @wraps(func)
         def wrapper(*args, **kwargs):
-            # Get the signature of the function and bind the arguments
-            sig = inspect.signature(func)
             bound_args = sig.bind(*args, **kwargs)
             bound_args.apply_defaults()
 

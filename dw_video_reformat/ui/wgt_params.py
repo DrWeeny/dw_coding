@@ -1,11 +1,11 @@
 """Parameter panel: every field maps to one EncodeSettings attribute."""
 from __future__ import annotations
 
-from PySide6.QtCore import QSettings
+from PySide6.QtCore import QRegularExpression, QSettings
+from PySide6.QtGui import QRegularExpressionValidator
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
-    QDoubleSpinBox,
     QFormLayout,
     QGroupBox,
     QLineEdit,
@@ -64,10 +64,18 @@ class ParamsPanel(QWidget):
         self.max_width.setToolTip("Downscale to this width when the source is wider. Never upscales.")
         video_form.addRow("Max width", self.max_width)
 
-        self.fps = QDoubleSpinBox()
-        self.fps.setRange(0.0, 240.0)
-        self.fps.setDecimals(3)
-        self.fps.setSpecialValueText("source")
+        self.fps = QComboBox()
+        self.fps.setEditable(True)
+        self.fps.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
+        self.fps.addItems(list(encode.FRAME_RATES))
+        rate_pattern = QRegularExpression(r"source|\d+(\.\d+)?(/\d+(\.\d+)?)?")
+        rate_validator = QRegularExpressionValidator(rate_pattern, self.fps)
+        self.fps.setValidator(rate_validator)
+        self.fps.setToolTip(
+            "source keeps the original timing, variable frame rate included.\n"
+            "Any value forces a constant frame rate (what Resolve wants from YouTube downloads).\n"
+            "Type a custom rate (48, 30000/1001) if it is not listed."
+        )
         video_form.addRow("Frame rate", self.fps)
 
         layout.addWidget(video_box)
@@ -115,7 +123,7 @@ class ParamsPanel(QWidget):
             preset=self.preset.currentText(),
             pixel_format=self.pixel_format.currentText(),
             max_width=self.max_width.value(),
-            fps=self.fps.value(),
+            fps=encode.normalize_frame_rate(self.fps.currentText()) or "",
             audio_enabled=self.audio_box.isChecked(),
             audio_codec=self.audio_codec.currentData(),
             audio_bitrate=self.audio_bitrate.value(),
@@ -132,7 +140,7 @@ class ParamsPanel(QWidget):
         self.preset.setCurrentText(settings.preset)
         self.pixel_format.setCurrentText(settings.pixel_format)
         self.max_width.setValue(settings.max_width)
-        self.fps.setValue(settings.fps)
+        self.fps.setCurrentText(encode.frame_rate_label(settings.fps) or "source")
         self.audio_box.setChecked(settings.audio_enabled)
         index = self.audio_codec.findData(settings.audio_codec)
         self.audio_codec.setCurrentIndex(max(index, 0))
@@ -151,7 +159,8 @@ class ParamsPanel(QWidget):
             preset=store.value("preset", defaults.preset),
             pixel_format=store.value("pixel_format", defaults.pixel_format),
             max_width=int(store.value("max_width", defaults.max_width)),
-            fps=float(store.value("fps", defaults.fps)),
+            # older builds stored a float here (0.0 = source); the normalizer reads both
+            fps=encode.normalize_frame_rate(store.value("fps", defaults.fps)) or "",
             audio_enabled=_to_bool(store.value("audio_enabled", defaults.audio_enabled)),
             audio_codec=store.value("audio_codec", defaults.audio_codec),
             audio_bitrate=int(store.value("audio_bitrate", defaults.audio_bitrate)),
