@@ -68,6 +68,29 @@ def _reload():
         dw_maya.DynForge.main_ui,
     ):
         importlib.reload(module)
+        if module is dw_maya.DynForge.forge_host:
+            _reload_host_package()
+
+
+def _reload_host_package():
+    """
+    Reload the studio host/ package when there is one (gitignored, absent off
+    a studio machine): its modules in the order it declares (RELOAD_ORDER),
+    then the package itself so get_host() rebinds - right after forge_host,
+    the seam they subclass, and before anything that asks for the host.
+    """
+    import importlib
+
+    try:
+        package = importlib.import_module("dw_maya.DynForge.host")
+    except ImportError:
+        return
+    for name in getattr(package, "RELOAD_ORDER", ()):
+        try:
+            importlib.reload(importlib.import_module(f"dw_maya.DynForge.host.{name}"))
+        except Exception as e:
+            print(f"DynForge._reload: host.{name} failed: {e}")
+    importlib.reload(package)
 
 
 def launch():

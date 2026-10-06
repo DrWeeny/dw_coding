@@ -92,7 +92,12 @@ class DynForgeUI(DynForgeMainWindow):
         self.setCentralWidget(central)
         layout = QtWidgets.QVBoxLayout(central)
 
-        self.naming_panel = NamingPanel(self.hub, defaults=forge_host.get_host().naming_defaults())
+        naming = dict(forge_host.get_host().naming_defaults())
+        # The last prefix typed wins over the host default; never saved = host default.
+        last_prefix = self._settings.value("naming_prefix", None)
+        if last_prefix is not None:
+            naming["prefix"] = str(last_prefix)
+        self.naming_panel = NamingPanel(self.hub, defaults=naming)
         layout.addWidget(self.naming_panel)
 
         splitter = QtWidgets.QSplitter()
@@ -354,12 +359,15 @@ class DynForgeUI(DynForgeMainWindow):
         """Persist the current build defaults to QSettings (flip is intentionally not saved)."""
         for key in ("n_joints", "up_axis", "degree", "point_type", "cv_count", "exact_points", "strip_handles"):
             self._settings.setValue(key, self._defaults[key])
+        self._settings.setValue("naming_prefix", self.naming_panel.prefix())
 
     # -- Handlers ---------------------------------------------------------
 
     def _on_add(self) -> None:
         params = dict(self._defaults)
         params["name"] = self.naming_panel.compose_unique(self.list_panel.existing_names())
+        # Saved on use as well as on close, so a Maya crash keeps the last prefix.
+        self._settings.setValue("naming_prefix", self.naming_panel.prefix())
         if not _VALID_NAME.match(params["name"]):
             QtWidgets.QMessageBox.warning(
                 self, "DynForge",

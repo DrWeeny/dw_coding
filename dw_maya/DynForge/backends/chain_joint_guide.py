@@ -114,6 +114,10 @@ class ChainJointGuide(guide_registry.GuideBackend):
         # Install state: the chain sits in the rig / its weights are on the skin.
         self.installed:      bool = False
         self.skin_installed: bool = False
+        # Free slot owned by the ForgeHost, persisted in the recipe: what the
+        # studio side made for this guide (e.g. the uuid of its solver node), so
+        # it is found again after an uninstall, a rename or a relaunch.
+        self.host_data:      dict = {}
         self._group:        Optional[str] = None
         self._chain:        Optional[dw_chain_guide.ChainGuide] = None
         # Flip direction currently baked into the source curve, so rebuild() can
@@ -973,6 +977,7 @@ class ChainJointGuide(guide_registry.GuideBackend):
             "radius_scale":      self.radius_scale,
             "installed":         self.installed,
             "skin_installed":    self.skin_installed,
+            "host_data":         self.host_data,
             # Scene node names without namespace (a studio tool may add one to
             # anything moved into a container), only used to reattach a guide.
             "nodes": {
@@ -1007,6 +1012,7 @@ class ChainJointGuide(guide_registry.GuideBackend):
         guide.radius_scale      = data.get("radius_scale", 1.0)
         guide.installed         = bool(data.get("installed", False))
         guide.skin_installed    = bool(data.get("skin_installed", False))
+        guide.host_data         = dict(data.get("host_data") or {})
         return guide
 
     # -- Discovery --------------------------------------------------------

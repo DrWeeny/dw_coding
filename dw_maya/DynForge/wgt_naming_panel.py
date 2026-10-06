@@ -18,7 +18,7 @@ from dw_maya.DynForge.forge_cmds.compat import QtWidgets
 from dw_maya.DynForge.wgt_base import DynForgeWidgetBase
 
 
-_SIDES = ("", "L", "R", "C")
+_SIDES = ("M", "L", "R", "C")
 
 
 class NamingPanel(DynForgeWidgetBase):
@@ -65,6 +65,10 @@ class NamingPanel(DynForgeWidgetBase):
         layout.addWidget(self._name, stretch=1)
 
     # -- Logic ------------------------------------------------------------
+
+    def prefix(self) -> str:
+        """The prefix field as typed (main_ui persists it)."""
+        return self._prefix.text().strip()
 
     def _compose(self,
                  index: int,) -> str:
