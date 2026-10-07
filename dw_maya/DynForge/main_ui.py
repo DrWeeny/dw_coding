@@ -184,28 +184,43 @@ class DynForgeUI(DynForgeMainWindow):
                 if getattr(g, "skin_cluster", None) == skin]
 
     def _install(self,
-                 guides:    list,
-                 with_skin: bool,) -> None:
+                 guides: list,) -> None:
         """
-        Install `guides`. With skin: one skinCluster at a time, restore its
-        vanilla backup (taken on the first install), apply all its chains at
-        once so shared donors are split, and place each chain. Without skin:
-        only place the chains, the skin is left untouched. Guides that are not
-        ready are listed, not installed.
+        Install `guides`, each as its own Skin flag says. With skin: one
+        skinCluster at a time - its DynForge layer comes off, all its chains are
+        applied at once so shared donors are split, each chain is placed. Without
+        skin: the chain is only placed, its joints join the skin at weight 0,
+        locked. A guide whose install settings changed since it was installed
+        (reinstall pending, or unticked while it holds weights) is uninstalled
+        first, so Install applies the change. Guides that are not ready are
+        listed, not installed.
         """
-        ready = [g for g in guides if hasattr(g, "is_installable") and g.is_installable(with_skin=with_skin)]
+        for guide in guides:
+            stale = getattr(guide, "reinstall_pending", False) or (
+                getattr(guide, "skin_installed", False) and not getattr(guide, "with_skin", True))
+            if self._is_installed(guide) and stale:
+                try:
+                    self._uninstall_quietly(guide)
+                except Exception as e:
+                    logger.error(f"DynForge: uninstall of {guide.name!r} before its reinstall failed: {e}")
+                    traceback.print_exc()
+                    QtWidgets.QMessageBox.warning(self, "DynForge", f"Reinstall of {guide.name} failed:\n{e}")
+        ready = [g for g in guides if hasattr(g, "is_installable")
+                 and g.is_installable(with_skin=getattr(g, "with_skin", True))]
         skipped = [g.name for g in guides if g not in ready]
         if not ready:
-            hint = ("register a mesh and pick donor bone(s) (Analyze suggests one)" if with_skin
-                    else "pick the parent bone (Analyze suggests one)")
             QtWidgets.QMessageBox.information(
-                self, "DynForge", f"Nothing to install.\n\nBuild a chain, then on the Skinning tab {hint}.")
+                self, "DynForge", "Nothing to install.\n\nBuild a chain, then on the Skinning tab pick the parent "
+                                  "bone - and for a guide ticked Skin, register a mesh and pick donor bone(s) "
+                                  "(Analyze suggests both).")
             return
+        skinned = [g for g in ready if getattr(g, "with_skin", True)]
+        placed = [g for g in ready if not getattr(g, "with_skin", True)]
 
         lines = []
-        if with_skin:
+        if skinned:
             by_skin: dict = {}
-            for guide in ready:
+            for guide in skinned:
                 by_skin.setdefault(guide.skin_cluster, []).append(guide)
             for skin, group in by_skin.items():
                 # Chains of this skin already installed stay installed: they are
@@ -225,20 +240,22 @@ class DynForgeUI(DynForgeMainWindow):
                     continue
                 lines.append(f"{skin.split('|')[-1]}:")
                 lines += [f"   {s['name']}: {s['verts']} vert(s), {s['contested']} contested" for s in stats]
-        else:
-            for guide in ready:
-                try:
-                    self._install_without_skin(guide)
-                except Exception as e:
-                    logger.error(f"DynForge: install of {guide.name!r} failed: {e}")
-                    traceback.print_exc()
-                    QtWidgets.QMessageBox.warning(self, "DynForge", f"Install of {guide.name} failed:\n{e}")
-                    continue
-                if guide.skin_cluster and cmds.objExists(guide.skin_cluster):
-                    lines.append(f"   {guide.name}: placed in the rig, joints added to "
-                                 f"{guide.skin_cluster.split('|')[-1]} at weight 0, locked")
-                else:
-                    lines.append(f"   {guide.name}: placed in the rig (no skinCluster registered)")
+        for guide in placed:
+            if getattr(guide, "installed", False):
+                lines.append(f"   {guide.name}: already in the rig (no skin)")
+                continue
+            try:
+                self._install_without_skin(guide)
+            except Exception as e:
+                logger.error(f"DynForge: install of {guide.name!r} failed: {e}")
+                traceback.print_exc()
+                QtWidgets.QMessageBox.warning(self, "DynForge", f"Install of {guide.name} failed:\n{e}")
+                continue
+            if guide.skin_cluster and cmds.objExists(guide.skin_cluster):
+                lines.append(f"   {guide.name}: placed in the rig, joints added to "
+                             f"{guide.skin_cluster.split('|')[-1]} at weight 0, locked")
+            else:
+                lines.append(f"   {guide.name}: placed in the rig (no skinCluster registered)")
 
         for guide in self.list_panel.all_guides():
             self.skin_panel.reload_if_current(guide)
@@ -359,6 +376,7 @@ class DynForgeUI(DynForgeMainWindow):
         self.tabs.currentChanged.connect(self._on_tab_changed)
         self.install_panel.with_skin_cb.toggled.connect(self._on_with_skin_toggled)
         self.install_panel.install_requested.connect(self._install)
+        self.install_panel.reinstall_requested.connect(self._reinstall)
         self.install_panel.uninstall_requested.connect(self._uninstall)
         self.install_panel.cleanup_requested.connect(self._cleanup)
         self.install_panel.save_json_requested.connect(self._save_json)
@@ -398,6 +416,7 @@ class DynForgeUI(DynForgeMainWindow):
     def _on_add(self) -> None:
         params = dict(self._defaults)
         params["name"] = self.naming_panel.compose_unique(self.list_panel.existing_names())
+        params["with_skin"] = self.install_panel.with_skin_cb.isChecked()   # the default for new guides
         # Saved on use as well as on close, so a Maya crash keeps the last prefix.
         self._settings.setValue("naming_prefix", self.naming_panel.prefix())
         if not _VALID_NAME.match(params["name"]):
@@ -476,6 +495,14 @@ class DynForgeUI(DynForgeMainWindow):
         # placed on a skinned mesh may have pre-registered its skinCluster.
         self.list_panel.refresh_guide(guide)
         self.skin_panel.refresh_if_current(guide)
+
+    def _reinstall(self,
+                   guides: list,) -> None:
+        """Uninstall then install `guides` so a changed install setting (skin flag, target, home) applies."""
+        for guide in guides:
+            if getattr(guide, "installed", False) or getattr(guide, "skin_installed", False):
+                guide.reinstall_pending = True   # _install uninstalls it first
+        self._install(guides)
 
     def _uninstall_quietly(self,
                            guide,) -> None:

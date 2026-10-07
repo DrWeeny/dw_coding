@@ -120,6 +120,12 @@ class ChainJointGuide(guide_registry.GuideBackend):
         # Install state: the chain sits in the rig / its weights are on the skin.
         self.installed:      bool = False
         self.skin_installed: bool = False
+        # Install with the skin weights or only place the chain - per guide (the
+        # Install tab's Skin column; new guides take the tab's default).
+        self.with_skin:      bool = True
+        # An install setting (skin flag, target, home) changed after the install
+        # and the reinstall was declined: the rig does not match the tab yet.
+        self.reinstall_pending: bool = False
         # Free slot owned by the ForgeHost, persisted in the recipe: what the
         # studio side made for this guide (e.g. the uuid of its solver node), so
         # it is found again after an uninstall, a rename or a relaunch.
@@ -146,6 +152,7 @@ class ChainJointGuide(guide_registry.GuideBackend):
                     cv_count     = params.get("cv_count", 6),
                     exact_points = params.get("exact_points", False),)
         guide.strip_handles = int(params.get("strip_handles", 3))
+        guide.with_skin = bool(params.get("with_skin", True))
         return guide
 
     # -- Groups -----------------------------------------------------------
@@ -1080,6 +1087,7 @@ class ChainJointGuide(guide_registry.GuideBackend):
             self.move_to_setup(home)
         self.setup_home = home   # read by the UI to offer a JSON copy when None
         self.installed = True
+        self.reinstall_pending = False
         self.store_recipe()
         return home
 
@@ -1129,6 +1137,7 @@ class ChainJointGuide(guide_registry.GuideBackend):
             self._tag_chain()
         self.installed = False
         self.skin_installed = False
+        self.reinstall_pending = False
         self.store_recipe()
 
     def move_to_setup(self,
@@ -1174,6 +1183,8 @@ class ChainJointGuide(guide_registry.GuideBackend):
             "radius_scale":      self.radius_scale,
             "installed":         self.installed,
             "skin_installed":    self.skin_installed,
+            "with_skin":         self.with_skin,
+            "reinstall_pending": self.reinstall_pending,
             "host_data":         self.host_data,
             # Scene node names without namespace (a studio tool may add one to
             # anything moved into a container), only used to reattach a guide.
@@ -1211,6 +1222,8 @@ class ChainJointGuide(guide_registry.GuideBackend):
         guide.radius_scale      = data.get("radius_scale", 1.0)
         guide.installed         = bool(data.get("installed", False))
         guide.skin_installed    = bool(data.get("skin_installed", False))
+        guide.with_skin         = bool(data.get("with_skin", True))
+        guide.reinstall_pending = bool(data.get("reinstall_pending", False))
         guide.host_data         = dict(data.get("host_data") or {})
         return guide
 

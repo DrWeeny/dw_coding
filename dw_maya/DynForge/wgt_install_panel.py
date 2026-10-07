@@ -2,12 +2,18 @@
 wgt_install_panel.py - DynForge "Install" tab.
 
 Guides grouped by install unit (ForgeHost.install_unit: a studio part / prop,
-default the registered mesh's top group), with per guide its install state, the
-target it installs under (ForgeHost.describe_target) and its setup home.
+default the registered mesh's top group), with per guide its install state,
+whether it installs with its skin weights (a checkbox - each guide decides; the
+top "with skin" box is only the default given to new guides), the target it
+installs under (ForgeHost.describe_target) and its setup home.
+
+Changing the skin flag, the target or the home of an INSTALLED guide asks
+"Reinstall now?": yes reinstalls it (uninstall + install), no leaves it marked
+"reinstall pending" so the rig never silently disagrees with the tab.
 
 Actions work on the selected units / guides (a unit row = all its guides;
 nothing selected = everything, after a confirm):
-    Install     place the chains (+ the weights when "with skin" is checked)
+    Install     place the chains (+ the weights of the guides ticked "Skin")
     Uninstall   weights off the skin, chains back into their guide groups
     Cleanup     tidy only: split preview, clip gizmos, empty setup groups
     Save JSON   one file per unit
@@ -25,7 +31,7 @@ from dw_maya.DynForge.wgt_base import DynForgeWidgetBase
 
 _GUIDE_ROLE = Qt.UserRole + 1
 _UNIT_ROLE  = Qt.UserRole + 2
-_COL_TARGET, _COL_HOME = 2, 3
+_COL_NAME, _COL_STATE, _COL_SKIN, _COL_TARGET, _COL_HOME = range(5)
 # Install-tab columns whose cell can be a combo (ForgeHost.install_choices).
 _CHOICE_COLUMNS = {_COL_TARGET: "target", _COL_HOME: "home"}
 
@@ -34,18 +40,21 @@ _STATE_COLOR = {
     "ready":     QtGui.QColor("#6ab04c"),
     "needs:":    QtGui.QColor("#d9a441"),
 }
+_PENDING_COLOR = QtGui.QColor("#e8a33d")
 
 
-def guide_state(guide,
-                with_skin: bool,) -> str:
-    """Install state / readiness of a guide, as shown in the tab."""
+def guide_state(guide) -> str:
+    """Install state / readiness of a guide, as shown in the tab (its own skin flag decides what it needs)."""
     if getattr(guide, "installed", False):
-        return "installed" if getattr(guide, "skin_installed", False) else "installed (no skin)"
+        state = "installed" if getattr(guide, "skin_installed", False) else "installed (no skin)"
+        if getattr(guide, "reinstall_pending", False):
+            state += " - reinstall pending"
+        return state
     if guide.status.value != "built":
         return "needs: build"
     if not getattr(guide, "parent_bone", None):
         return "needs: parent bone"
-    if with_skin:
+    if getattr(guide, "with_skin", True):
         if not getattr(guide, "skin_cluster", None):
             return "needs: skin"
         if not getattr(guide, "source_influences", None):
@@ -58,8 +67,9 @@ class _ChoiceDelegate(QtWidgets.QStyledItemDelegate):
     Combo editor on a guide's Target / Home cell, filled by the host
     (ForgeHost.install_choices). The pick is handed back to the host
     (set_install_choice) as soon as it is made - no second click to commit -
-    and the panel rebuilds once the editor is closed, never from inside it.
-    An installed guide, or a host with nothing to offer, gets no editor.
+    and the panel follows up once the editor is closed, never from inside it:
+    an installed guide is offered a reinstall. A host with nothing to offer
+    gets no editor.
     """
 
     def __init__(self,
@@ -70,7 +80,7 @@ class _ChoiceDelegate(QtWidgets.QStyledItemDelegate):
     def createEditor(self, parent, option, index):
         guide = self._panel.guide_at(index)
         column = _CHOICE_COLUMNS.get(index.column())
-        if guide is None or column is None or getattr(guide, "installed", False):
+        if guide is None or column is None:
             return None
         options, current = forge_host.get_host().install_choices(guide, column)
         if not options:
@@ -79,6 +89,7 @@ class _ChoiceDelegate(QtWidgets.QStyledItemDelegate):
         combo.addItems(options)
         if current in options:
             combo.setCurrentIndex(options.index(current))
+        combo.setProperty("dwForgeInitial", combo.currentText())
         combo.activated.connect(functools.partial(self._commit, combo))
         QtCore.QTimer.singleShot(0, combo.showPopup)
         return combo
@@ -89,9 +100,12 @@ class _ChoiceDelegate(QtWidgets.QStyledItemDelegate):
     def setModelData(self, editor, model, index) -> None:
         guide = self._panel.guide_at(index)
         column = _CHOICE_COLUMNS.get(index.column())
-        if guide is not None and column is not None:
-            forge_host.get_host().set_install_choice(guide, column, editor.currentText())
-        QtCore.QTimer.singleShot(0, self._panel.refresh)
+        if guide is None or column is None:
+            return
+        if editor.currentText() == editor.property("dwForgeInitial"):
+            return   # picked what it already was: nothing to do
+        forge_host.get_host().set_install_choice(guide, column, editor.currentText())
+        QtCore.QTimer.singleShot(0, functools.partial(self._panel.install_setting_changed, guide))
 
     def _commit(self,
                 combo,
@@ -103,7 +117,8 @@ class _ChoiceDelegate(QtWidgets.QStyledItemDelegate):
 class InstallPanel(DynForgeWidgetBase):
     """Install units -> guides, with install / uninstall / cleanup / JSON per selection."""
 
-    install_requested   = Signal(object, bool)   # guides, with_skin
+    install_requested   = Signal(object)         # guides (each with its own skin flag)
+    reinstall_requested = Signal(object)         # guides: uninstall + install
     uninstall_requested = Signal(object)         # guides
     cleanup_requested   = Signal(object)         # guides
     save_json_requested = Signal(object, str)    # guides, default file stem (the unit)
@@ -114,6 +129,7 @@ class InstallPanel(DynForgeWidgetBase):
                  parent=None,) -> None:
         super().__init__(hub, parent)
         self._context = context
+        self._filling = False
         self._build_ui()
         self._context.guides_changed.connect(self.refresh)
 
@@ -122,34 +138,36 @@ class InstallPanel(DynForgeWidgetBase):
     def _build_ui(self) -> None:
         layout = QtWidgets.QVBoxLayout(self)
 
-        # Host options (filled by main_ui) + with skin + refresh
+        # Host options (filled by main_ui) + default skin flag + refresh
         top = QtWidgets.QHBoxLayout()
         self.options_row = QtWidgets.QHBoxLayout()
         top.addLayout(self.options_row)
         top.addStretch(1)
-        self.with_skin_cb = QtWidgets.QCheckBox("with skin")
+        self.with_skin_cb = QtWidgets.QCheckBox("with skin (new guides)")
         self.with_skin_cb.setToolTip(
-            "On: also transfer the weights (per skinCluster, from the original skin backup).\n"
-            "Off: only place the chains in the rig - the skin is left untouched.")
+            "The Skin flag given to new guides. Each guide then has its own, in the Skin column:\n"
+            "on = install also transfers its weights, off = only place it (joints at weight 0, locked).")
         top.addWidget(self.with_skin_cb)
         self._refresh_btn = QtWidgets.QPushButton("Refresh")
         top.addWidget(self._refresh_btn)
         layout.addLayout(top)
 
         self._tree = QtWidgets.QTreeWidget()
-        self._tree.setColumnCount(4)
-        self._tree.setHeaderLabels(["Unit / guide", "State", "Target", "Home"])
+        self._tree.setColumnCount(5)
+        self._tree.setHeaderLabels(["Unit / guide", "State", "Skin", "Target", "Home"])
         self._tree.setSelectionMode(QtWidgets.QAbstractItemView.ExtendedSelection)
         self._tree.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
         header = self._tree.header()
-        header.setSectionResizeMode(0, QtWidgets.QHeaderView.ResizeToContents)
-        header.setSectionResizeMode(1, QtWidgets.QHeaderView.ResizeToContents)
-        header.setSectionResizeMode(2, QtWidgets.QHeaderView.Stretch)
-        header.setSectionResizeMode(3, QtWidgets.QHeaderView.ResizeToContents)
+        header.setSectionResizeMode(_COL_NAME, QtWidgets.QHeaderView.ResizeToContents)
+        header.setSectionResizeMode(_COL_STATE, QtWidgets.QHeaderView.ResizeToContents)
+        header.setSectionResizeMode(_COL_SKIN, QtWidgets.QHeaderView.ResizeToContents)
+        header.setSectionResizeMode(_COL_TARGET, QtWidgets.QHeaderView.Stretch)
+        header.setSectionResizeMode(_COL_HOME, QtWidgets.QHeaderView.ResizeToContents)
         self._choice_delegate = _ChoiceDelegate(self)
         self._tree.setItemDelegateForColumn(_COL_TARGET, self._choice_delegate)
         self._tree.setItemDelegateForColumn(_COL_HOME, self._choice_delegate)
         self._tree.itemDoubleClicked.connect(self._on_double_click)
+        self._tree.itemChanged.connect(self._on_item_changed)
         layout.addWidget(self._tree, stretch=1)
 
         hint = QtWidgets.QLabel("Acts on the selected units / guides - nothing selected = everything.")
@@ -170,7 +188,6 @@ class InstallPanel(DynForgeWidgetBase):
         layout.addLayout(buttons)
 
         self._refresh_btn.clicked.connect(self.refresh)
-        self.with_skin_cb.toggled.connect(self.refresh)
         self._install_btn.clicked.connect(self._on_install)
         self._uninstall_btn.clicked.connect(self._on_uninstall)
         self._cleanup_btn.clicked.connect(self._on_cleanup)
@@ -196,13 +213,13 @@ class InstallPanel(DynForgeWidgetBase):
 
     def refresh(self, *args) -> None:
         host = forge_host.get_host()
-        with_skin = self.with_skin_cb.isChecked()
+        self._filling = True
         self._tree.clear()
         for key, label, guides in self._units(self._context.all_guides()):
-            states = [guide_state(g, with_skin) for g in guides]
+            states = [guide_state(g) for g in guides]
             n_installed = sum(1 for s in states if s.startswith("installed"))
             unit_item = QtWidgets.QTreeWidgetItem(
-                [label, f"{n_installed}/{len(guides)} installed", "", ""])
+                [label, f"{n_installed}/{len(guides)} installed", "", "", ""])
             unit_item.setData(0, _UNIT_ROLE, key)
             font = unit_item.font(0)
             font.setBold(True)
@@ -210,32 +227,51 @@ class InstallPanel(DynForgeWidgetBase):
             unit_item.setToolTip(0, key or "guides without a registered mesh")
             self._tree.addTopLevelItem(unit_item)
             for guide, state in zip(guides, states):
-                try:
-                    target = host.describe_target(guide)
-                except Exception as e:
-                    target = f"? ({e})"
-                home = getattr(guide, "setup_home", None) or getattr(guide, "setup", None) or "-"
-                home_text, home_tip = home.split("|")[-1], home
-                try:
-                    home_options, home_current = host.install_choices(guide, "home")
-                except Exception:
-                    home_options, home_current = [], ""
-                if home_options:   # the container, not the dwForge_GRP inside it
-                    home_text = home_current
-                item = QtWidgets.QTreeWidgetItem([guide.name, state, target, home_text])
-                item.setData(0, _GUIDE_ROLE, guide)
-                item.setFlags(item.flags() | Qt.ItemIsEditable)   # only the delegate's columns open an editor
-                installed = getattr(guide, "installed", False)
-                for column, tip in ((_COL_TARGET, target), (_COL_HOME, home_tip)):
-                    if self._has_choices(host, guide, _CHOICE_COLUMNS[column]):
-                        tip += ("\n(installed - uninstall to change it)" if installed
-                                else "\nDouble-click to pick another one.")
-                    item.setToolTip(column, tip)
-                color = _STATE_COLOR.get(state.split(" ")[0])
-                if color is not None:
-                    item.setForeground(1, color)
-                unit_item.addChild(item)
+                unit_item.addChild(self._guide_item(host, guide, state))
             unit_item.setExpanded(True)
+        self._filling = False
+
+    def _guide_item(self,
+                    host,
+                    guide,
+                    state: str,):
+        try:
+            target = host.describe_target(guide)
+        except Exception as e:
+            target = f"? ({e})"
+        home = getattr(guide, "setup_home", None) or getattr(guide, "setup", None) or "-"
+        home_text, home_tip = home.split("|")[-1], home
+        try:
+            home_options, home_current = host.install_choices(guide, "home")
+        except Exception:
+            home_options, home_current = [], ""
+        if home_options:   # the container, not the dwForge_GRP inside it
+            home_text = home_current
+        item = QtWidgets.QTreeWidgetItem([guide.name, state, "", target, home_text])
+        item.setData(0, _GUIDE_ROLE, guide)
+        # Editable for the delegate's columns (the others open no editor), checkable for Skin.
+        item.setFlags(item.flags() | Qt.ItemIsEditable | Qt.ItemIsUserCheckable)
+        item.setCheckState(_COL_SKIN, Qt.Checked if getattr(guide, "with_skin", True) else Qt.Unchecked)
+        installed = getattr(guide, "installed", False)
+        skin_tip = "Install transfers this guide's weights too" if getattr(guide, "with_skin", True) \
+            else "Install only places this guide (joints at weight 0, locked)"
+        if installed:
+            skin_tip += "\n(installed - changing it offers a reinstall)"
+        item.setToolTip(_COL_SKIN, skin_tip)
+        for column, tip in ((_COL_TARGET, target), (_COL_HOME, home_tip)):
+            if self._has_choices(host, guide, _CHOICE_COLUMNS[column]):
+                tip += "\nDouble-click to pick another one" + (" (installed: offers a reinstall)." if installed
+                                                               else ".")
+            item.setToolTip(column, tip)
+        if "pending" in state:
+            item.setForeground(_COL_STATE, _PENDING_COLOR)
+            item.setToolTip(_COL_STATE, "Its skin flag / target / home changed since it was installed - "
+                                        "Install it again (or Uninstall + Install) to apply.")
+        else:
+            color = _STATE_COLOR.get(state.split(" ")[0])
+            if color is not None:
+                item.setForeground(_COL_STATE, color)
+        return item
 
     @staticmethod
     def _has_choices(host,
@@ -258,6 +294,44 @@ class InstallPanel(DynForgeWidgetBase):
         """Target / Home cell: open the delegate's combo (the other cells are not editable)."""
         if column in _CHOICE_COLUMNS and item.data(0, _GUIDE_ROLE) is not None:
             self._tree.editItem(item, column)
+
+    def _on_item_changed(self,
+                         item,
+                         column: int,) -> None:
+        """The Skin checkbox: the guide's own flag (read back off the item, not trusted from the signal)."""
+        if self._filling or column != _COL_SKIN:
+            return
+        guide = item.data(0, _GUIDE_ROLE)
+        if guide is None:
+            return
+        checked = item.checkState(_COL_SKIN) == Qt.Checked
+        if checked == getattr(guide, "with_skin", True):
+            return
+        guide.with_skin = checked
+        guide.store_recipe()
+        # Followed up outside the item signal (the follow-up rebuilds the tree).
+        QtCore.QTimer.singleShot(0, functools.partial(self.install_setting_changed, guide))
+
+    def install_setting_changed(self,
+                                guide,) -> None:
+        """
+        A setting that decides how a guide installs changed (skin flag, target,
+        home). Not installed: nothing to do but redraw. Installed: offer the
+        reinstall now; declined, the guide is marked pending so the tab says the
+        rig does not match it yet.
+        """
+        if getattr(guide, "installed", False):
+            reply = QtWidgets.QMessageBox.question(
+                self, "DynForge",
+                f"{guide.name} is installed. Reinstall it now so the change applies?\n\n"
+                "No: it stays as installed, marked 'reinstall pending'.",
+                QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No)
+            if reply == QtWidgets.QMessageBox.Yes:
+                self.reinstall_requested.emit([guide])
+                return
+            guide.reinstall_pending = True
+            guide.store_recipe()
+        self.refresh()
 
     # -- Selection --------------------------------------------------------
 
@@ -299,7 +373,7 @@ class InstallPanel(DynForgeWidgetBase):
     def _on_install(self) -> None:
         guides = self._targets("install")
         if guides:
-            self.install_requested.emit(guides, self.with_skin_cb.isChecked())
+            self.install_requested.emit(guides)
 
     def _on_uninstall(self) -> None:
         guides = self._targets("uninstall")
