@@ -17,12 +17,17 @@ The panel only builds the view and emits intent signals; main_ui runs them.
 
 from __future__ import annotations
 
-from dw_maya.DynForge.forge_cmds.compat import QtGui, QtWidgets, Qt, Signal
+import functools
+
+from dw_maya.DynForge.forge_cmds.compat import QtCore, QtGui, QtWidgets, Qt, Signal
 from dw_maya.DynForge import forge_host
 from dw_maya.DynForge.wgt_base import DynForgeWidgetBase
 
 _GUIDE_ROLE = Qt.UserRole + 1
 _UNIT_ROLE  = Qt.UserRole + 2
+_COL_TARGET, _COL_HOME = 2, 3
+# Install-tab columns whose cell can be a combo (ForgeHost.install_choices).
+_CHOICE_COLUMNS = {_COL_TARGET: "target", _COL_HOME: "home"}
 
 _STATE_COLOR = {
     "installed": QtGui.QColor("#4aa3df"),
@@ -46,6 +51,53 @@ def guide_state(guide,
         if not getattr(guide, "source_influences", None):
             return "needs: donor"
     return "ready"
+
+
+class _ChoiceDelegate(QtWidgets.QStyledItemDelegate):
+    """
+    Combo editor on a guide's Target / Home cell, filled by the host
+    (ForgeHost.install_choices). The pick is handed back to the host
+    (set_install_choice) as soon as it is made - no second click to commit -
+    and the panel rebuilds once the editor is closed, never from inside it.
+    An installed guide, or a host with nothing to offer, gets no editor.
+    """
+
+    def __init__(self,
+                 panel,) -> None:
+        super().__init__(panel)
+        self._panel = panel
+
+    def createEditor(self, parent, option, index):
+        guide = self._panel.guide_at(index)
+        column = _CHOICE_COLUMNS.get(index.column())
+        if guide is None or column is None or getattr(guide, "installed", False):
+            return None
+        options, current = forge_host.get_host().install_choices(guide, column)
+        if not options:
+            return None
+        combo = QtWidgets.QComboBox(parent)
+        combo.addItems(options)
+        if current in options:
+            combo.setCurrentIndex(options.index(current))
+        combo.activated.connect(functools.partial(self._commit, combo))
+        QtCore.QTimer.singleShot(0, combo.showPopup)
+        return combo
+
+    def setEditorData(self, editor, index) -> None:
+        """The combo is filled in createEditor; nothing to read back from the item."""
+
+    def setModelData(self, editor, model, index) -> None:
+        guide = self._panel.guide_at(index)
+        column = _CHOICE_COLUMNS.get(index.column())
+        if guide is not None and column is not None:
+            forge_host.get_host().set_install_choice(guide, column, editor.currentText())
+        QtCore.QTimer.singleShot(0, self._panel.refresh)
+
+    def _commit(self,
+                combo,
+                _index: int = 0,) -> None:
+        self.commitData.emit(combo)
+        self.closeEditor.emit(combo, QtWidgets.QAbstractItemDelegate.NoHint)
 
 
 class InstallPanel(DynForgeWidgetBase):
@@ -94,6 +146,10 @@ class InstallPanel(DynForgeWidgetBase):
         header.setSectionResizeMode(1, QtWidgets.QHeaderView.ResizeToContents)
         header.setSectionResizeMode(2, QtWidgets.QHeaderView.Stretch)
         header.setSectionResizeMode(3, QtWidgets.QHeaderView.ResizeToContents)
+        self._choice_delegate = _ChoiceDelegate(self)
+        self._tree.setItemDelegateForColumn(_COL_TARGET, self._choice_delegate)
+        self._tree.setItemDelegateForColumn(_COL_HOME, self._choice_delegate)
+        self._tree.itemDoubleClicked.connect(self._on_double_click)
         layout.addWidget(self._tree, stretch=1)
 
         hint = QtWidgets.QLabel("Acts on the selected units / guides - nothing selected = everything.")
@@ -159,15 +215,49 @@ class InstallPanel(DynForgeWidgetBase):
                 except Exception as e:
                     target = f"? ({e})"
                 home = getattr(guide, "setup_home", None) or getattr(guide, "setup", None) or "-"
-                item = QtWidgets.QTreeWidgetItem([guide.name, state, target, home.split("|")[-1]])
+                home_text, home_tip = home.split("|")[-1], home
+                try:
+                    home_options, home_current = host.install_choices(guide, "home")
+                except Exception:
+                    home_options, home_current = [], ""
+                if home_options:   # the container, not the dwForge_GRP inside it
+                    home_text = home_current
+                item = QtWidgets.QTreeWidgetItem([guide.name, state, target, home_text])
                 item.setData(0, _GUIDE_ROLE, guide)
-                item.setToolTip(2, target)
-                item.setToolTip(3, home)
+                item.setFlags(item.flags() | Qt.ItemIsEditable)   # only the delegate's columns open an editor
+                installed = getattr(guide, "installed", False)
+                for column, tip in ((_COL_TARGET, target), (_COL_HOME, home_tip)):
+                    if self._has_choices(host, guide, _CHOICE_COLUMNS[column]):
+                        tip += ("\n(installed - uninstall to change it)" if installed
+                                else "\nDouble-click to pick another one.")
+                    item.setToolTip(column, tip)
                 color = _STATE_COLOR.get(state.split(" ")[0])
                 if color is not None:
                     item.setForeground(1, color)
                 unit_item.addChild(item)
             unit_item.setExpanded(True)
+
+    @staticmethod
+    def _has_choices(host,
+                     guide,
+                     column: str,) -> bool:
+        try:
+            return bool(host.install_choices(guide, column)[0])
+        except Exception:
+            return False
+
+    def guide_at(self,
+                 index,):
+        """The guide of the row at a model index (None for a unit row)."""
+        item = self._tree.itemFromIndex(index)
+        return item.data(0, _GUIDE_ROLE) if item is not None else None
+
+    def _on_double_click(self,
+                         item,
+                         column: int,) -> None:
+        """Target / Home cell: open the delegate's combo (the other cells are not editable)."""
+        if column in _CHOICE_COLUMNS and item.data(0, _GUIDE_ROLE) is not None:
+            self._tree.editItem(item, column)
 
     # -- Selection --------------------------------------------------------
 

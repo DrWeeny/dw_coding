@@ -5,20 +5,20 @@ Per the selected guide:
 - register its skinCluster (from the selected mesh)
 - reach: radius = distance from the _PIN to the nearest skin joint, times a
   per-guide scale slider; it sizes the attachment search and the chain's tube
-- Analyze: rank the skin joints around the _PIN (what the chain hangs from);
+- Analyze: rank the skin joints under the whole chain (what it takes weight from, read on the vanilla skin);
   selected rows = donor bones, double-click = inspect its paint. When nothing
   is picked yet the top one is taken as donor + parent bone.
 - sharing: which other guides of the same skinCluster take from the same donor
 - split preview: vertex-colour copy of the meshes, one colour per chain, mixed
   hues where chains compete, grey for what the donors keep
-- optional clip gizmo, parent bone, cascade power, backup / restore
+- optional clip gizmo, parent bone, cascade power, the DynForge layer (remove its weights)
 
 Weights are only written by "Install guides" (main window), per skinCluster.
 """
 
 from __future__ import annotations
 
-from dw_maya.DynForge.forge_cmds.compat import QtWidgets, Qt
+from dw_maya.DynForge.forge_cmds.compat import QtGui, QtWidgets, Qt
 from dw_maya.DynForge.forge_cmds import skin_ops
 from dw_maya.DynForge.wgt_base import DynForgeWidgetBase
 from dw_logger import get_logger
@@ -29,6 +29,8 @@ logger = get_logger()
 _SHAPES = ("Box", "Sphere", "Capsule")
 _INFL_ROLE = Qt.UserRole + 1
 _SCALE_STEPS = 100   # slider ticks per 1.0 of radius scale
+_ORANGE = "#e8a33d"  # warning that is not an error (the vertex mask may be stale)
+_ZERO_GREY = "#6f6f6f"  # an influence with no weight in reach (Analyze list)
 
 
 def _short(name: str) -> str:
@@ -101,7 +103,7 @@ class SkinPanel(DynForgeWidgetBase):
         layout.addWidget(reach_box)
 
         # Attachment / donors
-        part_box = QtWidgets.QGroupBox("Attachment (skin joints around the _PIN)")
+        part_box = QtWidgets.QGroupBox("Attachment (skin joints under the chain)")
         part_layout = QtWidgets.QVBoxLayout(part_box)
         self._analyze_btn = QtWidgets.QPushButton("Analyze")
         part_layout.addWidget(self._analyze_btn)
@@ -174,23 +176,62 @@ class SkinPanel(DynForgeWidgetBase):
         giz_row.addWidget(self._gizmo_del_btn)
         giz_row.addStretch(1)
         form.addRow("Clip gizmo", giz_row)
+        size_row = QtWidgets.QHBoxLayout()
+        self._gizmo_size = QtWidgets.QSpinBox()
+        self._gizmo_size.setRange(10, 1000)
+        self._gizmo_size.setSingleStep(10)
+        self._gizmo_size.setSuffix(" %")
+        self._gizmo_size.setKeyboardTracking(False)   # apply on Enter / arrows, not on every digit typed
+        self._gizmo_size.setToolTip(
+            "Grow / shrink the clip gizmo around its centre, in % of its fitted size. Scaling it in the "
+            "viewport works too - this multiplies whatever scale it has, keeping its proportions.")
+        size_row.addWidget(self._gizmo_size)
+        size_row.addStretch(1)
+        form.addRow("Gizmo size", size_row)
         self._gizmo_label = QtWidgets.QLabel("")
         self._gizmo_label.setStyleSheet("color: #888;")
         form.addRow("", self._gizmo_label)
+        mask_row = QtWidgets.QHBoxLayout()
+        self._mask_set_btn = QtWidgets.QPushButton("Set from selection")
+        self._mask_set_btn.setToolTip(
+            "Only the selected vertices (faces / edges are converted) can take weight from this chain - "
+            "on top of the tube and the clip gizmo. Elsewhere the donor / neighbour chains keep it.")
+        self._mask_add_btn = QtWidgets.QPushButton("Add")
+        self._mask_add_btn.setToolTip("Add the selected vertices to the mask.")
+        self._mask_clear_btn = QtWidgets.QPushButton("Clear")
+        self._mask_select_btn = QtWidgets.QPushButton("Select")
+        self._mask_select_btn.setToolTip("Select the mask's vertices in the viewport.")
+        for button in (self._mask_set_btn, self._mask_add_btn, self._mask_clear_btn, self._mask_select_btn):
+            mask_row.addWidget(button)
+        mask_row.addStretch(1)
+        form.addRow("Vertex mask", mask_row)
+        mask_state = QtWidgets.QHBoxLayout()
+        self._mask_warn = QtWidgets.QLabel()
+        self._mask_warn.setPixmap(
+            self.style().standardIcon(QtWidgets.QStyle.SP_MessageBoxWarning).pixmap(16, 16))
+        self._mask_warn.hide()
+        self._mask_label = QtWidgets.QLabel("")
+        self._mask_label.setStyleSheet("color: #888;")
+        mask_state.addWidget(self._mask_warn)
+        mask_state.addWidget(self._mask_label, stretch=1)
+        form.addRow("", mask_state)
         layout.addWidget(bottom_box)
 
-        # Backup / restore
-        backup_box = QtWidgets.QGroupBox("Backup (the skin before any install)")
-        backup_layout = QtWidgets.QVBoxLayout(backup_box)
-        self._backup_label = QtWidgets.QLabel("No backup")
-        backup_layout.addWidget(self._backup_label)
-        backup_row = QtWidgets.QHBoxLayout()
-        self._backup_btn  = QtWidgets.QPushButton("Backup original skin")
-        self._restore_btn = QtWidgets.QPushButton("Restore original skin")
-        backup_row.addWidget(self._backup_btn)
-        backup_row.addWidget(self._restore_btn)
-        backup_layout.addLayout(backup_row)
-        layout.addWidget(backup_box)
+        # DynForge layer: what the installs moved on this skin
+        layer_box = QtWidgets.QGroupBox("DynForge layer (what the installs moved on this skin)")
+        layer_layout = QtWidgets.QVBoxLayout(layer_box)
+        self._layer_label = QtWidgets.QLabel("")
+        self._layer_label.setWordWrap(True)
+        layer_layout.addWidget(self._layer_label)
+        layer_row = QtWidgets.QHBoxLayout()
+        self._remove_layer_btn = QtWidgets.QPushButton("Remove DynForge weights from this skin")
+        self._remove_layer_btn.setToolTip(
+            "Gives back exactly what the installs moved, to the bones they took it from - every other edit "
+            "on the skin (new bones, repaints) stays. The chains stay in the rig at weight 0, locked.")
+        layer_row.addWidget(self._remove_layer_btn)
+        layer_row.addStretch(1)
+        layer_layout.addLayout(layer_row)
+        layout.addWidget(layer_box)
 
         # Connections
         self._register_btn.clicked.connect(self._on_register)
@@ -206,8 +247,12 @@ class SkinPanel(DynForgeWidgetBase):
         self._shape_combo.currentIndexChanged.connect(self._on_shape_changed)
         self._gizmo_btn.clicked.connect(self._on_create_gizmo)
         self._gizmo_del_btn.clicked.connect(self._on_remove_gizmo)
-        self._backup_btn.clicked.connect(self._on_backup)
-        self._restore_btn.clicked.connect(self._on_restore)
+        self._gizmo_size.valueChanged.connect(self._on_gizmo_size)
+        self._mask_set_btn.clicked.connect(self._on_mask_set)
+        self._mask_add_btn.clicked.connect(self._on_mask_add)
+        self._mask_clear_btn.clicked.connect(self._on_mask_clear)
+        self._mask_select_btn.clicked.connect(self._on_mask_select)
+        self._remove_layer_btn.clicked.connect(self._on_remove_layer)
 
         return content
 
@@ -265,13 +310,48 @@ class SkinPanel(DynForgeWidgetBase):
         donors = guide.source_influences or []
         self._donors_label.setText("Donors: " + (", ".join(_short(d) for d in donors) if donors else "-"))
         self._refresh_gizmo_label()
+        self._refresh_mask_label()
         self._refresh_reach()
         self._refresh_sharing()
-        self._refresh_backup_label()
+        self._refresh_layer_label()
+
+    def _refresh_mask_label(self) -> None:
+        guide = self._guide
+        count = guide.mask_count() if hasattr(guide, "mask_count") else 0
+        self._mask_clear_btn.setEnabled(bool(count))
+        self._mask_select_btn.setEnabled(bool(count))
+        if count:
+            meshes = ", ".join(_short(m) for m in guide.skin_mask)
+            self._mask_label.setText(f"{count} vert(s) on {meshes} - the chain takes weight nowhere else")
+        else:
+            self._mask_label.setText("no mask - every vert in the tube / gizmo")
+        # Safety: the mask is vertex indices - a different vertex count means the
+        # topology changed and they may point elsewhere. Flag it, the artist checks with Select.
+        changes = guide.mask_count_changes() if count and hasattr(guide, "mask_count_changes") else []
+        if changes:
+            tip = "Vertex count changed, check if the mask is valid (Select shows it):\n" + "\n".join(
+                f"   {_short(mesh)}: {then} -> {now} verts" for mesh, then, now in changes)
+            self._mask_label.setStyleSheet(f"color: {_ORANGE};")
+            self._mask_label.setToolTip(tip)
+            self._mask_warn.setToolTip(tip)
+            self._mask_warn.show()
+        else:
+            self._mask_label.setStyleSheet("color: #888;")
+            self._mask_label.setToolTip("")
+            self._mask_warn.hide()
+
+    def _refresh_gizmo_size(self) -> None:
+        """The size box follows the gizmo (it may have been scaled in the viewport)."""
+        size = self._guide.gizmo_size() if hasattr(self._guide, "gizmo_size") else None
+        self._gizmo_size.blockSignals(True)
+        self._gizmo_size.setEnabled(size is not None)
+        self._gizmo_size.setValue(int(round(size)) if size is not None else 100)
+        self._gizmo_size.blockSignals(False)
 
     def _refresh_gizmo_label(self) -> None:
         """Clip state, warning in red when the gizmo cuts the chain's own curve."""
         guide = self._guide
+        self._refresh_gizmo_size()
         if not guide.gizmo:
             self._gizmo_label.setStyleSheet("color: #888;")
             self._gizmo_label.setText("no clip - plain tube around the chain")
@@ -319,14 +399,25 @@ class SkinPanel(DynForgeWidgetBase):
         self._sharing_label.setText(
             "Shares donors with: " + "; ".join(shared) if shared else "No other chain takes from these donors.")
 
-    def _refresh_backup_label(self) -> None:
-        has = False
+    def _refresh_layer_label(self) -> None:
         try:
-            has = self._guide.has_skin_backup()
-        except Exception:
-            has = False
-        self._backup_label.setText("Backup stored - installs restore it first" if has else "No backup yet "
-                                   "(taken automatically on the first install)")
+            info = self._guide.skin_layer_info()
+        except Exception as e:
+            info = {"chains": [], "verts": 0, "time": "", "legacy": [], "error": str(e)}
+        if info.get("legacy"):
+            self._layer_label.setStyleSheet("color: #e06c5a;")
+            self._layer_label.setText(
+                f"This skin carries DynForge weights no layer records ({len(info['legacy'])} chain joint(s)) - "
+                "installed before the layer existed and its backup was lost. Install / uninstall refuse it "
+                "until it is recovered.")
+        elif info.get("chains"):
+            self._layer_label.setStyleSheet("")
+            self._layer_label.setText(f"{len(info['chains'])} chain(s) on {info['verts']} vert(s) - "
+                                      f"{', '.join(info['chains'])}  ({info['time']})")
+        else:
+            self._layer_label.setStyleSheet("color: #888;")
+            self._layer_label.setText("No DynForge weight on this skin.")
+        self._remove_layer_btn.setEnabled(bool(info.get("chains")))
 
     # -- Handlers ---------------------------------------------------------
 
@@ -380,12 +471,18 @@ class SkinPanel(DynForgeWidgetBase):
         for name, pct in ranked:
             item = QtWidgets.QTreeWidgetItem([_short(name), f"{pct:.1f}"])
             item.setData(0, _INFL_ROLE, name)
+            if pct <= 0.0:
+                # In the skin, but no weight within the reach radius of the chain.
+                for column in (0, 1):
+                    item.setForeground(column, QtGui.QColor(_ZERO_GREY))
+                    item.setToolTip(column, "No weight within the reach radius of the chain - "
+                                            "raise Scale and Analyze again to include it.")
             self._tree.addTopLevelItem(item)
             item.setSelected(_short(name) in donors)
         self._guide = guide
         self._refresh_labels()
-        if not ranked:
-            self._warn("No skin weight found around the _PIN - raise the reach scale.")
+        if not any(pct > 0.0 for _, pct in ranked):
+            self._warn("No skin weight found around the chain - raise the reach scale.")
 
     def _on_row_double_clicked(self,
                                item,
@@ -479,31 +576,57 @@ class SkinPanel(DynForgeWidgetBase):
         self._guide.delete_gizmo()
         self._refresh_labels()
 
-    def _on_backup(self) -> None:
+    def _on_gizmo_size(self,
+                       value: int,) -> None:
         if self._guide is None:
             return
-        try:
-            if self._guide.has_skin_backup():
-                reply = QtWidgets.QMessageBox.question(
-                    self, "DynForge",
-                    "A backup already exists and every install restores it. Overwrite it "
-                    "with the current skin? Only do this if the current skin has NO DynForge "
-                    "chain installed (e.g. the base rig was updated).",
-                    QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No)
-                if reply != QtWidgets.QMessageBox.Yes:
-                    return
-                self._guide.backup_skin(force=True)
-            else:
-                self._guide.backup_skin()
-        except Exception as e:
-            self._warn(f"Backup failed:\n{e}")
-            return
-        self._refresh_backup_label()
+        self._guide.set_gizmo_size(float(value))
+        self._refresh_gizmo_label()   # coverage may drop below the chain when shrinking
 
-    def _on_restore(self) -> None:
+    def _set_mask(self,
+                  add: bool,) -> None:
         if self._guide is None:
             return
         try:
-            self._guide.restore_skin()
+            self._guide.set_mask_from_selection(add=add)
+        except ValueError as e:
+            self._warn(str(e))
+        self._refresh_mask_label()
+
+    def _on_mask_set(self) -> None:
+        self._set_mask(add=False)
+
+    def _on_mask_add(self) -> None:
+        self._set_mask(add=True)
+
+    def _on_mask_clear(self) -> None:
+        if self._guide is None:
+            return
+        self._guide.clear_mask()
+        self._refresh_mask_label()
+
+    def _on_mask_select(self) -> None:
+        if self._guide is not None:
+            self._guide.select_mask()
+
+    def _on_remove_layer(self) -> None:
+        if self._guide is None:
+            return
+        reply = QtWidgets.QMessageBox.question(
+            self, "DynForge",
+            "Give back every weight the DynForge installs moved on this skin? The other edits stay; "
+            "the chains stay in the rig at weight 0, locked.",
+            QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No)
+        if reply != QtWidgets.QMessageBox.Yes:
+            return
+        peers = self._peers_provider(self._guide.skin_cluster) if self._peers_provider else []
+        try:
+            report = self._guide.remove_skin_layer(skin_peers=tuple(peers))
         except Exception as e:
-            self._warn(f"Restore failed:\n{e}")
+            self._warn(f"Remove failed:\n{e}")
+            return
+        conflicts = report.get("conflicts") or []
+        if conflicts:
+            self._warn(f"Removed, with {len(conflicts)} vertex conflict(s) (edited since the install):\n\n"
+                       + "\n".join(conflicts[:15]))
+        self._refresh_labels()

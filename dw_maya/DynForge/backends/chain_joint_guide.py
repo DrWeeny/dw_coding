@@ -87,6 +87,12 @@ class ChainJointGuide(guide_registry.GuideBackend):
         self.skin_meshes:       list          = []     # meshes it deforms
         self.gizmo:             Optional[str] = None   # optional clip gizmo transform
         self.gizmo_shape:       str           = "box"  # box / sphere / capsule
+        # Optional vertex mask: the only verts the chain may take weight on,
+        # {mesh transform: [[first, last], ...]} (ranges, see skin_ops.to_ranges).
+        self.skin_mask:         dict          = {}
+        # Vertex count of each masked mesh when the mask was set: a different
+        # count now means the topology changed and the indices may be wrong.
+        self.skin_mask_counts:  dict          = {}
         self.source_influences: list          = []     # picked donor bones
         self.parent_bone:       Optional[str] = None   # _PIN parent (donor bone)
         self.power:             float         = 1.0    # spatial-cascade falloff
@@ -162,6 +168,51 @@ class ChainJointGuide(guide_registry.GuideBackend):
 
     def _points_group(self) -> str:
         return dw_chain_guide.ensure_locator_group(self.name, parent=self.guide_group())
+
+    def refresh_references(self) -> list:
+        """
+        Re-resolve every scene name the recipe stores - parent bone, donors,
+        skinCluster, meshes, vertex-mask keys - to what it is called NOW
+        (skin_ops.resolve_node, namespace-agnostic). A studio pipeline
+        namespaces its containers' content on save / reload (an artist's
+        BB_M_0_Hips comes back as _SKL_X_:BB_M_0_Hips), which left every stored
+        long path dangling and made install / uninstall fail after a reopen.
+        Writes the recipe back when something was renamed. Returns the names
+        that could not be resolved (gone, or ambiguous) - kept as they were.
+        """
+        lost, changed = [], [False]
+
+        def fix(stored):
+            if not stored:
+                return stored
+            if cmds.objExists(stored) and len(cmds.ls(stored) or []) == 1:
+                return stored   # still names one node: nothing to do (and no recipe write - it is undoable)
+            now = skin_ops.resolve_node(stored)
+            if now is None:
+                lost.append(stored)
+                return stored
+            changed[0] = True
+            return now
+
+        self.parent_bone = fix(self.parent_bone)
+        self.source_influences = [fix(d) for d in self.source_influences]
+        self.skin_meshes = [fix(m) for m in self.skin_meshes]
+        if self.skin_cluster and not cmds.objExists(self.skin_cluster):
+            found = cmds.ls(_bare(self.skin_cluster), recursive=True, type="skinCluster") or []
+            if len(found) == 1:
+                self.skin_cluster, changed[0] = found[0], True
+            else:
+                lost.append(self.skin_cluster)
+        if self.skin_mask:
+            renamed = {mesh: fix(mesh) for mesh in self.skin_mask}
+            self.skin_mask = {renamed[m]: r for m, r in self.skin_mask.items()}
+            self.skin_mask_counts = {renamed.get(m, m): c for m, c in self.skin_mask_counts.items()}
+        if lost:
+            logger.warning(f"DynForge: {self.name} - cannot find {', '.join(_bare(n) for n in lost)} "
+                           f"in the scene (deleted, or several nodes now share that name).")
+        if changed[0]:
+            self.store_recipe()
+        return lost
 
     def store_recipe(self) -> None:
         """Write to_dict() onto the guide group (no-op until the group exists)."""
@@ -779,6 +830,81 @@ class ChainJointGuide(guide_registry.GuideBackend):
         self.gizmo = None
         self.store_recipe()
 
+    def gizmo_size(self) -> Optional[float]:
+        """The clip gizmo's size in % of its fitted size (None without gizmo)."""
+        if not (self.gizmo and cmds.objExists(self.gizmo)):
+            return None
+        return 100.0 * skin_ops.gizmo_size_factor(self.gizmo)
+
+    @dw_undo.singleUndoChunk
+    def set_gizmo_size(self,
+                       percent: float,) -> None:
+        """
+        Grow / shrink the clip gizmo around its centre to `percent` of its
+        fitted size. Relative to its current scale, so a viewport scale (even a
+        non-uniform one) is kept in proportion rather than overwritten.
+        """
+        if self.gizmo and cmds.objExists(self.gizmo):
+            skin_ops.set_gizmo_size_factor(self.gizmo, max(percent, 1.0) / 100.0)
+
+    # -- Vertex mask ------------------------------------------------------
+
+    def mask_count(self) -> int:
+        """How many vertices the mask allows (0 = no mask: the whole tube)."""
+        return sum(len(skin_ops.from_ranges(r)) for r in self.skin_mask.values())
+
+    def set_mask_from_selection(self,
+                                add: bool = False,) -> int:
+        """
+        Store the selected vertices (faces / edges / objects are converted) of
+        the guide's registered meshes as its mask - replacing it, or added to it
+        with `add`. Returns the mask's vertex count; raises when nothing
+        selected is on a registered mesh.
+        """
+        registered = {cmds.ls(m, long=True)[0] for m in self.skin_meshes if cmds.objExists(m)}
+        picked = {mesh: vids for mesh, vids in skin_ops.selected_vertices().items() if mesh in registered}
+        if not picked:
+            raise ValueError("Select vertices (or faces / edges) on the guide's registered mesh.")
+        mask = {mesh: skin_ops.from_ranges(r) for mesh, r in self.skin_mask.items()} if add else {}
+        for mesh, vids in picked.items():
+            mask[mesh] = mask.get(mesh, set()) | vids
+            self.skin_mask_counts[mesh] = cmds.polyEvaluate(mesh, vertex=True)
+        self.skin_mask = {mesh: skin_ops.to_ranges(vids) for mesh, vids in mask.items()}
+        self.skin_mask_counts = {m: c for m, c in self.skin_mask_counts.items() if m in self.skin_mask}
+        self.store_recipe()
+        return self.mask_count()
+
+    def mask_count_changes(self) -> list:
+        """
+        [(mesh, count when the mask was set, count now)] for every masked mesh
+        whose vertex count changed - the mask's indices may point at other
+        vertices now. A mesh with no recorded count (older recipe) is not
+        reported: there is nothing to compare against.
+        """
+        changes = []
+        for mesh, then in self.skin_mask_counts.items():
+            if mesh in self.skin_mask and cmds.objExists(mesh):
+                now = cmds.polyEvaluate(mesh, vertex=True)
+                if now != then:
+                    changes.append((mesh, then, now))
+        return changes
+
+    def clear_mask(self) -> None:
+        self.skin_mask = {}
+        self.skin_mask_counts = {}
+        self.store_recipe()
+
+    def select_mask(self) -> None:
+        """Select the mask's vertices in the viewport (to check or edit it)."""
+        components = []
+        for mesh, ranges in self.skin_mask.items():
+            if cmds.objExists(mesh):
+                components += [f"{mesh}.vtx[{first}:{last}]" for first, last in ranges]
+        if components:
+            cmds.select(components, replace=True)
+        else:
+            cmds.select(clear=True)
+
     def reach(self) -> tuple:
         """
         Return (nearest bone, base radius, radius): the base is the distance from
@@ -795,10 +921,18 @@ class ChainJointGuide(guide_registry.GuideBackend):
 
     def analyze(self) -> list:
         """
-        Rank the skinCluster influences around the _PIN (within the reach radius)
-        - the bone(s) the chain most likely hangs from. When nothing is picked
-        yet, the top one is taken as donor and as parent bone.
+        Rank the skinCluster influences under the whole chain (within the reach
+        radius of its curve; around the _PIN before there is a curve) - the
+        bones it takes weight from. Reads the vanilla skin when it has a backup,
+        so an installed chain is analysed against what it took from, and never
+        lists DynForge chain joints. When nothing is picked yet, the top one is
+        taken as the donor (more are the artist's pick), and the top one AT THE _PIN as parent bone (a strip
+        hangs from its root, wherever most of its weight comes from).
+        A donor that is a DynForge chain joint (picked from a list read on an
+        installed skin before this was fixed) is dropped with a warning: the
+        vanilla skin gives it no weight, so the chain would take nothing.
         """
+        self.refresh_references()
         if not self.skin_cluster:
             raise ValueError("Register a skinned mesh first.")
         if not self.pin_joint:
@@ -806,26 +940,41 @@ class ChainJointGuide(guide_registry.GuideBackend):
         _, _, radius = self.reach()
         if radius <= 0.0:
             raise ValueError("No skin joint found around the _PIN to size the radius.")
-        ranked = skin_ops.attachment_candidates(self.skin_cluster, self.pin_joint, radius)
-        if ranked and not self.source_influences:
-            self.source_influences = [ranked[0][0]]
-        if ranked and not self.parent_bone:
-            self.parent_bone = cmds.ls(ranked[0][0], long=True)[0]
+        curve = self.source_curve if self.source_curve and cmds.objExists(self.source_curve) else None
+        ranked = skin_ops.attachment_candidates(self.skin_cluster, self.pin_joint, radius, curve=curve)
+        stale = [d for d in self.source_influences if skin_ops.is_chain_joint(d)]
+        if stale:
+            logger.warning(f"DynForge: {self.name} had DynForge chain joint(s) as donor - dropped: "
+                           f"{', '.join(_bare(d) for d in stale)}")
+            self.source_influences = [d for d in self.source_influences if d not in stale]
+        weighted = [(name, pct) for name, pct in ranked if pct > 0.0]   # the list also shows 0% bones
+        if weighted and not self.source_influences:
+            # The top bone only (user, 2026-10-07): several donors are the
+            # artist's call, made by selecting more rows in the list.
+            self.source_influences = [weighted[0][0]]
+        if not self.parent_bone or skin_ops.is_chain_joint(self.parent_bone):
+            at_pin = skin_ops.attachment_candidates(self.skin_cluster, self.pin_joint, radius) if curve else ranked
+            at_pin = [(name, pct) for name, pct in at_pin if pct > 0.0]
+            if at_pin:
+                self.parent_bone = cmds.ls(at_pin[0][0], long=True)[0]
         self.store_recipe()
         return ranked
 
     def skin_spec(self) -> dict:
         """The plain-dict description skin_ops.compute_split / install_chains use."""
+        self.refresh_references()
         _, _, radius = self.reach()
         return {
             "name":        self.name,
             "joints":      list(self._chain.joints),
             "curve":       self.source_curve,
-            "donors":      list(self.source_influences),
+            # A chain never takes from a chain: a stale chain-joint donor would take nothing.
+            "donors":      [d for d in self.source_influences if not skin_ops.is_chain_joint(d)],
             "radius":      radius,
             "power":       self.power,
             "gizmo":       self.gizmo if self.gizmo and cmds.objExists(self.gizmo) else None,
             "gizmo_shape": self.gizmo_shape,
+            "mask":        {mesh: skin_ops.from_ranges(r) for mesh, r in self.skin_mask.items()} or None,
         }
 
     def inspect_influence(self,
@@ -844,22 +993,49 @@ class ChainJointGuide(guide_registry.GuideBackend):
         self.store_recipe()
         return self.parent_bone
 
-    def has_skin_backup(self) -> bool:
-        """True if the registered skinCluster carries a DynForge weight backup."""
-        return bool(self.skin_cluster) and skin_ops.has_backup(self.skin_cluster)
+    def skin_layer_info(self) -> dict:
+        """
+        The DynForge layer of the registered skinCluster, for display:
+        {"chains": [...], "verts": n, "time": str, "legacy": [chain joints
+        carrying weight that no layer records]}.
+        """
+        info = {"chains": [], "verts": 0, "time": "", "legacy": []}
+        if not (self.skin_cluster and cmds.objExists(self.skin_cluster)):
+            return info
+        layer = skin_ops.load_layer(self.skin_cluster, skin_ops._part_of(self))
+        if layer:
+            info["chains"] = list(layer.get("chains") or [])
+            info["verts"] = sum(len(rows) for rows in (layer.get("shapes") or {}).values())
+            info["time"] = layer.get("time", "")
+        elif not skin_ops.has_backup(self.skin_cluster):
+            info["legacy"] = skin_ops.chain_weighted_influences(self.skin_cluster)
+        return info
 
-    def backup_skin(self,
-                    force: bool = False,) -> bool:
-        """Back up the registered skinCluster's weights (no overwrite unless force)."""
-        if not self.skin_cluster:
+    @dw_undo.singleUndoChunk
+    def remove_skin_layer(self,
+                          skin_peers: tuple = (),) -> dict:
+        """
+        Take every DynForge weight off the registered skinCluster (all its
+        chains), one undo step; the chains stay in the rig, reserved at weight
+        0 and locked like an install without skin. Returns the removal report.
+        """
+        self.refresh_references()
+        if not (self.skin_cluster and cmds.objExists(self.skin_cluster)):
             raise ValueError("Register a skinned mesh first.")
-        return skin_ops.backup_skin(self.skin_cluster, force=force)
-
-    def restore_skin(self) -> None:
-        """Restore the registered skinCluster to its DynForge backup."""
-        if not self.skin_cluster:
-            raise ValueError("Register a skinned mesh first.")
-        skin_ops.restore_skin(self.skin_cluster)
+        same_skin = [g for g in tuple(skin_peers) + (self,)
+                     if getattr(g, "skin_cluster", None) == self.skin_cluster]
+        placed = [g for g in dict.fromkeys(same_skin) if getattr(g, "installed", False)]
+        part = skin_ops._part_of(self)
+        keep = [j for g in placed for j in g.chain_joints]
+        report = skin_ops.strip_dynforge(self.skin_cluster, keep_joints=keep, part=part) or {}
+        skin_ops.save_layer(self.skin_cluster, None, skin_ops.layer_home(self), part)
+        for guide in dict.fromkeys(same_skin):
+            if getattr(guide, "installed", False):
+                skin_ops.reserve_influences(self.skin_cluster, guide.chain_joints)
+            if getattr(guide, "skin_installed", False):
+                guide.skin_installed = False
+                guide.store_recipe()
+        return report
 
     def is_installable(self,
                        with_skin: bool = True,) -> bool:
@@ -892,6 +1068,7 @@ class ChainJointGuide(guide_registry.GuideBackend):
         skin_ops.install_chains. Returns the setup home, or None when the guide
         stayed where it was.
         """
+        self.refresh_references()
         host = forge_host.get_host()
         if self._chain is not None and self._chain.joints:
             joints = host.install_chain(self)
@@ -911,22 +1088,40 @@ class ChainJointGuide(guide_registry.GuideBackend):
                   skin_peers: tuple = (),) -> None:
         """
         Revert the install, one undo step:
-        - weights: when this guide's weights were installed, its skinCluster is
-          rebuilt without it - the other skin-installed guides in `skin_peers`
-          are re-applied from the vanilla backup, or the backup is restored
-          as-is when none remains;
+        - weights: when this guide's weights were installed, the skin's
+          DynForge layer is taken off (the other departments' edits stay) and
+          the other skin-installed guides in `skin_peers` are re-applied, or
+          the skin is left without DynForge weight when none remains;
         - hierarchy: the host puts the chain back under the guide group with
           its build names (and drops what it created for it, e.g. a ghost).
         The guide group stays in its setup home.
         """
-        if self.skin_installed and self.skin_cluster and cmds.objExists(self.skin_cluster):
-            remaining = [g for g in skin_peers
-                         if g is not self and getattr(g, "skin_installed", False)
-                         and getattr(g, "skin_cluster", None) == self.skin_cluster]
+        self.refresh_references()
+        has_skin = bool(self.skin_cluster and cmds.objExists(self.skin_cluster))
+        if self.skin_installed and has_skin:
+            same_skin = [g for g in skin_peers
+                         if g is not self and getattr(g, "skin_cluster", None) == self.skin_cluster]
+            remaining = [g for g in same_skin if getattr(g, "skin_installed", False)]
+            # Peers installed without skin keep their 0-weight locked influences.
+            reserved = tuple(g for g in same_skin
+                             if getattr(g, "installed", False) and not getattr(g, "skin_installed", False))
             if remaining:
-                skin_ops.install_skin(self.skin_cluster, remaining)
-            elif skin_ops.has_backup(self.skin_cluster):
-                skin_ops.restore_skin(self.skin_cluster)
+                skin_ops.install_skin(self.skin_cluster, remaining, reserved=reserved)
+            else:
+                # Raises before changing anything on a skin whose DynForge weight
+                # no layer records (installed before the layer, record lost).
+                part = skin_ops._part_of(self)
+                keep = [j for g in reserved for j in g.chain_joints]
+                skin_ops.strip_dynforge(self.skin_cluster, keep_joints=keep, part=part)
+                skin_ops.save_layer(self.skin_cluster, None, skin_ops.layer_home(self), part)
+                for guide in reserved:
+                    skin_ops.reserve_influences(self.skin_cluster, guide.chain_joints)
+        elif self.installed and has_skin:
+            # Installed without skin: its joints were reserved at weight 0 - take them out again.
+            painted = skin_ops.release_influences(self.skin_cluster, self.chain_joints)
+            if painted:
+                logger.warning(f"DynForge: {self.name} had weight painted on {len(painted)} joint(s) - "
+                               f"removed with the chain, Maya gave it back to the other influences.")
         if self._chain is not None and self._chain.joints:
             joints = forge_host.get_host().uninstall_chain(self)
             if joints:
@@ -971,6 +1166,8 @@ class ChainJointGuide(guide_registry.GuideBackend):
             "skin_meshes":       self.skin_meshes,
             "gizmo":             self.gizmo,
             "gizmo_shape":       self.gizmo_shape,
+            "skin_mask":         self.skin_mask,
+            "skin_mask_counts":  self.skin_mask_counts,
             "source_influences": self.source_influences,
             "parent_bone":       self.parent_bone,
             "power":             self.power,
@@ -1006,6 +1203,8 @@ class ChainJointGuide(guide_registry.GuideBackend):
         guide.skin_cluster      = data.get("skin_cluster")
         guide.skin_meshes       = list(data.get("skin_meshes", []))
         guide.gizmo_shape       = data.get("gizmo_shape", "box")
+        guide.skin_mask         = dict(data.get("skin_mask") or {})
+        guide.skin_mask_counts  = dict(data.get("skin_mask_counts") or {})
         guide.source_influences = list(data.get("source_influences", []))
         guide.parent_bone       = data.get("parent_bone")
         guide.power             = data.get("power", 1.0)
@@ -1027,7 +1226,9 @@ class ChainJointGuide(guide_registry.GuideBackend):
             if cmds.getAttr(f"{group}.{GUIDE_TAG}") != cls.type_name:
                 continue
             try:
-                found.append(cls._from_scene_group(group))
+                guide = cls._from_scene_group(group)
+                guide.refresh_references()   # names may have changed since the recipe was written
+                found.append(guide)
             except Exception as e:
                 logger.warning(f"discover: could not restore {group!r}: {e}")
         return found

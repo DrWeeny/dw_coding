@@ -42,6 +42,7 @@ from dw_maya.DynForge.wgt_install_panel import InstallPanel
 from dw_maya.DynForge import forge_host
 from dw_maya.DynForge.forge_cmds import skin_ops
 from dw_maya.DynForge import guide_registry
+from dw_maya.dw_decorators import dw_undo
 from dw_logger import get_logger
 
 logger = get_logger()
@@ -211,8 +212,12 @@ class DynForgeUI(DynForgeMainWindow):
                 # re-applied with the batch (install always restarts from vanilla).
                 batch = group + [p for p in self.guides_on_skin(skin)
                                  if p not in group and getattr(p, "skin_installed", False)]
+                # Installed without skin: their 0-weight locked influences survive the restore.
+                reserved = tuple(p for p in self.guides_on_skin(skin)
+                                 if p not in batch and getattr(p, "installed", False)
+                                 and not getattr(p, "skin_installed", False))
                 try:
-                    stats = skin_ops.install_skin(skin, batch)
+                    stats = skin_ops.install_skin(skin, batch, reserved=reserved)
                 except Exception as e:
                     logger.error(f"DynForge: install on {skin!r} failed: {e}")
                     traceback.print_exc()
@@ -223,23 +228,52 @@ class DynForgeUI(DynForgeMainWindow):
         else:
             for guide in ready:
                 try:
-                    guide.install_pin()
+                    self._install_without_skin(guide)
                 except Exception as e:
                     logger.error(f"DynForge: install of {guide.name!r} failed: {e}")
                     traceback.print_exc()
                     QtWidgets.QMessageBox.warning(self, "DynForge", f"Install of {guide.name} failed:\n{e}")
                     continue
-                lines.append(f"   {guide.name}: placed in the rig (skin untouched)")
+                if guide.skin_cluster and cmds.objExists(guide.skin_cluster):
+                    lines.append(f"   {guide.name}: placed in the rig, joints added to "
+                                 f"{guide.skin_cluster.split('|')[-1]} at weight 0, locked")
+                else:
+                    lines.append(f"   {guide.name}: placed in the rig (no skinCluster registered)")
 
         for guide in self.list_panel.all_guides():
             self.skin_panel.reload_if_current(guide)
             self.list_panel.refresh_guide(guide)
         if skipped:
             lines += ["", "Not ready, skipped:"] + [f"   {name}" for name in skipped]
+        # The setups just moved to their studio home: the groups they left are empty now.
+        emptied = self._remove_empty_setups()
+        if emptied:
+            lines += ["", f"Cleaned {emptied} empty setup group(s)."]
         if lines:
             QtWidgets.QMessageBox.information(self, "DynForge", "Installed\n\n" + "\n".join(lines))
         self._changed()
         self._offer_json_for_homeless(ready)
+
+    @dw_undo.singleUndoChunk
+    def _install_without_skin(self,
+                              guide,) -> None:
+        """
+        Place the chain in the rig and, when the guide has a skinCluster, add its
+        joints to it at weight 0, locked - wired for skinning, taking nothing
+        until a skin install. One undo step.
+        """
+        guide.install_pin()
+        if guide.skin_cluster and cmds.objExists(guide.skin_cluster):
+            skin_ops.reserve_influences(guide.skin_cluster, guide.chain_joints)
+
+    @staticmethod
+    def _remove_empty_setups() -> int:
+        """Delete the host's setup groups left with no child. Returns how many."""
+        empty = [s for s in forge_host.get_host().list_setups()
+                 if cmds.objExists(s) and not cmds.listRelatives(s, children=True)]
+        if empty:
+            cmds.delete(empty)
+        return len(empty)
 
     def _uninstall(self,
                    guides: list,) -> None:
@@ -275,11 +309,9 @@ class DynForgeUI(DynForgeMainWindow):
             guide.delete_gizmo()
         if gizmos:
             removed.append(f"{len(gizmos)} clip gizmo(s)")
-        empty = [s for s in forge_host.get_host().list_setups()
-                 if cmds.objExists(s) and not cmds.listRelatives(s, children=True)]
-        if empty:
-            cmds.delete(empty)
-            removed.append(f"{len(empty)} empty setup group(s)")
+        emptied = self._remove_empty_setups()
+        if emptied:
+            removed.append(f"{emptied} empty setup group(s)")
         for guide in guides:
             self.skin_panel.reload_if_current(guide)
         self._changed()

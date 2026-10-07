@@ -147,6 +147,24 @@ class ForgeHost(object):
         bone = getattr(guide, "parent_bone", None)
         return bone.split("|")[-1] if bone else "-"
 
+    def install_choices(self,
+                        guide,
+                        column: str,) -> tuple:
+        """
+        What the Install tab offers in a guide's `column` cell ("target" or
+        "home"): (options, current), options being display names, current the
+        one install would use now. Empty options = the cell is plain text, not
+        a combo. Default: no choice. A studio host lists e.g. the containers of
+        the guide's part it can install into.
+        """
+        return [], ""
+
+    def set_install_choice(self,
+                           guide,
+                           column: str,
+                           value:  str,) -> None:
+        """Remember the option picked in the Install tab (in guide.host_data); used by the next install."""
+
     def extra_tabs(self,
                    context,) -> list:
         """
