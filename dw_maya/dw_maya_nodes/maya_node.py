@@ -119,6 +119,9 @@ class MayaNode(ObjPointer):
             >>> # transform carrying several shapes (rig / groom):
             >>> second_shape = node[2].node
         """
+        # An explicit pick silences the tr/sh ambiguity warning for the next
+        # attribute lookup only: node[0].visibility is a choice, node.visibility a guess.
+        self.__dict__['_explicit_item'] = True
         return self.set_node(index)
 
     def __getattr__(self, attr: str):
@@ -126,7 +129,8 @@ class MayaNode(ObjPointer):
             Override to dynamically access Maya node attributes.
             Caches compound attributes to optimize repeated access and set them
         if you type an attribute, it will try to find if it exists in either shape or transform
-        if it exists in both, it will always warn you that it returns shape in priority
+        if it exists in both, it warns that it uses the current node (shape by default),
+        unless the node was picked explicitly: ``mn[0].visibility`` is silent
         ``mn = MayaNode('pCube1')``
         ``mn.translateX = 10`` result in doing a cmds.setAttr
         ``mn.translateX.setAttr(10)``
@@ -548,12 +552,14 @@ class MayaNode(ObjPointer):
 
         The transform/shape auto-switch behind attribute access: the current
         node wins when it has the attribute (warning when the other one has
-        it too); otherwise the item index moves to whichever node has it, so
+        it too, unless the node was picked explicitly with ``node[i]``);
+        otherwise the item index moves to whichever node has it, so
         ``self.node`` keeps answering for the attribute just reached.
 
         Returns:
             The node name carrying ``attr``, or None when neither has it.
         """
+        explicit = self.__dict__.pop('_explicit_item', False)
         tr = self.tr
         sh = self.sh
         # Same answer as self.node, without resolving tr/sh a second time.
@@ -561,7 +567,7 @@ class MayaNode(ObjPointer):
         current, other = (tr or sh, sh) if on_tr else (sh or tr, tr)
 
         if self._has_plug(current, attr):
-            if other != current and self._has_plug(other, attr):
+            if not explicit and other != current and self._has_plug(other, attr):
                 logger.warning(
                     f"Attribute `{attr}` exists in both shape and transform, using: {current}.{attr}")
             return current
