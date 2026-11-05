@@ -19,7 +19,7 @@
 - Do not use the walrus operator (`:=`).
 
 ## Strings & Formatting
-- Always use f-strings for string formatting.
+- Always use f-strings for string formatting if possible.
 
 ## Qt Guidelines
 - Prefer PySide6 for Maya tools.

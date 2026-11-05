@@ -1,5 +1,5 @@
 """
-main_ui.py - DynForge main window.
+main_ui.py - DynForge main widget (DynForgeUI, embeddable) and its standalone window (DynForgeWindow).
 
 Layout
 ------
@@ -20,6 +20,11 @@ applies the editor params then builds / rebuilds the guide.
 Launch from inside Maya:
     from dw_maya.DynForge import main_ui
     main_ui.launch()
+
+Embed in another tool (an aggregator of dyn widgets):
+    forge = main_ui.DynForgeUI()
+    tabs.addTab(forge, "Guides")
+    forge.menu_bar.hide()            # optional: merge forge.save_action / load_action instead
 """
 
 from __future__ import annotations
@@ -32,7 +37,7 @@ from functools import partial
 import maya.cmds as cmds
 
 from dw_maya.DynForge.forge_cmds.compat import QtCore, QtWidgets, Qt, qt_exec, wrapInstance
-from dw_maya.DynForge.wgt_base import DynForgeMainWindow, ForgeContext
+from dw_maya.DynForge.wgt_base import DynForgeWidget, ForgeContext
 from dw_maya.DynForge.wgt_naming_panel import NamingPanel
 from dw_maya.DynForge.wgt_attr_editor import GuideAttrEditor
 from dw_maya.DynForge.wgt_guide_list import GuideListPanel
@@ -50,14 +55,27 @@ logger = get_logger()
 _VALID_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")   # a legal Maya node name
 
 
-class DynForgeUI(DynForgeMainWindow):
-    """DynForge main window: name, list, edit and build guides."""
+class DynForgeUI(DynForgeWidget):
+    """
+    DynForge as a plain QWidget: name, list, edit and build guides.
+
+    Embeddable as is (a tab of another tool); launch() shows it inside a
+    DynForgeWindow. Its own System menu bar is `menu_bar` (hide it when the
+    host window merges `save_action` / `load_action` into its own menus).
+
+    State is persisted by store_state() - defaults to QSettings, each guide's
+    recipe onto the scene. A child widget never gets closeEvent when its
+    top-level window closes, so the widget watches whatever window it is shown
+    in and stores its state when that window closes; a host may also call
+    store_state() itself (before a scene save, a tab removal...), any number
+    of times.
+    """
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
-        self.setWindowTitle("DynForge")
+        self.setWindowTitle("DynForge")   # used when shown on its own
         self.setObjectName("DynForgeUI")
-        self.resize(860, 600)
+        self._watched_window = None       # the top-level window whose close stores the state
 
         self._settings = QtCore.QSettings("dw_open_tools", "DynForge")
         self._defaults = self._load_defaults()
@@ -87,11 +105,8 @@ class DynForgeUI(DynForgeMainWindow):
         self._changed()
 
     def _build_ui(self) -> None:
-        self._build_menu()
-
-        central = QtWidgets.QWidget()
-        self.setCentralWidget(central)
-        layout = QtWidgets.QVBoxLayout(central)
+        layout = QtWidgets.QVBoxLayout(self)
+        self._build_menu(layout)
 
         naming = dict(forge_host.get_host().naming_defaults())
         # The last prefix typed wins over the host default; never saved = host default.
@@ -355,12 +370,16 @@ class DynForgeUI(DynForgeMainWindow):
         if reply == QtWidgets.QMessageBox.Yes:
             self._save_json(homeless)
 
-    def _build_menu(self) -> None:
-        menu = self.menuBar().addMenu("System")
-        act_save = menu.addAction("Save JSON...")
-        act_load = menu.addAction("Load...")
-        act_save.triggered.connect(self._on_save_json)
-        act_load.triggered.connect(self._on_load)
+    def _build_menu(self,
+                    layout: QtWidgets.QLayout,) -> None:
+        """A QMenuBar held by the layout (a QWidget has no menuBar()); actions public for a host menu."""
+        self.menu_bar = QtWidgets.QMenuBar(self)
+        menu = self.menu_bar.addMenu("System")
+        self.save_action = menu.addAction("Save JSON...")
+        self.load_action = menu.addAction("Load...")
+        self.save_action.triggered.connect(self._on_save_json)
+        self.load_action.triggered.connect(self._on_load)
+        layout.setMenuBar(self.menu_bar)
 
     def _connect(self) -> None:
         self.list_panel.add_requested.connect(self._on_add)
@@ -711,20 +730,72 @@ class DynForgeUI(DynForgeMainWindow):
         self._populate(guides)
         logger.info(f"DynForge: loaded {len(guides)} guide(s) from the scene.")
 
-    def closeEvent(self, event):
-        self._save_defaults()
+    # -- State / lifetime -------------------------------------------------
+
+    def store_state(self) -> None:
+        """Persist the build defaults (QSettings) and every guide's recipe (scene). Repeatable, non-destructive."""
+        try:
+            self._save_defaults()
+        except Exception as e:
+            logger.warning(f"DynForge: could not save the defaults: {e}")
         for guide in self.list_panel.all_guides():
             try:
                 if hasattr(guide, "store_recipe"):
                     guide.store_recipe()
             except Exception as e:
                 logger.warning(f"DynForge: could not store the recipe of {guide.name!r}: {e}")
+
+    def showEvent(self, event):
+        """(Re)attach the close watch to the current top-level window - it changes when re-parented."""
+        self._watch_window(self.window())
+        super().showEvent(event)
+
+    def _watch_window(self,
+                      window: QtWidgets.QWidget,) -> None:
+        if window is self._watched_window:
+            return
+        if self._watched_window is not None:
+            try:
+                self._watched_window.removeEventFilter(self)
+            except RuntimeError:   # the old window's C++ side is already gone
+                pass
+        # Shown on its own, the widget IS its window: closeEvent below covers it.
+        self._watched_window = window if window is not self else None
+        if self._watched_window is not None:
+            self._watched_window.installEventFilter(self)
+
+    def eventFilter(self, watched, event):
+        # Seen before the window's own closeEvent, which may still ignore() it: harmless,
+        # store_state() leaves the widget fully usable.
+        if watched is self._watched_window and event.type() == QtCore.QEvent.Close:
+            self.store_state()
+        return super().eventFilter(watched, event)
+
+    def closeEvent(self, event):
+        self.store_state()
         super().closeEvent(event)
 
 
 # ============================================================================
 # LAUNCH
 # ============================================================================
+
+class DynForgeWindow(QtWidgets.QMainWindow):
+    """
+    The standalone DynForge window: a QMainWindow holding one DynForgeUI (`forge`).
+
+    No closeEvent override: the forge watches this window and stores its state on
+    close - a second store here would write every recipe twice (two undo entries).
+    """
+
+    def __init__(self, parent=None) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("DynForge")
+        self.setObjectName("DynForgeWindow")
+        self.resize(860, 600)
+        self.forge = DynForgeUI()
+        self.setCentralWidget(self.forge)
+
 
 _window = None   # module-level ref so the window is not garbage-collected
 
@@ -741,8 +812,14 @@ def _maya_main_window():
     return wrapInstance(int(ptr), QtWidgets.QWidget)
 
 
-def launch():
-    """Create (or re-show) the DynForge window, parented to Maya."""
+def launch() -> DynForgeUI:
+    """
+    Create (or re-create) the standalone DynForge window, parented to Maya, and
+    return its DynForgeUI (the window itself is `.window()`, kept alive here).
+
+    To embed DynForge in another tool instead, build the widget yourself:
+        tabs.addTab(main_ui.DynForgeUI(), "Guides")
+    """
     global _window
     if _window is not None:
         try:
@@ -752,6 +829,6 @@ def launch():
             pass
         _window = None
 
-    _window = DynForgeUI(parent=_maya_main_window())
+    _window = DynForgeWindow(parent=_maya_main_window())
     _window.show()
-    return _window
+    return _window.forge

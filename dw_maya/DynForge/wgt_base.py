@@ -2,8 +2,9 @@
 wgt_base.py - DynForge base widget classes with built-in DataHub integration.
 
 Mirrors DynEval's sim_widget/wgt_base.py: a small per-window observable hub plus
-a QMainWindow base and a QWidget base that track their subscriptions and clean
-them up on close.
+a QWidget base for the whole tool (embeddable; main_ui.DynForgeWindow wraps it
+for the standalone window) and a QWidget base for panels that tracks its
+subscriptions and cleans them up on close.
 
 Usage
 -----
@@ -112,19 +113,24 @@ class DataHub:
 # MAIN WINDOW BASE
 # ============================================================================
 
-class DynForgeMainWindow(QtWidgets.QMainWindow):
-    """Base for DynForgeUI: owns the DataHub and tracks its own subscriptions."""
+class DynForgeWidget(QtWidgets.QWidget):
+    """
+    Base for DynForgeUI: a plain QWidget owning the DataHub, so the whole tool
+    embeds in another window (a tab of an aggregator) as well as it stands alone.
+
+    No subscription cleanup on close: the hub belongs to this widget and dies
+    with it, and a child widget never receives closeEvent when its top-level
+    window closes anyway - DynForgeUI hooks the top-level close itself.
+    """
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
         self.hub = DataHub()
-        self._subs: list = []
 
     def hub_subscribe(self,
                       key:      str,
                       callback: Callable[[Any, Any], None],) -> None:
         self.hub.subscribe(key, callback)
-        self._subs.append((key, callback))
 
     def hub_publish(self,
                     key:   str,
@@ -135,12 +141,6 @@ class DynForgeMainWindow(QtWidgets.QMainWindow):
                 key:     str,
                 default: Any = None,) -> Any:
         return self.hub.get(key, default)
-
-    def closeEvent(self, event):
-        for key, cb in self._subs:
-            self.hub.unsubscribe(key, cb)
-        self._subs.clear()
-        super().closeEvent(event)
 
 
 # ============================================================================
