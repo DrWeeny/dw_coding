@@ -70,7 +70,7 @@ def split_group(state: SeriesState, group_id: str, photos_to_split_off: list[str
     group.suggested_hashtags = _partition(group.suggested_hashtags, remaining)
 
     new_group = Group(
-        id=f"{group.id}-split",
+        id=state.next_group_id(),
         date=group.date,
         photos=split_off,
         suggested_captions=split_off_captions,

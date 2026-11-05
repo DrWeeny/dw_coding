@@ -76,15 +76,13 @@ def sync_series(source_dir: Path, caption_template: str = "") -> SeriesState:
 
     candidates.sort(key=lambda item: item[1])
 
-    next_index = len(state.groups)
     for name, dt in candidates:
         state.groups.append(
             Group(
-                id=f"{source_dir.name}-{next_index:04d}",
+                id=state.next_group_id(),
                 date=dt.date().isoformat(),
                 photos=[name],
             )
         )
-        next_index += 1
 
     return state

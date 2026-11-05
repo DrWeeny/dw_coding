@@ -112,7 +112,31 @@ class SeriesState:
             return None
         data = json.loads(path.read_text(encoding="utf-8"))
         groups = [Group(**_migrate_group(g)) for g in data.pop("groups", [])]
-        return cls(groups=groups, **data)
+        state = cls(groups=groups, **data)
+        state._repair_duplicate_ids()
+        return state
+
+    def next_group_id(self) -> str:
+        """An id no current group uses. Never derive one from len(groups)
+        alone: a merge shrinks the list while the higher ids stay in use, so
+        the length points straight back at an id that's already taken."""
+        taken = {g.id for g in self.groups}
+        index = len(self.groups)
+        while f"{self.series_name}-{index:04d}" in taken:
+            index += 1
+        return f"{self.series_name}-{index:04d}"
+
+    def _repair_duplicate_ids(self) -> None:
+        """Heal state files written while the scanner could reissue a taken
+        id. The first occurrence keeps its id and later ones get a new one.
+        Deterministic, so MainWindow and TodayPanel, which each load their
+        own copy, agree on the result. Nothing outside this file refers to a
+        group id, so renaming one is safe."""
+        seen: set[str] = set()
+        for group in self.groups:
+            if group.id in seen:
+                group.id = self.next_group_id()
+            seen.add(group.id)
 
     def save(self) -> None:
         path = self.state_path(Path(self.source_dir))
