@@ -48,6 +48,7 @@ logger = get_logger()
 GUIDE_TAG   = "dwForgeGuide"    # string attr on a guide group: its type_name
 RECIPE_ATTR = "dwForgeRecipe"   # string attr on a guide group: to_dict() JSON
 SOURCE_ATTR = "dwForgeSource"   # string attr on a guide point: its selection source
+BUILT_ATTR  = "dwForgeBuiltAt"  # string attr on a guide point: JSON world position the curve last took it at
 
 
 def _bare(node: str) -> str:
@@ -506,6 +507,42 @@ class ChainJointGuide(guide_registry.GuideBackend):
         cmds.setAttr(f"{node}.{SOURCE_ATTR}", json.dumps(source), type="string")
 
     @staticmethod
+    def _set_built_at(node:     str,
+                      position: list,) -> None:
+        if not cmds.attributeQuery(BUILT_ATTR, node=node, exists=True):
+            cmds.addAttr(node, longName=BUILT_ATTR, dataType="string")
+        cmds.setAttr(f"{node}.{BUILT_ATTR}", json.dumps(list(position)), type="string")
+
+    @staticmethod
+    def _built_at(node: str) -> Optional[list]:
+        """Where the curve last took this point; None for a point the curve never took."""
+        if not cmds.attributeQuery(BUILT_ATTR, node=node, exists=True):
+            return None
+        return json.loads(cmds.getAttr(f"{node}.{BUILT_ATTR}") or "null")
+
+    def _mark_points_built(self) -> None:
+        """Every locator is now where the curve took it. Joints are the chain or get consumed by the build."""
+        for node in self.points:
+            if cmds.objExists(node) and cmds.nodeType(node) != "joint":
+                self._set_built_at(node, cmds.xform(node, query=True, worldSpace=True, translation=True))
+
+    def _apply_point_moves(self) -> None:
+        """
+        Carry what the locators moved since the curve last took them onto the
+        curve, blended between them like the hidden strip points. Only the
+        offset is added, so hand-edited CVs survive and a locator may sit off
+        the geometry. Runs on build / rebuild, never live.
+        """
+        anchors = []
+        for node in self.points:
+            built = self._built_at(node) if cmds.objExists(node) else None
+            if built is not None:
+                now = cmds.xform(node, query=True, worldSpace=True, translation=True)
+                anchors.append((built, [n - b for n, b in zip(now, built)]))
+        if any(abs(value) > 1e-6 for _, shift in anchors for value in shift):
+            dw_chain_guide.offset_curve_cvs(self._chain.curve_name, anchors)
+
+    @staticmethod
     def _handle_indices(count:   int,
                         handles: int,) -> list:
         """Which of `count` strip points get a locator: `handles` spread by index (<= 0 = all)."""
@@ -528,7 +565,7 @@ class ChainJointGuide(guide_registry.GuideBackend):
         position = list(cmds.xform(node, query=True, worldSpace=True, translation=True))
         origin = (previous or {}).get("origin") or (previous or {}).get("position") or position
         return {"name": node.split("|")[-1], "position": position, "source": source,
-                "handle": True, "origin": list(origin)}
+                "handle": True, "origin": list(origin), "built": ChainJointGuide._built_at(node)}
 
     def _sync_point_records(self) -> None:
         """
@@ -551,18 +588,11 @@ class ChainJointGuide(guide_registry.GuideBackend):
             moved[k] = [p - o for p, o in zip(record["position"], record["origin"])]
         if len(moved) == len(self.point_records):
             return
-        keys = sorted(moved)
+        keyed = sorted(moved.items())
         for i, record in enumerate(self.point_records):
             if record.get("handle", True):
                 continue
-            before = [k for k in keys if k < i]
-            after = [k for k in keys if k > i]
-            if before and after:
-                a, b = before[-1], after[0]
-                t = (i - a) / float(b - a)
-                shift = [da + (db - da) * t for da, db in zip(moved[a], moved[b])]
-            else:
-                shift = moved[before[-1]] if before else moved[after[0]]
+            shift = dw_chain_guide.blend_shift(i, keyed)
             origin = record.get("origin") or record["position"]
             record["position"] = [o + d for o, d in zip(origin, shift)]
 
@@ -588,6 +618,8 @@ class ChainJointGuide(guide_registry.GuideBackend):
                 group     = group,
             )
             self._set_source(node, rec.get("source"))
+            if rec.get("built"):
+                self._set_built_at(node, rec["built"])
             rec["name"] = node.split("|")[-1]
             self.points.append(node)
 
@@ -624,6 +656,7 @@ class ChainJointGuide(guide_registry.GuideBackend):
         self.source_curve = self._chain.curve_name
         self.positions    = self._read_curve_points(self._chain.curve_name)
         self._curve_flip  = self.flip
+        self._mark_points_built()
         self._tag_chain()
         self._status = guide_registry.GuideStatus.BUILT
         self.store_recipe()
@@ -634,9 +667,9 @@ class ChainJointGuide(guide_registry.GuideBackend):
         Materialize the guide (-> BUILT). Source resolution order:
 
         - exact mode: one joint per guide point (see _build_exact).
-        - already has a curve: just (re)distribute the joints.
+        - already has a curve: apply the locator moves, (re)distribute the joints.
         - has a curve snapshot (loaded file): rebuild the curve from its CVs, so
-          hand edits to the curve survive.
+          hand edits to the curve survive, then the same.
         - otherwise: build the curve through the guide points.
         """
         self._respawn_points()
@@ -644,10 +677,12 @@ class ChainJointGuide(guide_registry.GuideBackend):
             self._build_exact()
             return
         if self._chain is not None:
+            self._apply_point_moves()
             self._chain.build()
         elif self.positions:
             self._chain = self._chain_from_curve_points(
                 [om2.MPoint(*p) for p in self.positions], resample=False)
+            self._apply_point_moves()
             self._chain.build()
         else:
             points = self._point_positions()
@@ -676,8 +711,9 @@ class ChainJointGuide(guide_registry.GuideBackend):
     def rebuild(self) -> None:
         """
         Rebuild the joint chain, following any artist adjustments. Once a curve
-        exists it is the source of truth: the artist edits its CVs and rebuild
-        keeps the curve and only redistributes the joints.
+        exists it is the source of truth: the artist edits its CVs, moves the
+        locators (their offset since the last build is added to the CVs, see
+        _apply_point_moves) and rebuild keeps that curve, redistributing the joints.
 
         Exact mode is the exception: the points are the source of truth, so
         rebuild re-reads them and re-places the joints.
@@ -689,6 +725,7 @@ class ChainJointGuide(guide_registry.GuideBackend):
         # (rebuild alone only redistributes joints along it).
         if self.flip != self._curve_flip:
             dw_chain_guide.reverse_curve_direction(self.source_curve)
+        self._apply_point_moves()
         self._chain.rebuild(n_joints=self.n_joints, up_axis=self.up_axis)
         self._finish_build()
 

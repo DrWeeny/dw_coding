@@ -351,6 +351,52 @@ def resample_curve(curve_name: str,
     return curve_name
 
 
+def blend_shift(position: float,
+                keyed:    list,) -> list:
+    """
+    The (dx, dy, dz) at `position` along `keyed`, a sorted [(key, shift), ...]:
+    linear between the two keys around it, the nearest key's shift past either end.
+    """
+    before = [item for item in keyed if item[0] <= position]
+    after = [item for item in keyed if item[0] > position]
+    if before and after:
+        (a, shift_a), (b, shift_b) = before[-1], after[0]
+        t = (position - a) / float(b - a)
+        return [da + (db - da) * t for da, db in zip(shift_a, shift_b)]
+    return list(before[-1][1] if before else after[0][1])
+
+
+def offset_curve_cvs(curve_name: str,
+                     anchors:    list,) -> None:
+    """
+    Add displacements to a curve's CVs, keeping whatever shape they have now.
+    `anchors` = [(world position near the curve, (dx, dy, dz)), ...]: each one
+    pins a displacement to its closest place on the CV polygon, and every CV
+    gets the blend by CV index. With one CV per strip point that is the very
+    blend of the hidden points; going by position makes it independent of the
+    direction of the curve, so a resampled, flipped or hand-edited one works too.
+    """
+    cvs = cmds.ls(f"{curve_name}.cv[*]", flatten=True) or []
+    polygon = [om2.MPoint(*cmds.pointPosition(cv, world=True)) for cv in cvs]
+    keyed = sorted((_polygon_index(om2.MPoint(*position), polygon), list(shift)) for position, shift in anchors)
+    for index, cv in enumerate(cvs):
+        cmds.xform(cv, relative=True, worldSpace=True, translation=blend_shift(index, keyed))
+
+
+def _polygon_index(point:   om2.MPoint,
+                   polygon: list,) -> float:
+    """Fractional CV index of the place on the CV polygon closest to `point`."""
+    best_index, best_distance = 0.0, point.distanceTo(polygon[0])
+    for index in range(len(polygon) - 1):
+        edge = polygon[index + 1] - polygon[index]
+        length = edge * edge
+        t = max(0.0, min(1.0, ((point - polygon[index]) * edge) / length)) if length > 0.0 else 0.0
+        distance = point.distanceTo(polygon[index] + edge * t)
+        if distance < best_distance:
+            best_index, best_distance = index + t, distance
+    return best_index
+
+
 def reverse_curve_direction(curve_name: str) -> str:
     """
     Reverse a curve's direction in place (reverseCurve -replaceOriginal).

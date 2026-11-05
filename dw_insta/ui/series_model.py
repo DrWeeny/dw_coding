@@ -1,11 +1,15 @@
 from __future__ import annotations
 
+from datetime import date
+
 from PySide6.QtCore import QAbstractTableModel, QModelIndex, QSize, Qt
 
 from core.comment import accept_caption_suggestion, accept_hashtags_suggestion
 from core.paths import resolve_group_cover
+from core.scheduler import planned_dates
 from core.series import Group, SeriesState
 
+from .series_store import SeriesStore
 from .thumbnails import get_thumbnail
 
 COL_PHOTOS = 0
@@ -22,36 +26,46 @@ SUGGESTION_ROLE = Qt.ItemDataRole.UserRole + 1
 
 
 class SeriesTableModel(QAbstractTableModel):
-    """Thin Qt wrapper around SeriesState.groups. Every edit/accept saves
-    the state file immediately (it's small JSON, no reason to batch)."""
+    """Thin Qt wrapper over the store's current series. Every edit goes
+    through the store, which saves and calls refresh() back via MainWindow."""
 
     def __init__(
         self,
-        state: SeriesState,
+        store: SeriesStore,
         thumb_size: int = DEFAULT_THUMB_SIZE,
         hide_archived: bool = False,
         parent=None,
     ) -> None:
         super().__init__(parent)
-        self.state = state
+        self.store = store
         self.thumb_size = thumb_size
         self.hide_archived = hide_archived
         self._visible_groups: list[Group] = []
+        self._planned: dict[str, date] = {}
         self._rebuild_visible()
 
-    def _rebuild_visible(self) -> None:
+    @property
+    def state(self) -> SeriesState | None:
+        return self.store.state
+
+    def _compute_visible(self) -> list[Group]:
+        if self.state is None:
+            return []
         if self.hide_archived:
-            self._visible_groups = [g for g in self.state.groups if not g.is_posted]
-        else:
-            self._visible_groups = list(self.state.groups)
+            return [g for g in self.state.groups if g.is_pending]
+        return list(self.state.groups)
+
+    def _rebuild_visible(self) -> None:
+        self._visible_groups = self._compute_visible()
+        self._planned = planned_dates(self.state) if self.state else {}
 
     def set_thumb_size(self, size: int) -> None:
         self.thumb_size = size
-        self.refresh()
+        self._reset()
 
     def set_hide_archived(self, hide: bool) -> None:
         self.hide_archived = hide
-        self.refresh()
+        self._reset()
 
     def visible_groups(self) -> list[Group]:
         return list(self._visible_groups)
@@ -70,6 +84,16 @@ class SeriesTableModel(QAbstractTableModel):
             return HEADERS[section]
         return None
 
+    def _status_text(self, group: Group) -> str:
+        if group.is_posted:
+            return "posted"
+        if group.skipped:
+            return "skipped"
+        planned = self._planned.get(group.id)
+        if planned is None:
+            return "pending"
+        return "today" if planned == date.today() else planned.strftime("%b %d")
+
     def data(self, index: QModelIndex, role: int = Qt.ItemDataRole.DisplayRole):
         if not index.isValid():
             return None
@@ -86,7 +110,7 @@ class SeriesTableModel(QAbstractTableModel):
             if col == COL_HASHTAGS:
                 return group.hashtags if group.hashtags is not None else ""
             if col == COL_STATUS:
-                return "posted" if group.is_posted else "pending"
+                return self._status_text(group)
 
         if role == Qt.ItemDataRole.DecorationRole and col == COL_PHOTOS and group.photos:
             cover = resolve_group_cover(self.state, group)
@@ -109,18 +133,21 @@ class SeriesTableModel(QAbstractTableModel):
     def setData(self, index: QModelIndex, value, role: int = Qt.ItemDataRole.EditRole) -> bool:
         if role != Qt.ItemDataRole.EditRole or not index.isValid():
             return False
-        group = self.group_at(index.row())
         col = index.column()
-
-        if col == COL_CAPTION:
-            group.caption = value or None
-        elif col == COL_HASHTAGS:
-            group.hashtags = value or None
-        else:
+        if col not in EDITABLE_COLUMNS:
             return False
+        group_id = self.group_at(index.row()).id
 
-        self.state.save()
-        self.dataChanged.emit(index, index, [role])
+        def apply(state: SeriesState) -> None:
+            group = state.find_group(group_id)
+            if group is None:
+                return
+            if col == COL_CAPTION:
+                group.caption = value or None
+            else:
+                group.hashtags = value or None
+
+        self.store.mutate(apply)
         return True
 
     def flags(self, index: QModelIndex) -> Qt.ItemFlag:
@@ -130,20 +157,33 @@ class SeriesTableModel(QAbstractTableModel):
         return base
 
     def accept_suggestion(self, row: int, column: int) -> None:
-        group = self.group_at(row)
-        if column == COL_CAPTION:
-            accepted = accept_caption_suggestion(group)
-        elif column == COL_HASHTAGS:
-            accepted = accept_hashtags_suggestion(group)
-        else:
+        accept = {COL_CAPTION: accept_caption_suggestion, COL_HASHTAGS: accept_hashtags_suggestion}.get(column)
+        if accept is None:
             return
-        if not accepted:
-            return
-        self.state.save()
-        idx = self.index(row, column)
-        self.dataChanged.emit(idx, idx)
+        group_id = self.group_at(row).id
+
+        def apply(state: SeriesState) -> None:
+            group = state.find_group(group_id)
+            if group is not None:
+                accept(group)
+
+        self.store.mutate(apply)
 
     def refresh(self) -> None:
+        """Pick up the store's current content. A reset would drop the table's
+        selection and scroll position, and this runs on every save, so it only
+        happens when the rows themselves changed."""
+        visible = self._compute_visible()
+        if [g.id for g in visible] != [g.id for g in self._visible_groups]:
+            self._reset()
+            return
+        self._rebuild_visible()
+        if visible:
+            top_left = self.index(0, 0)
+            bottom_right = self.index(len(visible) - 1, len(HEADERS) - 1)
+            self.dataChanged.emit(top_left, bottom_right)
+
+    def _reset(self) -> None:
         self.beginResetModel()
         self._rebuild_visible()
         self.endResetModel()

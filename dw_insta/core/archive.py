@@ -23,6 +23,7 @@ def archive_group(state: SeriesState, group: Group) -> None:
             shutil.move(str(src_out), str(state.archive_out_dir / filename))
 
     group.posted_at = datetime.now().isoformat(timespec="seconds")
+    group.skipped = False
     state.save()
 
 

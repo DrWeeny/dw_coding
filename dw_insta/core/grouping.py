@@ -5,7 +5,9 @@ from .series import Group, SeriesState
 
 def merge_groups(state: SeriesState, group_ids: list[str]) -> Group:
     """Combine two or more not-yet-posted groups (in the given order) into
-    a single carousel post, in-place at the position of the first group."""
+    a single carousel post, in-place at the position of the first group. The
+    first group's caption and hashtags win; the others' confirmed text is kept
+    as pending suggestions on their photos, so nothing is thrown away."""
     ids = set(group_ids)
     positions = [i for i, g in enumerate(state.groups) if g.id in ids]
     if len(positions) != len(group_ids):
@@ -24,6 +26,12 @@ def merge_groups(state: SeriesState, group_ids: list[str]) -> Group:
         merged_photos.extend(g.photos)
         merged_suggested_captions.update(g.suggested_captions)
         merged_suggested_hashtags.update(g.suggested_hashtags)
+
+    for g in ordered[1:]:
+        if g.photos and g.caption:
+            merged_suggested_captions[g.photos[0]] = g.caption
+        if g.photos and g.hashtags:
+            merged_suggested_hashtags[g.photos[0]] = g.hashtags
 
     first = ordered[0]
     merged = Group(
@@ -86,3 +94,13 @@ def reorder_groups(state: SeriesState, ordered_group_ids: list[str]) -> None:
     if set(ordered_group_ids) != set(by_id):
         raise ValueError("ordered_group_ids must be a permutation of existing group ids")
     state.groups = [by_id[gid] for gid in ordered_group_ids]
+
+
+def move_to_next(state: SeriesState, group_id: str) -> None:
+    """Put a pending group at the front of the queue, so it's the next post."""
+    group = state.find_group(group_id)
+    if group is None or not group.is_pending:
+        raise ValueError("only a post still in the queue can be moved to next")
+    state.groups.remove(group)
+    first_pending = next((i for i, g in enumerate(state.groups) if g.is_pending), len(state.groups))
+    state.groups.insert(first_pending, group)
