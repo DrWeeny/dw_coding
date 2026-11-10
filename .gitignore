@@ -18,3 +18,6 @@
 /dw_video_reformat/build/
 /dw_video_reformat/bin/
 /dw_maya/DynForge/host/
+
+# private Claude notes (studio-specific detail split out of the public CLAUDE.md files)
+CLAUDE.local.md

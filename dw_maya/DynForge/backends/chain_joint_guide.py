@@ -458,6 +458,23 @@ class ChainJointGuide(guide_registry.GuideBackend):
         self.positions    = []
         self._status      = guide_registry.GuideStatus.PENDING
 
+    def _drop_lost_curve(self) -> None:
+        """
+        The source curve left the scene behind this object's back (deleted by
+        hand, or a Maya undo took the build back while the python guide still
+        says BUILT): forget the chain so build() regenerates the curve - from
+        its last CV snapshot when there is one (hand edits survive), else from
+        the guide points.
+        """
+        if self._chain is None or (self._chain.curve_name and cmds.objExists(self._chain.curve_name)):
+            return
+        logger.warning(f"'{self.name}': source curve {self._chain.curve_name!r} is gone, regenerating it.")
+        positions = list(self.positions)
+        if self.flip != self._curve_flip:
+            positions.reverse()   # the snapshot was read off the curve before the Flip toggle
+        self._reset_build()
+        self.positions = positions
+
     def reorder_points(self,
                        ordered: list,) -> None:
         """
@@ -676,6 +693,7 @@ class ChainJointGuide(guide_registry.GuideBackend):
         if self.exact_points:
             self._build_exact()
             return
+        self._drop_lost_curve()
         if self._chain is not None:
             self._apply_point_moves()
             self._chain.build()
@@ -717,7 +735,11 @@ class ChainJointGuide(guide_registry.GuideBackend):
 
         Exact mode is the exception: the points are the source of truth, so
         rebuild re-reads them and re-places the joints.
+
+        A curve that left the scene is regenerated (see _drop_lost_curve).
         """
+        if not self.exact_points:
+            self._drop_lost_curve()
         if self.exact_points or self._chain is None:
             self.build()
             return
